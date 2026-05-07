@@ -29,12 +29,9 @@ struct LoupeOverlay: View {
 
         // Float the loupe above the finger. Hop to below if it would clip the top.
         let preferredY = finger.y - radius - 56
-        let loupeY: CGFloat
-        if preferredY - radius < 8 {
-            loupeY = finger.y + radius + 56
-        } else {
-            loupeY = preferredY
-        }
+        let loupeY: CGFloat = (preferredY - radius < 8)
+            ? finger.y + radius + 56
+            : preferredY
         let loupeX = max(radius + 8, min(canvasSize.width - radius - 8, finger.x))
 
         ZStack(alignment: .topLeading) {
