@@ -10,6 +10,8 @@ struct ProjectDetailView: View {
     @State private var sessionError: String?
     @State private var showingCamera = false
     @State private var captureError: String?
+    @State private var showingFloorPlanSetup = false
+    @State private var confirmingPlanRemoval = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -21,6 +23,7 @@ struct ProjectDetailView: View {
                 List {
                     metadataSection(project)
                     actionsSection(project)
+                    floorPlanSection(project)
                     photosSection(project)
                     placeholdersSection
                 }
@@ -34,6 +37,22 @@ struct ProjectDetailView: View {
                         },
                         onCancel: { showingCamera = false }
                     )
+                }
+                .sheet(isPresented: $showingFloorPlanSetup) {
+                    FloorPlanSetupView(projectID: projectID)
+                        .environment(store)
+                }
+                .confirmationDialog(
+                    "Remove the floor plan?",
+                    isPresented: $confirmingPlanRemoval,
+                    titleVisibility: .visible
+                ) {
+                    Button("Remove", role: .destructive) {
+                        if let p = project { store.clearFloorPlan(p) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Photo locations recorded against this plan will be cleared on the next push when location capture is wired in. The plan image will be deleted from disk.")
                 }
             } else {
                 ContentUnavailableView(
@@ -179,6 +198,67 @@ struct ProjectDetailView: View {
     }
 
     @ViewBuilder
+    private func floorPlanSection(_ project: Project) -> some View {
+        Section("Floor Plan") {
+            if let plan = project.floorPlan {
+                HStack(spacing: 12) {
+                    floorPlanThumbnail(project)
+                        .frame(width: 84, height: 64)
+                        .clipped()
+                        .background(Color.secondary.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Calibrated").font(.subheadline.weight(.semibold))
+                        Text(String(format: "%.1f px / ft", plan.pixelsPerFoot))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "calibration: %.1f ft", plan.calibrationDistanceFeet))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+                Button {
+                    showingFloorPlanSetup = true
+                } label: {
+                    Label("Re-calibrate", systemImage: "ruler")
+                }
+
+                Button(role: .destructive) {
+                    confirmingPlanRemoval = true
+                } label: {
+                    Label("Remove Floor Plan", systemImage: "trash")
+                }
+            } else {
+                Text("No floor plan set. Photos will be saved without a recorded location until a plan is imported and calibrated.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    showingFloorPlanSetup = true
+                } label: {
+                    Label("Set Up Floor Plan", systemImage: "doc.viewfinder")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func floorPlanThumbnail(_ project: Project) -> some View {
+        if let url = store.floorPlanURL(for: project),
+           let data = try? Data(contentsOf: url),
+           let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "doc")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
     private func photosSection(_ project: Project) -> some View {
         Section("Photos · \(project.photos.count)") {
             if project.photos.isEmpty {
@@ -212,9 +292,14 @@ struct ProjectDetailView: View {
                 subtitle: "Lens picker (0.5x/1x/2x/4x/8x), Auto/On/Off flash, full-resolution save."
             )
             roadmapItem(
+                done: true,
+                title: "Floor plan import + calibration",
+                subtitle: "Pick image, tap A & B, enter feet. Photo bubbles render in the next push."
+            )
+            roadmapItem(
                 done: false,
-                title: "Floor plan + photo bubbles",
-                subtitle: "Pan/zoom, calibration, group bubbles, blink-on-select."
+                title: "Locate flow + photo bubbles",
+                subtitle: "Tap-to-place pin, drag for direction. Group bubbles trail the lead. Only on plan-equipped projects."
             )
             roadmapItem(
                 done: false,

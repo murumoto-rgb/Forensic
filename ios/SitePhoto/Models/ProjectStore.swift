@@ -137,6 +137,57 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - Floor plan
+
+    @discardableResult
+    func saveFloorPlan(
+        to project: Project,
+        imageData: Data,
+        anchorPixelX: Double,
+        anchorPixelY: Double,
+        pixelsPerFoot: Double,
+        calibrationDistanceFeet: Double,
+        northDeg: Double
+    ) throws -> Project {
+        var p = project
+        let dir = projectURL(p)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Replace any existing plan image.
+        let filename = "plan.jpg"
+        let url = dir.appending(path: filename)
+        try? fileManager.removeItem(at: url)
+        try imageData.write(to: url, options: .atomic)
+
+        p.floorPlan = FloorPlan(
+            imageFilename: filename,
+            pixelsPerFoot: pixelsPerFoot,
+            calibrationDistanceFeet: calibrationDistanceFeet,
+            anchorPixelX: anchorPixelX,
+            anchorPixelY: anchorPixelY,
+            anchorLocalXFeet: 0,
+            anchorLocalYFeet: 0,
+            northDeg: northDeg
+        )
+        return save(p)
+    }
+
+    @discardableResult
+    func clearFloorPlan(_ project: Project) -> Project {
+        var p = project
+        if let plan = p.floorPlan {
+            let url = projectURL(p).appending(path: plan.imageFilename)
+            try? fileManager.removeItem(at: url)
+        }
+        p.floorPlan = nil
+        return save(p)
+    }
+
+    func floorPlanURL(for project: Project) -> URL? {
+        guard let plan = project.floorPlan else { return nil }
+        return projectURL(project).appending(path: plan.imageFilename)
+    }
+
     // MARK: - Photos
 
     /// Persist a captured photo to disk and append it to the project. Returns the updated project.
