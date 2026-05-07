@@ -15,6 +15,9 @@ struct ProjectDetailView: View {
     @State private var pendingPhotos: [CapturedPhoto] = []
     @State private var showingLocate = false
     @State private var showingPlanViewer = false
+    @State private var showingPlanOrigin = false
+    @State private var showingPlanNorth = false
+    @State private var showingPlanReplace = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -54,6 +57,18 @@ struct ProjectDetailView: View {
                 }
                 .fullScreenCover(isPresented: $showingPlanViewer) {
                     PlanViewerView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingPlanOrigin) {
+                    FloorPlanOriginView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingPlanNorth) {
+                    FloorPlanNorthView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingPlanReplace) {
+                    FloorPlanReplaceView(projectID: projectID)
                         .environment(store)
                 }
                 .confirmationDialog(
@@ -248,9 +263,27 @@ struct ProjectDetailView: View {
                 }
 
                 Button {
+                    showingPlanOrigin = true
+                } label: {
+                    Label("Set Origin", systemImage: "scope")
+                }
+
+                Button {
+                    showingPlanNorth = true
+                } label: {
+                    Label("Set North", systemImage: "location.north")
+                }
+
+                Button {
                     showingFloorPlanSetup = true
                 } label: {
                     Label("Re-calibrate", systemImage: "ruler")
+                }
+
+                Button {
+                    showingPlanReplace = true
+                } label: {
+                    Label("Replace Plan", systemImage: "rectangle.2.swap")
                 }
 
                 Button(role: .destructive) {

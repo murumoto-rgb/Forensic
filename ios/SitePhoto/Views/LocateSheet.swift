@@ -206,8 +206,8 @@ struct LocateSheet: View {
                 photoLoc = ProjectStore.PhotoLocation(
                     planPixelX: Double(pt.x),
                     planPixelY: Double(pt.y),
-                    localXFeet: Double(pt.x) / plan.pixelsPerFoot,
-                    localYFeet: Double(pt.y) / plan.pixelsPerFoot,
+                    localXFeet: (Double(pt.x) - plan.anchorPixelX) / plan.pixelsPerFoot,
+                    localYFeet: (Double(pt.y) - plan.anchorPixelY) / plan.pixelsPerFoot,
                     headingDegrees: (i == 0 && useHeading) ? heading : nil,
                     groupID: groupID,
                     isPrimary: i == 0

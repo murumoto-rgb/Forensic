@@ -188,6 +188,96 @@ final class ProjectStore {
         return projectURL(project).appending(path: plan.imageFilename)
     }
 
+    /// Move the origin (anchorPixelX/Y) to a new spot on the current plan image.
+    /// Photo planPixelX/Y stay put (visually nothing changes); localXFeet/Y are
+    /// re-derived against the new origin.
+    @discardableResult
+    func updateFloorPlanOrigin(_ project: Project,
+                               anchorPixelX: Double,
+                               anchorPixelY: Double) -> Project {
+        var p = project
+        guard var plan = p.floorPlan else { return p }
+        plan.anchorPixelX = anchorPixelX
+        plan.anchorPixelY = anchorPixelY
+        p.floorPlan = plan
+        Self.recomputeLocalCoords(in: &p)
+        return save(p)
+    }
+
+    /// Set the north direction (degrees clockwise from image up).
+    @discardableResult
+    func updateFloorPlanNorth(_ project: Project, northDeg: Double) -> Project {
+        var p = project
+        guard var plan = p.floorPlan else { return p }
+        plan.northDeg = northDeg
+        p.floorPlan = plan
+        return save(p)
+    }
+
+    /// Replace the plan image with new calibration + origin. Photo planPixelX/Y
+    /// are recomputed from each photo's localXFeet/Y so they land in the same
+    /// physical place on the new image. Old plan image is deleted.
+    @discardableResult
+    func replaceFloorPlan(in project: Project,
+                          imageData: Data,
+                          pixelsPerFoot: Double,
+                          calibrationDistanceFeet: Double,
+                          anchorPixelX: Double,
+                          anchorPixelY: Double,
+                          northDeg: Double) throws -> Project {
+        var p = project
+
+        // Make sure local coords are fresh against the OLD calibration before
+        // we swap. If the user never set an origin, this writes whatever the
+        // current anchor implies; it's still self-consistent.
+        Self.recomputeLocalCoords(in: &p)
+
+        let dir = projectURL(p)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let filename = "plan.jpg"
+        let url = dir.appending(path: filename)
+        try? fileManager.removeItem(at: url)
+        try imageData.write(to: url, options: .atomic)
+
+        p.floorPlan = FloorPlan(
+            imageFilename: filename,
+            pixelsPerFoot: pixelsPerFoot,
+            calibrationDistanceFeet: calibrationDistanceFeet,
+            anchorPixelX: anchorPixelX,
+            anchorPixelY: anchorPixelY,
+            anchorLocalXFeet: 0,
+            anchorLocalYFeet: 0,
+            northDeg: northDeg
+        )
+
+        // Project photo positions onto the new plan.
+        Self.recomputePixelCoords(in: &p)
+
+        return save(p)
+    }
+
+    /// Derive each photo's localXFeet/Y from its planPixelX/Y using the current calibration.
+    private static func recomputeLocalCoords(in project: inout Project) {
+        guard let plan = project.floorPlan else { return }
+        for i in project.photos.indices {
+            let photo = project.photos[i]
+            guard let px = photo.planPixelX, let py = photo.planPixelY else { continue }
+            project.photos[i].localXFeet = (px - plan.anchorPixelX) / plan.pixelsPerFoot
+            project.photos[i].localYFeet = (py - plan.anchorPixelY) / plan.pixelsPerFoot
+        }
+    }
+
+    /// Derive each photo's planPixelX/Y from its localXFeet/Y using the current calibration.
+    private static func recomputePixelCoords(in project: inout Project) {
+        guard let plan = project.floorPlan else { return }
+        for i in project.photos.indices {
+            let photo = project.photos[i]
+            guard let lx = photo.localXFeet, let ly = photo.localYFeet else { continue }
+            project.photos[i].planPixelX = plan.anchorPixelX + lx * plan.pixelsPerFoot
+            project.photos[i].planPixelY = plan.anchorPixelY + ly * plan.pixelsPerFoot
+        }
+    }
+
     // MARK: - Photos
 
     /// Optional location data attached when a photo is saved against a calibrated plan.
