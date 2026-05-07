@@ -252,6 +252,9 @@ struct ProjectDetailView: View {
                         Text(String(format: "calibration: %.1f ft", plan.calibrationDistanceFeet))
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
+                        Text(String(format: "north: %.0f° (CW from page up)", plan.northDeg))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }

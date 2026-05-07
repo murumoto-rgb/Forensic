@@ -159,8 +159,8 @@ struct PlanViewerView: View {
             }
 
             NorthIndicator(northDeg: plan.northDeg)
-                .frame(width: 40, height: 40)
-                .position(x: geo.size.width - 32, y: 32)
+                .frame(width: 56, height: 56)
+                .position(x: geo.size.width - 38, y: 38)
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         .scaleEffect(scale, anchor: .center)
@@ -427,20 +427,28 @@ private struct ArrowHead: Shape {
 private struct NorthIndicator: View {
     let northDeg: Double
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(.black.opacity(0.55))
-            Image(systemName: "location.north.fill")
-                .resizable()
-                .scaledToFit()
-                .padding(8)
+        VStack(spacing: 2) {
+            ZStack {
+                Circle()
+                    .fill(.black.opacity(0.55))
+                Image(systemName: "location.north.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(8)
+                    .foregroundStyle(.white)
+                    .rotationEffect(.degrees(northDeg))
+                Text("N")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .offset(y: -14)
+                    .rotationEffect(.degrees(northDeg))
+            }
+            Text(String(format: "%.0f°", northDeg))
+                .font(.caption2.bold().monospaced())
                 .foregroundStyle(.white)
-                .rotationEffect(.degrees(northDeg))
-            Text("N")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white)
-                .offset(y: -16)
-                .rotationEffect(.degrees(northDeg))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.55), in: Capsule())
         }
     }
 }
