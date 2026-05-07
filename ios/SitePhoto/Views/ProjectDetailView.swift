@@ -18,6 +18,7 @@ struct ProjectDetailView: View {
     @State private var showingPlanOrigin = false
     @State private var showingPlanNorth = false
     @State private var showingPlanReplace = false
+    @State private var showingPlanRecalibrate = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -69,6 +70,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingPlanReplace) {
                     FloorPlanReplaceView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingPlanRecalibrate) {
+                    FloorPlanRecalibrateView(projectID: projectID)
                         .environment(store)
                 }
                 .confirmationDialog(
@@ -278,9 +283,9 @@ struct ProjectDetailView: View {
                 }
 
                 Button {
-                    showingFloorPlanSetup = true
+                    showingPlanRecalibrate = true
                 } label: {
-                    Label("Re-calibrate", systemImage: "ruler")
+                    Label("Re-calibrate Scale", systemImage: "ruler")
                 }
 
                 Button {

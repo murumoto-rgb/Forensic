@@ -125,14 +125,17 @@ struct PlanViewerView: View {
                 .offset(x: originX, y: originY)
 
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
-                let bearing = marker.bearing ?? 0
+                let worldBearing = marker.bearing ?? 0
+                // Heading is stored as world compass bearing. Convert back to
+                // plan-frame angle (CW from page-up) for drawing on the image.
+                let planFrame = worldBearing + plan.northDeg
                 let centerX = originX + marker.x * fit
                 let centerY = originY + marker.y * fit
-                ArrowShape(bearingDegrees: bearing - plan.northDeg, length: arrowLengthView)
+                ArrowShape(bearingDegrees: planFrame, length: arrowLengthView)
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
-                ArrowHead(bearingDegrees: bearing - plan.northDeg,
+                ArrowHead(bearingDegrees: planFrame,
                           length: arrowLengthView,
                           baseRadius: 14 * bubbleScale)
                     .fill(Color.green)
@@ -346,8 +349,10 @@ struct PlanViewerView: View {
                 bearing: bearing
             ))
 
-            let layoutBearing = (bearing ?? 0) - (project.floorPlan?.northDeg ?? 0)
-            let oppRad = (layoutBearing + 90) * .pi / 180
+            // Heading is world bearing → plan-frame = bearing + northDeg.
+            // Tail trails opposite the arrow.
+            let planFrameBearing = (bearing ?? 0) + (project.floorPlan?.northDeg ?? 0)
+            let oppRad = (planFrameBearing + 90) * .pi / 180
             let dx = cos(oppRad)
             let dy = sin(oppRad)
 

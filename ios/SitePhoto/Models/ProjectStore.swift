@@ -204,6 +204,23 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Re-calibrate the scale (pixelsPerFoot / calibrationDistanceFeet) without
+    /// touching the plan image or origin. Photo planPixelX/Y stay put -
+    /// visually nothing changes - and localXFeet/Y are re-derived so the
+    /// readouts match the new scale.
+    @discardableResult
+    func recalibrateScale(_ project: Project,
+                          pixelsPerFoot: Double,
+                          calibrationDistanceFeet: Double) -> Project {
+        var p = project
+        guard var plan = p.floorPlan else { return p }
+        plan.pixelsPerFoot = pixelsPerFoot
+        plan.calibrationDistanceFeet = calibrationDistanceFeet
+        p.floorPlan = plan
+        Self.recomputeLocalCoords(in: &p)
+        return save(p)
+    }
+
     /// Set the north direction (degrees clockwise from image up).
     @discardableResult
     func updateFloorPlanNorth(_ project: Project, northDeg: Double) -> Project {
