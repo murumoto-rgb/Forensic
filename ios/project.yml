@@ -9,7 +9,7 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "C73QVZSGPX"
     CODE_SIGN_STYLE: Automatic
     GENERATE_INFOPLIST_FILE: NO
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -29,7 +29,7 @@ targets:
         UILaunchScreen:
           UIColorName: ""
         UIRequiredDeviceCapabilities:
-          - armv7
+          - arm64
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
