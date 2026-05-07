@@ -48,7 +48,7 @@ struct ProjectDetailView: View {
                     titleVisibility: .visible
                 ) {
                     Button("Remove", role: .destructive) {
-                        if let p = project { store.clearFloorPlan(p) }
+                        store.clearFloorPlan(project)
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
