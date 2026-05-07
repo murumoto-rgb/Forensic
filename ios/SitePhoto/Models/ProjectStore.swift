@@ -188,10 +188,32 @@ final class ProjectStore {
             kCGImageSourceCreateThumbnailWithTransform: true
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else { return nil }
+
+        // Redraw into an opaque context so the resulting JPEG has no alpha
+        // channel - avoids ImageIO's "saving opaque image with AlphaPremulLast"
+        // warning and halves the in-memory footprint when the thumbnail is
+        // decoded for display.
+        let width = cg.width
+        let height = cg.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let opaque = ctx.makeImage() else { return nil }
+
         let mut = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(mut, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         let writeOpts: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.8]
-        CGImageDestinationAddImage(dest, cg, writeOpts as CFDictionary)
+        CGImageDestinationAddImage(dest, opaque, writeOpts as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return mut as Data
     }
