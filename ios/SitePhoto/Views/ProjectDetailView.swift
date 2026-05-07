@@ -2,7 +2,12 @@ import SwiftUI
 
 struct ProjectDetailView: View {
     @Environment(ProjectStore.self) private var store
+    @Environment(LocationService.self) private var location
     let projectID: UUID
+
+    @State private var sessionWorking = false
+    @State private var addressLookupRunning = false
+    @State private var sessionError: String?
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -60,7 +65,7 @@ struct ProjectDetailView: View {
                         .multilineTextAlignment(.trailing)
                 }
             } else if project.projectGPS != nil {
-                LabeledContent("Address", value: "looking up…")
+                LabeledContent("Address", value: addressLookupRunning ? "looking up…" : "—")
             }
         }
     }
@@ -69,12 +74,12 @@ struct ProjectDetailView: View {
     private func actionsSection(_ project: Project) -> some View {
         Section("Session") {
             Button {
-                // TODO: wire to LocationService in next push
+                Task { await toggleStartStop() }
             } label: {
                 Label(startStopLabel(project), systemImage: startStopIcon(project))
             }
-            .disabled(true)
-            .foregroundStyle(.secondary)
+            .disabled(sessionWorking)
+            .foregroundStyle(project.isActive ? .red : .accentColor)
 
             Button {
                 // TODO: open camera in next push
@@ -84,9 +89,60 @@ struct ProjectDetailView: View {
             .disabled(true)
             .foregroundStyle(.secondary)
 
-            Text("Camera, location capture, and PDF export are wired in upcoming pushes. The placeholder above is intentional.")
+            if let err = sessionError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Text("Camera capture and PDF export ship in upcoming pushes. Start records the project's GPS + address.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func toggleStartStop() async {
+        guard var current = store.project(withID: projectID) else { return }
+        sessionWorking = true
+        sessionError = nil
+        defer { sessionWorking = false }
+
+        if current.isActive {
+            store.stopSession(current)
+            return
+        }
+
+        let isFirstStart = current.startedAt == nil
+        current = store.startSession(current)
+
+        guard isFirstStart, current.projectGPS == nil else { return }
+
+        let auth = await location.requestPermission()
+        guard auth == .authorizedAlways || auth == .authorizedWhenInUse else {
+            sessionError = "Location permission denied. Open Settings → SitePhoto → Location to allow."
+            return
+        }
+
+        do {
+            let loc = try await location.currentLocation()
+            let gps = ProjectGPS(
+                latitude: loc.coordinate.latitude,
+                longitude: loc.coordinate.longitude,
+                altitude: loc.altitude.isFinite ? loc.altitude : nil,
+                accuracyFeet: loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy * 3.28084 : nil,
+                timestamp: Date()
+            )
+            current = store.updateGPS(current, gps)
+
+            addressLookupRunning = true
+            if let address = await location.reverseGeocode(loc) {
+                _ = store.updateAddress(current, address)
+            }
+            addressLookupRunning = false
+        } catch LocationError.denied {
+            sessionError = "Location permission denied."
+        } catch {
+            sessionError = "Could not get GPS: \(error.localizedDescription)"
         }
     }
 
@@ -120,14 +176,14 @@ struct ProjectDetailView: View {
                 subtitle: "You're using it now."
             )
             roadmapItem(
-                done: false,
-                title: "Camera capture (AVFoundation)",
-                subtitle: "0.5x / 1x / 2x / 4x / 8x lens picker, true flash control, full-resolution capture."
+                done: true,
+                title: "Location & address",
+                subtitle: "GPS on session start, CLGeocoder reverse-geocode for the address."
             )
             roadmapItem(
                 done: false,
-                title: "Location & address",
-                subtitle: "GPS on session start, reverse geocoded address with caching."
+                title: "Camera capture (AVFoundation)",
+                subtitle: "0.5x / 1x / 2x / 4x / 8x lens picker, true flash control, full-resolution capture."
             )
             roadmapItem(
                 done: false,
@@ -183,10 +239,12 @@ struct ProjectDetailView: View {
 
 #Preview {
     let store = ProjectStore()
+    let location = LocationService()
     let p = Project(name: "Demo project")
     let saved = store.save(p)
     return NavigationStack {
         ProjectDetailView(projectID: saved.id)
             .environment(store)
+            .environment(location)
     }
 }

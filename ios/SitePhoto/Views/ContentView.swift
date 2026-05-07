@@ -154,4 +154,5 @@ private struct EmptyProjectsView: View {
 #Preview {
     ContentView()
         .environment(ProjectStore())
+        .environment(LocationService())
 }

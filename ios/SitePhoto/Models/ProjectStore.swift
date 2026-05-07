@@ -98,4 +98,40 @@ final class ProjectStore {
     func project(withID id: UUID) -> Project? {
         projects.first { $0.id == id }
     }
+
+    // MARK: - Session lifecycle
+
+    @discardableResult
+    func startSession(_ project: Project) -> Project {
+        var p = project
+        if p.startedAt == nil {
+            p.startedAt = Date()
+        } else {
+            p.lastResumedAt = Date()
+        }
+        p.stopped = false
+        return save(p)
+    }
+
+    @discardableResult
+    func stopSession(_ project: Project) -> Project {
+        var p = project
+        p.stopped = true
+        p.lastStoppedAt = Date()
+        return save(p)
+    }
+
+    @discardableResult
+    func updateGPS(_ project: Project, _ gps: ProjectGPS) -> Project {
+        var p = project
+        p.projectGPS = gps
+        return save(p)
+    }
+
+    @discardableResult
+    func updateAddress(_ project: Project, _ address: String) -> Project {
+        var p = project
+        p.projectAddress = address
+        return save(p)
+    }
 }
