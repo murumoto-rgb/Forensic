@@ -20,15 +20,16 @@ struct PlanViewerView: View {
 
                 if let selectedID = selectedPhotoID,
                    let photo = currentPhoto(for: selectedID) {
-                    let group = currentGroup(for: photo)
-                    let idx = group.firstIndex(where: { $0.id == photo.id }) ?? 0
+                    let allLocated = locatedPhotosOrdered()
+                    let idx = allLocated.firstIndex(where: { $0.id == photo.id }) ?? 0
                     PhotoPreviewBar(
                         photo: photo,
                         index: idx,
-                        groupCount: group.count,
+                        totalCount: allLocated.count,
+                        groupCount: currentGroup(for: photo).count,
                         projectID: projectID,
-                        onSwipeNext: { advance(in: group, from: idx, by: +1) },
-                        onSwipePrevious: { advance(in: group, from: idx, by: -1) },
+                        onSwipeNext: { navigateAll(direction: +1) },
+                        onSwipePrevious: { navigateAll(direction: -1) },
                         onDismiss: { closePreview() }
                     )
                     .environment(store)
@@ -268,6 +269,32 @@ struct PlanViewerView: View {
         pendingRecenterID = nextPhoto.id
     }
 
+    /// Navigate across every located photo in the project, sorted by sequence number.
+    private func navigateAll(direction: Int) {
+        let all = locatedPhotosOrdered()
+        guard !all.isEmpty else { return }
+        let count = all.count
+
+        let currentIdx: Int
+        if let id = selectedPhotoID, let i = all.firstIndex(where: { $0.id == id }) {
+            currentIdx = i
+        } else {
+            currentIdx = 0
+        }
+        let nextIdx = ((currentIdx + direction) % count + count) % count
+        let nextPhoto = all[nextIdx]
+        selectedPhotoID = nextPhoto.id
+        pendingRecenterID = nextPhoto.id
+    }
+
+    /// Every located photo in the project, sorted by sequence number.
+    private func locatedPhotosOrdered() -> [Photo] {
+        guard let project = store.project(withID: projectID) else { return [] }
+        return project.photos
+            .filter { $0.planPixelX != nil && $0.planPixelY != nil }
+            .sorted { $0.sequenceNumber < $1.sequenceNumber }
+    }
+
     // MARK: - Project lookups
 
     private func currentPhoto(for id: UUID) -> Photo? {
@@ -422,8 +449,9 @@ private struct NorthIndicator: View {
 
 private struct PhotoPreviewBar: View {
     let photo: Photo
-    let index: Int
-    let groupCount: Int
+    let index: Int          // 0-based index within ALL located photos in the project
+    let totalCount: Int     // total number of located photos in the project
+    let groupCount: Int     // number of photos in this photo's group (1 if not grouped)
     let projectID: UUID
     let onSwipeNext: () -> Void
     let onSwipePrevious: () -> Void
@@ -455,8 +483,13 @@ private struct PhotoPreviewBar: View {
                     Text("#\(photo.sequenceNumber)")
                         .font(.headline.monospaced())
                         .foregroundStyle(.white)
+                    if totalCount > 1 {
+                        Text("\(index + 1) of \(totalCount)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
                     if groupCount > 1 {
-                        Text("\(index + 1) of \(groupCount)")
+                        Text("group of \(groupCount)")
                             .font(.caption2.monospaced())
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -471,7 +504,7 @@ private struct PhotoPreviewBar: View {
             .padding(.leading, 12)
             .padding(.top, 12)
 
-            if groupCount > 1 {
+            if totalCount > 1 {
                 HStack {
                     chevron(systemName: "chevron.left", action: onSwipePrevious)
                     Spacer()
