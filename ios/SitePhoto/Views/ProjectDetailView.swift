@@ -12,6 +12,8 @@ struct ProjectDetailView: View {
     @State private var captureError: String?
     @State private var showingFloorPlanSetup = false
     @State private var confirmingPlanRemoval = false
+    @State private var pendingPhotos: [CapturedPhoto] = []
+    @State private var showingLocate = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -42,6 +44,13 @@ struct ProjectDetailView: View {
                     FloorPlanSetupView(projectID: projectID)
                         .environment(store)
                 }
+                .sheet(isPresented: $showingLocate) {
+                    LocateSheet(
+                        projectID: projectID,
+                        pendingPhotos: $pendingPhotos
+                    )
+                    .environment(store)
+                }
                 .confirmationDialog(
                     "Remove the floor plan?",
                     isPresented: $confirmingPlanRemoval,
@@ -66,6 +75,14 @@ struct ProjectDetailView: View {
 
     private func handleCapture(_ captured: CapturedPhoto) {
         guard let project = store.project(withID: projectID) else { return }
+        if project.floorPlan != nil {
+            // Plan-equipped: queue for locate flow.
+            pendingPhotos.append(captured)
+            showingLocate = true
+            captureError = nil
+            return
+        }
+        // No plan: save immediately with NO LOC.
         do {
             try store.addPhoto(to: project, captured: captured)
             captureError = nil
@@ -297,9 +314,14 @@ struct ProjectDetailView: View {
                 subtitle: "Pick image, tap A & B, enter feet. Photo bubbles render in the next push."
             )
             roadmapItem(
+                done: true,
+                title: "Locate flow",
+                subtitle: "Tap-to-place pin, drag for direction, batch capture into a single shared location."
+            )
+            roadmapItem(
                 done: false,
-                title: "Locate flow + photo bubbles",
-                subtitle: "Tap-to-place pin, drag for direction. Group bubbles trail the lead. Only on plan-equipped projects."
+                title: "Plan viewer with photo bubbles",
+                subtitle: "View Plan opens the calibrated plan with bubbles. Group bubbles trail the lead."
             )
             roadmapItem(
                 done: false,
@@ -366,12 +388,9 @@ private struct PhotoRow: View {
                     Text("#\(photo.sequenceNumber)")
                         .font(.headline.monospaced())
                     if photo.positionSource == .none {
-                        Text("NO LOC")
-                            .font(.caption2.bold().monospaced())
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.2), in: Capsule())
-                            .foregroundStyle(.orange)
+                        badge(text: "NO LOC", color: .orange)
+                    } else if photo.groupID != nil {
+                        badge(text: photo.isPrimary ? "GROUP★" : "GROUP", color: .blue)
                     }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
@@ -380,6 +399,12 @@ private struct PhotoRow: View {
                 Text(metaLine)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
+                if let lx = photo.localXFeet, let ly = photo.localYFeet {
+                    let head = photo.headingDegrees.map { String(format: " · H %.0f°", $0) } ?? ""
+                    Text(String(format: "X %.1f ft · Y %.1f ft%@", lx, ly, head))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
             }
             Spacer()
         }
@@ -406,6 +431,16 @@ private struct PhotoRow: View {
         parts.append(zoomLabel(photo.cameraZoom))
         parts.append("flash \(photo.flashMode.rawValue)")
         return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func badge(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.bold().monospaced())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.2), in: Capsule())
+            .foregroundStyle(color)
     }
 
     private func zoomLabel(_ z: Double) -> String {

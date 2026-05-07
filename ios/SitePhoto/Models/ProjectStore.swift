@@ -190,9 +190,20 @@ final class ProjectStore {
 
     // MARK: - Photos
 
+    /// Optional location data attached when a photo is saved against a calibrated plan.
+    struct PhotoLocation {
+        var planPixelX: Double
+        var planPixelY: Double
+        var localXFeet: Double
+        var localYFeet: Double
+        var headingDegrees: Double?
+        var groupID: UUID?
+        var isPrimary: Bool
+    }
+
     /// Persist a captured photo to disk and append it to the project. Returns the updated project.
     @discardableResult
-    func addPhoto(to project: Project, captured: CapturedPhoto) throws -> Project {
+    func addPhoto(to project: Project, captured: CapturedPhoto, location: PhotoLocation? = nil) throws -> Project {
         var p = project
         let folder = photosFolder(for: p)
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -217,6 +228,17 @@ final class ProjectStore {
         photo.cameraZoom = captured.userZoom
         photo.lensName = captured.lensName
         photo.flashMode = captured.flashMode
+
+        if let loc = location {
+            photo.planPixelX = loc.planPixelX
+            photo.planPixelY = loc.planPixelY
+            photo.localXFeet = loc.localXFeet
+            photo.localYFeet = loc.localYFeet
+            photo.headingDegrees = loc.headingDegrees
+            photo.groupID = loc.groupID
+            photo.isPrimary = loc.isPrimary
+            photo.positionSource = .manual
+        }
 
         p.photos.append(photo)
         return save(p)
