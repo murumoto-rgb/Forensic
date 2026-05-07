@@ -100,7 +100,7 @@ struct ProjectDetailView: View {
                 Label(startStopLabel(project), systemImage: startStopIcon(project))
             }
             .disabled(sessionWorking)
-            .foregroundStyle(project.isActive ? .red : .accentColor)
+            .foregroundStyle(project.isActive ? Color.red : Color.accentColor)
 
             Button {
                 showingCamera = true
@@ -108,7 +108,7 @@ struct ProjectDetailView: View {
                 Label("Take Photo", systemImage: "camera")
             }
             .disabled(!project.isActive)
-            .foregroundStyle(project.isActive ? .accentColor : .secondary)
+            .foregroundStyle(project.isActive ? Color.accentColor : Color.secondary)
 
             if !project.isActive && project.hasBeenStarted {
                 Text("Resume the session to take photos.")
