@@ -8,6 +8,8 @@ struct ProjectDetailView: View {
     @State private var sessionWorking = false
     @State private var addressLookupRunning = false
     @State private var sessionError: String?
+    @State private var showingCamera = false
+    @State private var captureError: String?
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -24,6 +26,15 @@ struct ProjectDetailView: View {
                 }
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
+                .fullScreenCover(isPresented: $showingCamera) {
+                    CameraView(
+                        onCapture: { captured in
+                            handleCapture(captured)
+                            showingCamera = false
+                        },
+                        onCancel: { showingCamera = false }
+                    )
+                }
             } else {
                 ContentUnavailableView(
                     "Project not found",
@@ -31,6 +42,16 @@ struct ProjectDetailView: View {
                     description: Text("This project may have been deleted.")
                 )
             }
+        }
+    }
+
+    private func handleCapture(_ captured: CapturedPhoto) {
+        guard let project = store.project(withID: projectID) else { return }
+        do {
+            try store.addPhoto(to: project, captured: captured)
+            captureError = nil
+        } catch {
+            captureError = "Could not save photo: \(error.localizedDescription)"
         }
     }
 
@@ -82,22 +103,33 @@ struct ProjectDetailView: View {
             .foregroundStyle(project.isActive ? .red : .accentColor)
 
             Button {
-                // TODO: open camera in next push
+                showingCamera = true
             } label: {
                 Label("Take Photo", systemImage: "camera")
             }
-            .disabled(true)
-            .foregroundStyle(.secondary)
+            .disabled(!project.isActive)
+            .foregroundStyle(project.isActive ? .accentColor : .secondary)
+
+            if !project.isActive && project.hasBeenStarted {
+                Text("Resume the session to take photos.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !project.hasBeenStarted {
+                Text("Start the session, then tap Take Photo.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let err = sessionError {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-
-            Text("Camera capture and PDF export ship in upcoming pushes. Start records the project's GPS + address.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            if let err = captureError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -155,13 +187,7 @@ struct ProjectDetailView: View {
                     .font(.callout)
             } else {
                 ForEach(project.photos) { photo in
-                    HStack {
-                        Text("#\(photo.sequenceNumber)")
-                            .font(.headline.monospaced())
-                        Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    PhotoRow(photo: photo, project: project, store: store)
                 }
             }
         }
@@ -181,9 +207,9 @@ struct ProjectDetailView: View {
                 subtitle: "GPS on session start, CLGeocoder reverse-geocode for the address."
             )
             roadmapItem(
-                done: false,
+                done: true,
                 title: "Camera capture (AVFoundation)",
-                subtitle: "0.5x / 1x / 2x / 4x / 8x lens picker, true flash control, full-resolution capture."
+                subtitle: "Lens picker (0.5x/1x/2x/4x/8x), Auto/On/Off flash, full-resolution save."
             )
             roadmapItem(
                 done: false,
@@ -234,6 +260,72 @@ struct ProjectDetailView: View {
 
     private func startStopIcon(_ project: Project) -> String {
         project.isActive ? "stop.fill" : "play.fill"
+    }
+}
+
+private struct PhotoRow: View {
+    let photo: Photo
+    let project: Project
+    let store: ProjectStore
+
+    var body: some View {
+        HStack(spacing: 12) {
+            thumbnail
+                .frame(width: 64, height: 48)
+                .clipped()
+                .background(Color.secondary.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("#\(photo.sequenceNumber)")
+                        .font(.headline.monospaced())
+                    if photo.positionSource == .none {
+                        Text("NO LOC")
+                            .font(.caption2.bold().monospaced())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.2), in: Capsule())
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(metaLine)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let url = store.thumbnailURL(for: photo, in: project),
+           let data = try? Data(contentsOf: url),
+           let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var metaLine: String {
+        var parts: [String] = []
+        if let lens = photo.lensName { parts.append(lens.uppercased()) }
+        parts.append(zoomLabel(photo.cameraZoom))
+        parts.append("flash \(photo.flashMode.rawValue)")
+        return parts.joined(separator: " · ")
+    }
+
+    private func zoomLabel(_ z: Double) -> String {
+        if z == floor(z) { return "\(Int(z))x" }
+        return String(format: "%.1fx", z)
     }
 }
 

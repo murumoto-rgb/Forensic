@@ -1,5 +1,7 @@
 import Foundation
+import ImageIO
 import Observation
+import UniformTypeIdentifiers
 
 @Observable
 final class ProjectStore {
@@ -133,5 +135,64 @@ final class ProjectStore {
         var p = project
         p.projectAddress = address
         return save(p)
+    }
+
+    // MARK: - Photos
+
+    /// Persist a captured photo to disk and append it to the project. Returns the updated project.
+    @discardableResult
+    func addPhoto(to project: Project, captured: CapturedPhoto) throws -> Project {
+        var p = project
+        let folder = photosFolder(for: p)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let photoID = UUID()
+        let imageName = "photo_\(photoID.uuidString).jpg"
+        let imageURL = folder.appending(path: imageName)
+        try captured.data.write(to: imageURL, options: .atomic)
+
+        var thumbName: String?
+        if let thumb = Self.makeThumbnail(from: captured.data, maxPixelSize: 256) {
+            let n = "thumb_\(photoID.uuidString).jpg"
+            let url = folder.appending(path: n)
+            try? thumb.write(to: url, options: .atomic)
+            thumbName = n
+        }
+
+        var photo = Photo(id: photoID,
+                          sequenceNumber: p.photos.count + 1,
+                          imageFilename: imageName)
+        photo.thumbnailFilename = thumbName
+        photo.cameraZoom = captured.userZoom
+        photo.lensName = captured.lensName
+        photo.flashMode = captured.flashMode
+
+        p.photos.append(photo)
+        return save(p)
+    }
+
+    func imageURL(for photo: Photo, in project: Project) -> URL {
+        photosFolder(for: project).appending(path: photo.imageFilename)
+    }
+
+    func thumbnailURL(for photo: Photo, in project: Project) -> URL? {
+        guard let name = photo.thumbnailFilename else { return nil }
+        return photosFolder(for: project).appending(path: name)
+    }
+
+    private static func makeThumbnail(from imageData: Data, maxPixelSize: CGFloat) -> Data? {
+        guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else { return nil }
+        let mut = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(mut, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        let writeOpts: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.8]
+        CGImageDestinationAddImage(dest, cg, writeOpts as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return mut as Data
     }
 }
