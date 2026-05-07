@@ -217,6 +217,8 @@ private struct ReplaceCanvas: View {
     @Binding var origin: CGPoint?
     let canSetOrigin: Bool
 
+    @State private var dragLocation: CGPoint?
+
     var body: some View {
         GeometryReader { geo in
             let imgSize = image.size
@@ -252,27 +254,43 @@ private struct ReplaceCanvas: View {
                 if let o = origin {
                     originMarker(at: CGPoint(x: originX + o.x * scale, y: originY + o.y * scale))
                 }
+
+                if let drag = dragLocation {
+                    LoupeOverlay(
+                        image: image,
+                        finger: drag,
+                        imageOriginX: originX,
+                        imageOriginY: originY,
+                        fitScale: scale,
+                        canvasSize: geo.size
+                    )
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .contentShape(Rectangle())
-            .onTapGesture(coordinateSpace: .local) { tap in
-                let inImage = CGPoint(
-                    x: (tap.x - originX) / scale,
-                    y: (tap.y - originY) / scale
-                )
-                guard inImage.x >= 0, inImage.x <= imgSize.width,
-                      inImage.y >= 0, inImage.y <= imgSize.height else { return }
-                if canSetOrigin {
-                    origin = inImage
-                } else if pointA == nil {
-                    pointA = inImage
-                } else if pointB == nil {
-                    pointB = inImage
-                } else {
-                    pointA = inImage
-                    pointB = nil
-                }
-            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in dragLocation = value.location }
+                    .onEnded { value in
+                        defer { dragLocation = nil }
+                        let inImage = CGPoint(
+                            x: (value.location.x - originX) / scale,
+                            y: (value.location.y - originY) / scale
+                        )
+                        guard inImage.x >= 0, inImage.x <= imgSize.width,
+                              inImage.y >= 0, inImage.y <= imgSize.height else { return }
+                        if canSetOrigin {
+                            origin = inImage
+                        } else if pointA == nil {
+                            pointA = inImage
+                        } else if pointB == nil {
+                            pointB = inImage
+                        } else {
+                            pointA = inImage
+                            pointB = nil
+                        }
+                    }
+            )
         }
     }
 

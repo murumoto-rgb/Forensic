@@ -212,6 +212,8 @@ private struct CalibrationCanvas: View {
     @Binding var pointA: CGPoint?
     @Binding var pointB: CGPoint?
 
+    @State private var dragLocation: CGPoint?
+
     var body: some View {
         GeometryReader { geo in
             let imageSize = image.size
@@ -244,26 +246,44 @@ private struct CalibrationCanvas: View {
                     marker(text: "B", color: .blue,
                            x: originX + b.x * scale, y: originY + b.y * scale)
                 }
+
+                if let drag = dragLocation {
+                    LoupeOverlay(
+                        image: image,
+                        finger: drag,
+                        imageOriginX: originX,
+                        imageOriginY: originY,
+                        fitScale: scale,
+                        canvasSize: geo.size
+                    )
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .contentShape(Rectangle())
-            .onTapGesture(coordinateSpace: .local) { tap in
-                let inImage = CGPoint(
-                    x: (tap.x - originX) / scale,
-                    y: (tap.y - originY) / scale
-                )
-                guard inImage.x >= 0, inImage.x <= imageSize.width,
-                      inImage.y >= 0, inImage.y <= imageSize.height else { return }
-                if pointA == nil {
-                    pointA = inImage
-                } else if pointB == nil {
-                    pointB = inImage
-                } else {
-                    // Both already set — start over with new A.
-                    pointA = inImage
-                    pointB = nil
-                }
-            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        dragLocation = value.location
+                    }
+                    .onEnded { value in
+                        defer { dragLocation = nil }
+                        let inImage = CGPoint(
+                            x: (value.location.x - originX) / scale,
+                            y: (value.location.y - originY) / scale
+                        )
+                        guard inImage.x >= 0, inImage.x <= imageSize.width,
+                              inImage.y >= 0, inImage.y <= imageSize.height else { return }
+                        if pointA == nil {
+                            pointA = inImage
+                        } else if pointB == nil {
+                            pointB = inImage
+                        } else {
+                            // Both already set — start over with new A.
+                            pointA = inImage
+                            pointB = nil
+                        }
+                    }
+            )
         }
     }
 

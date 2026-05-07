@@ -6,38 +6,40 @@ struct PlanViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("sitephoto.bubbleScale") private var bubbleScale: Double = 1.5
-    @State private var selectedPhoto: Photo?
+    @State private var selectedPhotoID: UUID?
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
-    @State private var blinkPhase: Bool = false
-    @State private var blinkTimer: Timer?
+    @State private var pendingRecenterID: UUID?
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
                 planArea
 
-                if let selected = selectedPhoto {
-                    PhotoPreviewBar(photo: selected, projectID: projectID) {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            selectedPhoto = nil
-                        }
-                    }
+                if let selectedID = selectedPhotoID,
+                   let photo = currentPhoto(for: selectedID) {
+                    let group = currentGroup(for: photo)
+                    let idx = group.firstIndex(where: { $0.id == photo.id }) ?? 0
+                    PhotoPreviewBar(
+                        photo: photo,
+                        index: idx,
+                        groupCount: group.count,
+                        projectID: projectID,
+                        onSwipeNext: { advance(in: group, from: idx, by: +1) },
+                        onSwipePrevious: { advance(in: group, from: idx, by: -1) },
+                        onDismiss: { closePreview() }
+                    )
                     .environment(store)
                     .frame(height: previewHeight)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(.easeInOut(duration: 0.2), value: selectedPhoto?.id)
+            .animation(.easeInOut(duration: 0.2), value: selectedPhotoID)
             .navigationTitle("Plan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
-            .onChange(of: selectedPhoto?.id) { _, newID in
-                if newID != nil { startBlink() } else { stopBlink() }
-            }
-            .onDisappear { stopBlink() }
         }
     }
 
@@ -112,8 +114,8 @@ struct PlanViewerView: View {
             stepGapPlan: stepGapView / fit
         )
 
-        // Arrow length in plan-pixel space scales with bubble scale and inverse fit.
         let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
+        let arrowLengthView = arrowLengthPlan * fit
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -121,50 +123,43 @@ struct PlanViewerView: View {
                 .frame(width: dispW, height: dispH)
                 .offset(x: originX, y: originY)
 
-            // Direction arrows under bubbles.
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
                 let bearing = marker.bearing ?? 0
                 let centerX = originX + marker.x * fit
                 let centerY = originY + marker.y * fit
-                let lengthView = arrowLengthPlan * fit
-                ArrowShape(bearingDegrees: bearing - plan.northDeg, length: lengthView)
+                ArrowShape(bearingDegrees: bearing - plan.northDeg, length: arrowLengthView)
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
                 ArrowHead(bearingDegrees: bearing - plan.northDeg,
-                          length: lengthView,
+                          length: arrowLengthView,
                           baseRadius: 14 * bubbleScale)
                     .fill(Color.green)
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
             }
 
-            ForEach(markers) { marker in
-                let radius = marker.isPrimary ? primaryRview : secRview
-                let isSelected = marker.photo.id == selectedPhoto?.id
-                let blinking = isSelected && blinkPhase
-                BubbleMark(
-                    marker: marker,
-                    radius: radius,
-                    blinking: blinking
-                )
-                .position(
-                    x: originX + marker.x * fit,
-                    y: originY + marker.y * fit
-                )
-                .contentShape(Circle().inset(by: -8))
-                .onTapGesture {
-                    handleBubbleTap(marker, geo: geo, originX: originX, originY: originY, fit: fit)
-                }
+            // Tail bubbles first (under), then leads on top so a tap on a stack hits the lead.
+            ForEach(markers.filter { !$0.isPrimary }) { marker in
+                bubble(for: marker, radius: secRview)
+                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .contentShape(Circle().inset(by: -8))
+                    .onTapGesture {
+                        select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
+                    }
+            }
+            ForEach(markers.filter { $0.isPrimary }) { marker in
+                bubble(for: marker, radius: primaryRview)
+                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .contentShape(Circle().inset(by: -8))
+                    .onTapGesture {
+                        select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
+                    }
             }
 
-            // North indicator (top-right, fixed in screen space — note this rotates with the
-            // canvas because of scaleEffect; that's intentional, it reads as a compass on the plan).
-            if let plan = project.floorPlan {
-                NorthIndicator(northDeg: plan.northDeg)
-                    .frame(width: 40, height: 40)
-                    .position(x: geo.size.width - 32, y: 32)
-            }
+            NorthIndicator(northDeg: plan.northDeg)
+                .frame(width: 40, height: 40)
+                .position(x: geo.size.width - 32, y: 32)
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         .scaleEffect(scale, anchor: .center)
@@ -184,32 +179,68 @@ struct PlanViewerView: View {
                     .onEnded { _ in lastOffset = offset }
             )
         )
+        .onChange(of: pendingRecenterID) { _, newID in
+            guard let id = newID,
+                  let marker = markers.first(where: { $0.photo.id == id }) else { return }
+            recenter(on: marker, geo: geo, originX: originX, originY: originY, fit: fit)
+            pendingRecenterID = nil
+        }
     }
 
-    private func handleBubbleTap(_ marker: PlanMarker,
-                                 geo: GeometryProxy,
-                                 originX: CGFloat,
-                                 originY: CGFloat,
-                                 fit: CGFloat) {
-        // Bubble's local position before the scaleEffect / offset.
+    @ViewBuilder
+    private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
+        let isSelected = marker.photo.id == selectedPhotoID
+        let fill: Color = isSelected ? Color(red: 0.92, green: 0.27, blue: 0.20) : .green
+        ZStack {
+            Circle()
+                .fill(fill)
+                .frame(width: radius * 2, height: radius * 2)
+            Text("\(marker.photo.sequenceNumber)")
+                .font(.system(size: radius * 1.1, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.4)
+                .lineLimit(1)
+                .frame(width: radius * 1.6, height: radius * 1.6)
+        }
+    }
+
+    // MARK: - Selection / centering
+
+    private func select(photo: Photo, geo: GeometryProxy, originX: CGFloat, originY: CGFloat, fit: CGFloat) {
+        // Always pick the LEAD of the group when the user taps on the cluster
+        // (the tap may land on a tail since the tap bubbles overlap visually).
+        let target = leadOfGroup(containing: photo) ?? photo
+
+        // Compute marker position for the target — the lead always sits at its
+        // own planPixel coords, no offset.
+        let targetMarker = PlanMarker(
+            id: target.id,
+            photo: target,
+            x: target.planPixelX ?? 0,
+            y: target.planPixelY ?? 0,
+            isPrimary: true,
+            bearing: target.headingDegrees
+        )
+
+        recenter(on: targetMarker, geo: geo, originX: originX, originY: originY, fit: fit)
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectedPhotoID = target.id
+        }
+    }
+
+    private func recenter(on marker: PlanMarker, geo: GeometryProxy, originX: CGFloat, originY: CGFloat, fit: CGFloat) {
         let lx = originX + marker.x * fit
         let ly = originY + marker.y * fit
         let geoCx = geo.size.width / 2
         let geoCy = geo.size.height / 2
-        // Target screen position: centred horizontally, in the upper quarter of the
-        // visible plan area (above where the preview will land).
         let targetX = geo.size.width / 2
         let targetY = max(80, (geo.size.height - previewHeight) / 4)
-
-        // For scaleEffect(s, anchor: .center) followed by offset:
-        //   screen = (local - geoCenter) * s + geoCenter + offset
-        let newOffsetX = targetX - geoCx - (lx - geoCx) * scale
-        let newOffsetY = targetY - geoCy - (ly - geoCy) * scale
+        let newX = targetX - geoCx - (lx - geoCx) * scale
+        let newY = targetY - geoCy - (ly - geoCy) * scale
 
         withAnimation(.easeInOut(duration: 0.4)) {
-            offset = CGSize(width: newOffsetX, height: newOffsetY)
+            offset = CGSize(width: newX, height: newY)
             lastOffset = offset
-            selectedPhoto = marker.photo
         }
     }
 
@@ -222,24 +253,41 @@ struct PlanViewerView: View {
         }
     }
 
-    // MARK: - Blink
-
-    private func startBlink() {
-        blinkTimer?.invalidate()
-        blinkPhase = false
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { _ in
-            Task { @MainActor in
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    blinkPhase.toggle()
-                }
-            }
+    private func closePreview() {
+        withAnimation(.easeOut(duration: 0.18)) {
+            selectedPhotoID = nil
         }
     }
 
-    private func stopBlink() {
-        blinkTimer?.invalidate()
-        blinkTimer = nil
-        blinkPhase = false
+    private func advance(in group: [Photo], from idx: Int, by delta: Int) {
+        guard !group.isEmpty else { return }
+        let count = group.count
+        let next = ((idx + delta) % count + count) % count
+        let nextPhoto = group[next]
+        selectedPhotoID = nextPhoto.id
+        pendingRecenterID = nextPhoto.id
+    }
+
+    // MARK: - Project lookups
+
+    private func currentPhoto(for id: UUID) -> Photo? {
+        store.project(withID: projectID)?.photos.first(where: { $0.id == id })
+    }
+
+    /// All photos in `photo`'s group, sorted by sequence number. If ungrouped, returns [photo].
+    private func currentGroup(for photo: Photo) -> [Photo] {
+        guard let project = store.project(withID: projectID) else { return [photo] }
+        if let gid = photo.groupID {
+            return project.photos
+                .filter { $0.groupID == gid }
+                .sorted { $0.sequenceNumber < $1.sequenceNumber }
+        }
+        return [photo]
+    }
+
+    private func leadOfGroup(containing photo: Photo) -> Photo? {
+        let group = currentGroup(for: photo)
+        return group.first(where: { $0.isPrimary }) ?? group.first
     }
 
     // MARK: - Marker layout
@@ -271,7 +319,6 @@ struct PlanViewerView: View {
                 bearing: bearing
             ))
 
-            // Trail in opposite direction of arrow (south if no heading).
             let layoutBearing = (bearing ?? 0) - (project.floorPlan?.northDeg ?? 0)
             let oppRad = (layoutBearing + 90) * .pi / 180
             let dx = cos(oppRad)
@@ -303,31 +350,6 @@ struct PlanMarker: Identifiable {
     let y: Double
     let isPrimary: Bool
     let bearing: Double?
-}
-
-private struct BubbleMark: View {
-    let marker: PlanMarker
-    let radius: CGFloat
-    let blinking: Bool
-
-    var body: some View {
-        let diameter = radius * 2
-        let fillColor: Color = blinking ? .yellow : .green
-        ZStack {
-            Circle()
-                .fill(fillColor)
-                .frame(width: diameter, height: diameter)
-            Circle()
-                .stroke(.white, lineWidth: max(2, radius * 0.12))
-                .frame(width: diameter, height: diameter)
-            Text("\(marker.photo.sequenceNumber)")
-                .font(.system(size: radius * 1.1, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .minimumScaleFactor(0.4)
-                .lineLimit(1)
-                .frame(width: radius * 1.6, height: radius * 1.6)
-        }
-    }
 }
 
 private struct ArrowShape: Shape {
@@ -396,11 +418,15 @@ private struct NorthIndicator: View {
     }
 }
 
-// MARK: - Preview bar
+// MARK: - Preview bar with swipe-through-group
 
 private struct PhotoPreviewBar: View {
     let photo: Photo
+    let index: Int
+    let groupCount: Int
     let projectID: UUID
+    let onSwipeNext: () -> Void
+    let onSwipePrevious: () -> Void
     let onDismiss: () -> Void
 
     @Environment(ProjectStore.self) private var store
@@ -416,25 +442,44 @@ private struct PhotoPreviewBar: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .id(photo.id)
+                        .transition(.asymmetric(insertion: .opacity, removal: .opacity))
                 } else {
                     ContentUnavailableView("Photo missing", systemImage: "photo.badge.exclamationmark")
                         .foregroundStyle(.white)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("#\(photo.sequenceNumber)")
-                    .font(.headline.monospaced())
-                    .foregroundStyle(.white)
-                Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.7))
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("#\(photo.sequenceNumber)")
+                        .font(.headline.monospaced())
+                        .foregroundStyle(.white)
+                    if groupCount > 1 {
+                        Text("\(index + 1) of \(groupCount)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .padding(8)
+                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                Spacer()
             }
-            .padding(8)
-            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
             .padding(.leading, 12)
             .padding(.top, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if groupCount > 1 {
+                HStack {
+                    chevron(systemName: "chevron.left", action: onSwipePrevious)
+                    Spacer()
+                    chevron(systemName: "chevron.right", action: onSwipeNext)
+                }
+                .padding(.horizontal, 4)
+                .frame(maxHeight: .infinity)
+            }
 
             Button {
                 onDismiss()
@@ -446,6 +491,32 @@ private struct PhotoPreviewBar: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { onDismiss() }
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    if abs(value.translation.height) > abs(value.translation.width) {
+                        if value.translation.height > 60 {
+                            onDismiss()
+                        }
+                        return
+                    }
+                    if value.translation.width < -40 {
+                        onSwipeNext()
+                    } else if value.translation.width > 40 {
+                        onSwipePrevious()
+                    }
+                }
+        )
+    }
+
+    @ViewBuilder
+    private func chevron(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(10)
+                .background(.black.opacity(0.45), in: Circle())
+        }
     }
 }

@@ -35,7 +35,7 @@ targets:
         NSPhotoLibraryAddUsageDescription: "SitePhoto can save exported PDFs and photos to your Photos library."
     settings:
       base:
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1"
         PRODUCT_BUNDLE_IDENTIFIER: com.murumoto.sitephoto
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
