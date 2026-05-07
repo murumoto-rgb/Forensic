@@ -14,6 +14,7 @@ struct ProjectDetailView: View {
     @State private var confirmingPlanRemoval = false
     @State private var pendingPhotos: [CapturedPhoto] = []
     @State private var showingLocate = false
+    @State private var showingPlanViewer = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -50,6 +51,10 @@ struct ProjectDetailView: View {
                         pendingPhotos: $pendingPhotos
                     )
                     .environment(store)
+                }
+                .fullScreenCover(isPresented: $showingPlanViewer) {
+                    PlanViewerView(projectID: projectID)
+                        .environment(store)
                 }
                 .confirmationDialog(
                     "Remove the floor plan?",
@@ -237,6 +242,12 @@ struct ProjectDetailView: View {
                 }
 
                 Button {
+                    showingPlanViewer = true
+                } label: {
+                    Label("View Plan", systemImage: "rectangle.expand.vertical")
+                }
+
+                Button {
                     showingFloorPlanSetup = true
                 } label: {
                     Label("Re-calibrate", systemImage: "ruler")
@@ -319,14 +330,14 @@ struct ProjectDetailView: View {
                 subtitle: "Tap-to-place pin, drag for direction, batch capture into a single shared location."
             )
             roadmapItem(
-                done: false,
+                done: true,
                 title: "Plan viewer with photo bubbles",
-                subtitle: "View Plan opens the calibrated plan with bubbles. Group bubbles trail the lead."
+                subtitle: "View Plan opens the calibrated plan with bubbles. Group bubbles trail the lead. Pinch to zoom."
             )
             roadmapItem(
                 done: false,
                 title: "PDF export",
-                subtitle: "Map page, plan page with bubbles, contact sheet."
+                subtitle: "Map page, plan with bubbles, contact sheet."
             )
             roadmapItem(
                 done: false,
