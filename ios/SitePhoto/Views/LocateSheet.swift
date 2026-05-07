@@ -28,8 +28,7 @@ struct LocateSheet: View {
                         image: img,
                         planPoint: $planPoint,
                         heading: $heading,
-                        step: $step,
-                        northDeg: store.project(withID: projectID)?.floorPlan?.northDeg ?? 0
+                        step: $step
                     )
                     .background(.black)
                     .frame(maxHeight: .infinity)
@@ -237,7 +236,6 @@ private struct PlanLocateCanvas: View {
     @Binding var planPoint: CGPoint?
     @Binding var heading: Double?
     @Binding var step: LocateStep
-    let northDeg: Double
 
     var body: some View {
         GeometryReader { geo in
@@ -262,7 +260,7 @@ private struct PlanLocateCanvas: View {
                     )
 
                     if let h = heading {
-                        directionArrow(at: pinView, planFrameDegrees: h + northDeg)
+                        directionArrow(at: pinView, headingDegrees: h)
                     }
 
                     pinMarker(at: pinView)
@@ -293,13 +291,11 @@ private struct PlanLocateCanvas: View {
                         let dy = inImage.y - pp.y
                         guard dx * dx + dy * dy > 25 else { return }
                         let angRad = atan2(dy, dx)
-                        // Plan-frame angle (CW from page-up).
-                        let planFrameDeg = angRad * 180 / .pi + 90
-                        // Convert to world bearing (CW from true north). The plan's
-                        // north is rotated `northDeg` CW from page-up, so subtract
-                        // to get back to the world frame.
-                        let world = (planFrameDeg - northDeg).truncatingRemainder(dividingBy: 360)
-                        heading = world < 0 ? world + 360 : world
+                        // Plan-frame angle (CW from page-up). Storing in plan-frame
+                        // means changes to the floor plan's northDeg never rotate
+                        // existing photo arrows - the drag direction is preserved.
+                        let h = (angRad * 180 / .pi + 90).truncatingRemainder(dividingBy: 360)
+                        heading = h < 0 ? h + 360 : h
                     }
             )
         }
@@ -315,8 +311,8 @@ private struct PlanLocateCanvas: View {
     }
 
     @ViewBuilder
-    private func directionArrow(at pin: CGPoint, planFrameDegrees: Double) -> some View {
-        let angRad = (planFrameDegrees - 90) * .pi / 180
+    private func directionArrow(at pin: CGPoint, headingDegrees: Double) -> some View {
+        let angRad = (headingDegrees - 90) * .pi / 180
         let length: CGFloat = 64
         let tip = CGPoint(
             x: pin.x + cos(angRad) * length,

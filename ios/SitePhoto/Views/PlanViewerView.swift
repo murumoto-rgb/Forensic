@@ -125,10 +125,10 @@ struct PlanViewerView: View {
                 .offset(x: originX, y: originY)
 
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
-                let worldBearing = marker.bearing ?? 0
-                // Heading is stored as world compass bearing. Convert back to
-                // plan-frame angle (CW from page-up) for drawing on the image.
-                let planFrame = worldBearing + plan.northDeg
+                // Heading is stored in plan-frame (CW from page-up at the time of
+                // capture). Changing the plan's northDeg afterwards must NOT
+                // rotate existing arrows, so draw with the heading as-is.
+                let planFrame = marker.bearing ?? 0
                 let centerX = originX + marker.x * fit
                 let centerY = originY + marker.y * fit
                 ArrowShape(bearingDegrees: planFrame, length: arrowLengthView)
@@ -349,9 +349,10 @@ struct PlanViewerView: View {
                 bearing: bearing
             ))
 
-            // Heading is world bearing → plan-frame = bearing + northDeg.
-            // Tail trails opposite the arrow.
-            let planFrameBearing = (bearing ?? 0) + (project.floorPlan?.northDeg ?? 0)
+            // Heading is plan-frame (independent of northDeg). Tail trails
+            // opposite the arrow direction so it stays consistent regardless
+            // of how north is set later.
+            let planFrameBearing = bearing ?? 0
             let oppRad = (planFrameBearing + 90) * .pi / 180
             let dx = cos(oppRad)
             let dy = sin(oppRad)
