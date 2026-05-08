@@ -7,9 +7,8 @@ struct ProjectDetailView: View {
     @Environment(LocationService.self) private var location
     let projectID: UUID
 
-    @State private var sessionWorking = false
     @State private var addressLookupRunning = false
-    @State private var sessionError: String?
+    @State private var locationError: String?
     @State private var showingCamera = false
     @State private var captureError: String?
     @State private var showingFloorPlanSetup = false
@@ -157,6 +156,9 @@ struct ProjectDetailView: View {
                 )
             }
         }
+        .task(id: projectID) {
+            await captureLocationIfNeeded()
+        }
     }
 
     private func deletePhoto(_ photo: Photo) {
@@ -183,7 +185,7 @@ struct ProjectDetailView: View {
         }
 
         guard let result = await location.forwardGeocode(trimmed) else {
-            sessionError = "Couldn't resolve that address. Try a more complete street address."
+            locationError = "Couldn't resolve that address. Try a more complete street address."
             return
         }
         guard var current = store.project(withID: projectID) else { return }
@@ -196,7 +198,7 @@ struct ProjectDetailView: View {
         )
         current = store.updateGPS(current, newGPS)
         _ = store.updateAddress(current, result.address)
-        sessionError = nil
+        locationError = nil
     }
 
     private func handleCapture(_ captured: CapturedPhoto) {
@@ -221,12 +223,6 @@ struct ProjectDetailView: View {
     private func metadataSection(_ project: Project) -> some View {
         Section("Project Information") {
             LabeledContent("Created", value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
-
-            HStack {
-                Text("Status")
-                Spacer()
-                statusText(project)
-            }
 
             if let gps = project.projectGPS {
                 LabeledContent("Coordinates") {
@@ -277,22 +273,12 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func actionsSection(_ project: Project) -> some View {
-        Section("Session") {
-            Button {
-                Task { await toggleStartStop() }
-            } label: {
-                Label(startStopLabel(project), systemImage: startStopIcon(project))
-            }
-            .disabled(sessionWorking)
-            .foregroundStyle(project.isActive ? Color.red : Color.accentColor)
-
+        Section("Photo Documentation") {
             Button {
                 showingCamera = true
             } label: {
                 Label("Take Photo", systemImage: "camera")
             }
-            .disabled(!project.isActive)
-            .foregroundStyle(project.isActive ? Color.accentColor : Color.secondary)
 
             PhotosPicker(
                 selection: $photoPickerItems,
@@ -315,23 +301,13 @@ struct ProjectDetailView: View {
             }
             .disabled(importing)
 
-            if !project.isActive && project.hasBeenStarted {
-                Text("Resume the session to take photos.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if !project.hasBeenStarted {
-                Text("Start the session, then tap Take Photo.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             if let status = importStatus {
                 HStack(spacing: 6) {
                     if importing { ProgressView().controlSize(.small) }
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let err = sessionError {
+            if let err = locationError {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -397,25 +373,20 @@ struct ProjectDetailView: View {
         importStatus = added > 0 ? "Imported \(added) photo\(added == 1 ? "" : "s")." : nil
     }
 
-    private func toggleStartStop() async {
-        guard var current = store.project(withID: projectID) else { return }
-        sessionWorking = true
-        sessionError = nil
-        defer { sessionWorking = false }
-
-        if current.isActive {
-            store.stopSession(current)
-            return
-        }
-
-        let isFirstStart = current.startedAt == nil
-        current = store.startSession(current)
-
-        guard isFirstStart, current.projectGPS == nil else { return }
+    /// One-shot: when a project is opened that doesn't yet have a GPS fix,
+    /// request the device's current location, store it, and reverse-geocode
+    /// the address. Replaces what the old "Start Session" button used to do.
+    /// Failure paths are non-fatal — the user can still set the address by
+    /// hand from the Address row.
+    @MainActor
+    private func captureLocationIfNeeded() async {
+        guard var current = store.project(withID: projectID),
+              current.projectGPS == nil else { return }
+        locationError = nil
 
         let auth = await location.requestPermission()
         guard auth == .authorizedAlways || auth == .authorizedWhenInUse else {
-            sessionError = "Location permission denied. Open Settings → SitePhoto → Location to allow."
+            locationError = "Location permission denied. Open Settings → SitePhoto → Location to allow, or enter the address manually."
             return
         }
 
@@ -436,9 +407,9 @@ struct ProjectDetailView: View {
             }
             addressLookupRunning = false
         } catch LocationError.denied {
-            sessionError = "Location permission denied."
+            locationError = "Location permission denied."
         } catch {
-            sessionError = "Could not get GPS: \(error.localizedDescription)"
+            locationError = "Could not get GPS: \(error.localizedDescription)"
         }
     }
 
@@ -566,21 +537,6 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func statusText(_ project: Project) -> Text {
-        if project.isActive { return Text("Recording").foregroundStyle(.red) }
-        if project.hasBeenStarted { return Text("Paused").foregroundStyle(.orange) }
-        return Text("Not started").foregroundStyle(.secondary)
-    }
-
-    private func startStopLabel(_ project: Project) -> String {
-        if project.isActive { return "Stop" }
-        if project.hasBeenStarted { return "Resume" }
-        return "Start"
-    }
-
-    private func startStopIcon(_ project: Project) -> String {
-        project.isActive ? "stop.fill" : "play.fill"
-    }
 }
 
 private struct PhotoRow: View {

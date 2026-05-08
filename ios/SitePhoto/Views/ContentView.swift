@@ -156,16 +156,9 @@ private struct ProjectRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(project.name)
-                        .font(.headline)
-                        .lineLimit(2)
-                    if project.isActive {
-                        StatusBadge(text: "REC", style: .recording)
-                    } else if project.hasBeenStarted {
-                        StatusBadge(text: "PAUSED", style: .paused)
-                    }
-                }
+                Text(project.name)
+                    .font(.headline)
+                    .lineLimit(2)
                 Text("\(project.photos.count) photo\(project.photos.count == 1 ? "" : "s") · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -183,36 +176,6 @@ private struct ProjectRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
-    }
-}
-
-private struct StatusBadge: View {
-    enum Style { case recording, paused }
-    let text: String
-    let style: Style
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.bold().monospaced())
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(background)
-            .foregroundStyle(foreground)
-            .clipShape(Capsule())
-    }
-
-    private var background: Color {
-        switch style {
-        case .recording: return .red
-        case .paused: return Color.orange.opacity(0.2)
-        }
-    }
-
-    private var foreground: Color {
-        switch style {
-        case .recording: return .white
-        case .paused: return .orange
-        }
     }
 }
 

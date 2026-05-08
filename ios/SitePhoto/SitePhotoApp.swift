@@ -39,10 +39,14 @@ struct SitePhotoApp: App {
                         .environment(store)
                         .environment(location)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            // Reserve room for the footer logo only on the
-                            // projects list — collapse to 0 on detail pages
-                            // so they get the full screen.
-                            Color.clear.frame(height: atRoot ? 56 : 0)
+                            // White footer strip on the projects list (also
+                            // covers the home-indicator area). Collapses to 0
+                            // on detail pages so they get the full screen.
+                            // Hard-coded to white — not theme-dependent — so
+                            // the logo's white background blends seamlessly
+                            // even in dark mode.
+                            Color.white
+                                .frame(height: atRoot ? 56 : 0)
                         }
                         .opacity(contentVisible ? 1 : 0)
                         .allowsHitTesting(contentVisible)
