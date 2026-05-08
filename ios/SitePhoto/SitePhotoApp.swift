@@ -22,9 +22,11 @@ struct SitePhotoApp: App {
     private let splashLogoWidth: CGFloat = 280
     private let footerLogoWidth: CGFloat = 110
 
-    /// Whether the logo should be visible at the bottom right now.
-    /// True during the splash (`!logoMoved`) and on the projects list
-    /// (`atRoot`); false on detail / nested screens.
+    /// Visible height of the white footer band ABOVE the home-indicator
+    /// safe area. The band actually extends further down through the safe
+    /// area so the home indicator sits on white too.
+    private let footerVisibleHeight: CGFloat = 64
+
     private var logoOnscreen: Bool {
         !logoMoved || atRoot
     }
@@ -39,17 +41,27 @@ struct SitePhotoApp: App {
                         .environment(store)
                         .environment(location)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            // White footer strip on the projects list (also
-                            // covers the home-indicator area). Collapses to 0
-                            // on detail pages so they get the full screen.
-                            // Hard-coded to white — not theme-dependent — so
-                            // the logo's white background blends seamlessly
-                            // even in dark mode.
-                            Color.white
-                                .frame(height: atRoot ? 56 : 0)
+                            // Reserve space so list content doesn't slide
+                            // under the white footer band. Detail pages
+                            // collapse this to 0 for full-screen content.
+                            Color.clear
+                                .frame(height: atRoot ? footerVisibleHeight : 0)
                         }
                         .opacity(contentVisible ? 1 : 0)
                         .allowsHitTesting(contentVisible)
+
+                    // White footer band — separate ZStack layer so it can
+                    // extend through the home-indicator safe area via
+                    // .ignoresSafeArea(.bottom). The safeAreaInset above
+                    // only reserves layout space; this layer paints it.
+                    VStack(spacing: 0) {
+                        Spacer()
+                        Color.white
+                            .frame(height: footerVisibleHeight + geo.safeAreaInsets.bottom)
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+                    .opacity((logoMoved && atRoot) ? 1 : 0)
+                    .allowsHitTesting(false)
 
                     Image("BaykalLogo")
                         .resizable()
@@ -61,7 +73,9 @@ struct SitePhotoApp: App {
                         .position(
                             x: geo.size.width / 2,
                             y: logoMoved
-                                ? geo.size.height - geo.safeAreaInsets.bottom - 28
+                                // Center the logo within the visible
+                                // (above home-indicator) part of the band.
+                                ? geo.size.height - geo.safeAreaInsets.bottom - footerVisibleHeight / 2
                                 : geo.size.height / 2
                         )
                         .accessibilityLabel("Baykal Consulting")
