@@ -189,6 +189,7 @@ struct PlanViewerView: View {
         let secRplan     = Double(secRview     / fit)
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
+            sortKey: { $0.photo.sequenceNumber },
             groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
@@ -198,7 +199,10 @@ struct PlanViewerView: View {
                            isPrimary: m.isPrimary, bearing: m.bearing)
             },
             collisionRadius: primaryRplan * 2.0,
-            minSpacing: primaryRplan * 0.55
+            // Bumped from 0.55 → 1.0 so neighbouring bubbles have a full
+            // bubble-radius of breathing room — fewer arrows end up
+            // shortened by the per-arrow obstacle pass below.
+            minSpacing: primaryRplan * 1.0
         )
         let markers = fanResult.adjusted
         // MARK: end cluster-fanning
@@ -478,7 +482,11 @@ struct PlanViewerView: View {
         }
 
         var out: [PlanMarker] = []
-        for (_, members) in groups {
+        // Iterate by sorted key so the resulting markers array has a
+        // deterministic order across renders — important for the cluster
+        // fanning pass which is sensitive to consistent grouping.
+        for key in groups.keys.sorted() {
+            let members = groups[key]!
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let primary = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
             let px = primary.planPixelX ?? 0

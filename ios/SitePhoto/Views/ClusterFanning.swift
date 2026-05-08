@@ -37,13 +37,19 @@ enum ClusterFanning {
 
     /// Fan clusters of overlapping primaries around their centroid.
     ///
+    /// - `sortKey`: a stable, render-independent key (e.g. photo sequence
+    ///   number) used to lay out fan members in a consistent order.
+    ///   Sorting by input-array index is unstable because `buildMarkers`
+    ///   iterates a Dictionary; switching to a property-based key makes
+    ///   the layout deterministic across re-renders (zoom, pan, etc).
     /// - `collisionRadius`: plan-pixel distance below which two primaries
     ///   are considered to overlap (typically `2 × primaryRadius`).
     /// - `minSpacing`: minimum edge-to-edge gap between fanned bubbles.
     ///   The fan radius scales with cluster size so this gap is preserved
     ///   even for 4+ bubble clusters.
-    static func apply<M>(
+    static func apply<M, K: Comparable>(
         markers: [M],
+        sortKey: (M) -> K,
         groupKey: (M) -> String,
         position: (M) -> CGPoint,
         isPrimary: (M) -> Bool,
@@ -96,7 +102,12 @@ enum ClusterFanning {
         var leaderLines  = [LeaderLine]()
 
         for (_, members) in clusters where members.count > 1 {
-            let sorted = members.sorted()
+            // Sort by a stable photo-property key, NOT by input array index.
+            // Index-based sort permutes between renders because the upstream
+            // markers array can come out in different orders.
+            let sorted = members.sorted {
+                sortKey(markers[$0]) < sortKey(markers[$1])
+            }
             let n      = Double(sorted.count)
 
             // Adaptive fan radius: keep `minSpacing` between adjacent
