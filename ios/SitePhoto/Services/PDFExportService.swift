@@ -274,7 +274,9 @@ struct PDFExportService {
 
         struct M { var photo: Photo; var x, y: Double; var isPrimary: Bool; var bearing: Double? }
         var markers: [M] = []
-        for (_, members) in groups {
+        // Iterate in stable key order — same defence-in-depth as PlanViewerView.
+        for key in groups.keys.sorted() {
+            let members = groups[key]!
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let lead = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
             markers.append(M(photo: lead, x: lead.planPixelX!, y: lead.planPixelY!,
@@ -289,6 +291,55 @@ struct PDFExportService {
             }
         }
 
+        // MARK: cluster-fanning (matches PlanViewerView)
+        let primaryRplan    = Double(primaryR    / scale)
+        let secRplan        = Double(secR        / scale)
+        let arrowLengthPlan = Double(arrowLength / scale)
+        let fanResult = ClusterFanning.apply(
+            markers: markers,
+            sortKey: { $0.photo.sequenceNumber },
+            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            setPosition: { m, p in
+                M(photo: m.photo, x: p.x, y: p.y,
+                  isPrimary: m.isPrimary, bearing: m.bearing)
+            },
+            collisionRadius: primaryRplan * 2.0,
+            minSpacing: primaryRplan * 1.0
+        )
+        markers = fanResult.adjusted
+
+        let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
+            markers: markers,
+            id: { $0.photo.id },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            bearingDegrees: { $0.bearing },
+            primaryRadius: primaryRplan,
+            secondaryRadius: secRplan,
+            defaultArrowLength: arrowLengthPlan
+        )
+        // MARK: end cluster-fanning
+
+        // MARK: cluster-fanning leader lines
+        ctx.saveGState()
+        ctx.setStrokeColor(UIColor(white: 1, alpha: 0.55).cgColor)
+        ctx.setLineWidth(0.8)
+        ctx.setLineDash(phase: 0, lengths: [3, 2])
+        for line in fanResult.leaderLines {
+            ctx.beginPath()
+            ctx.move(to: CGPoint(
+                x: originX + CGFloat(line.from.x) * scale,
+                y: originY + CGFloat(line.from.y) * scale))
+            ctx.addLine(to: CGPoint(
+                x: originX + CGFloat(line.to.x) * scale,
+                y: originY + CGFloat(line.to.y) * scale))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
+        // MARK: end cluster-fanning leader lines
+
         // SwiftUI Color.green maps to UIColor.systemGreen (#34C759 in light mode).
         let green = UIColor(red: 52.0/255, green: 199.0/255, blue: 89.0/255, alpha: 1).cgColor
 
@@ -300,10 +351,14 @@ struct PDFExportService {
                         strokeWidth: strokeWidth, color: green)
         }
         for m in markers where m.isPrimary {
+            // MARK: cluster-fanning per-marker arrow length
+            let myArrowLengthPlan = arrowLengthsByID[m.photo.id] ?? arrowLengthPlan
+            let myArrowLength = CGFloat(myArrowLengthPlan) * scale
+            // MARK: end cluster-fanning per-marker arrow length
             paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
                         cy: originY + CGFloat(m.y) * scale,
                         radius: primaryR, seq: m.photo.sequenceNumber, bearing: m.bearing,
-                        arrowLength: arrowLength, arrowBase: arrowBase,
+                        arrowLength: myArrowLength, arrowBase: arrowBase,
                         strokeWidth: strokeWidth, color: green)
         }
     }

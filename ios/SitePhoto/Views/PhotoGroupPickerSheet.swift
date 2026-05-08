@@ -248,13 +248,42 @@ struct PhotoGroupPickerSheet: View {
         let firstGapView = primaryRview + secRview - 2 * bubbleScale
         let stepGapView = secRview * 2 - 2 * bubbleScale
 
-        let markers = buildMarkers(
+        let initialMarkers = buildMarkers(
             firstGapPlan: firstGapView / fit,
             stepGapPlan: stepGapView / fit
         )
 
+        // MARK: cluster-fanning (matches PlanViewerView)
+        let primaryRplan = Double(primaryRview / fit)
+        let secRplan     = Double(secRview     / fit)
         let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
-        let arrowLengthView = arrowLengthPlan * fit
+        let fanResult = ClusterFanning.apply(
+            markers: initialMarkers,
+            sortKey: { $0.photo.sequenceNumber },
+            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            setPosition: { m, p in
+                Marker(id: m.id, photo: m.photo,
+                       x: p.x, y: p.y,
+                       isPrimary: m.isPrimary, bearing: m.bearing)
+            },
+            collisionRadius: primaryRplan * 2.0,
+            minSpacing: primaryRplan * 1.0
+        )
+        let markers = fanResult.adjusted
+
+        let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
+            markers: markers,
+            id: { $0.photo.id },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            bearingDegrees: { $0.bearing },
+            primaryRadius: primaryRplan,
+            secondaryRadius: secRplan,
+            defaultArrowLength: Double(arrowLengthPlan)
+        )
+        // MARK: end cluster-fanning
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -262,17 +291,38 @@ struct PhotoGroupPickerSheet: View {
                 .frame(width: dispW, height: dispH)
                 .offset(x: originX, y: originY)
 
+            // MARK: cluster-fanning leader lines
+            ForEach(fanResult.leaderLines, id: \.self) { line in
+                Path { p in
+                    p.move(to: CGPoint(
+                        x: originX + line.from.x * fit,
+                        y: originY + line.from.y * fit
+                    ))
+                    p.addLine(to: CGPoint(
+                        x: originX + line.to.x * fit,
+                        y: originY + line.to.y * fit
+                    ))
+                }
+                .stroke(Color.white.opacity(0.4),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            // MARK: end cluster-fanning leader lines
+
             // Direction arrows on primary bubbles with a stored bearing.
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
                 let planFrame = marker.bearing ?? 0
                 let centerX = originX + marker.x * fit
                 let centerY = originY + marker.y * fit
-                ArrowShape(bearingDegrees: planFrame, length: arrowLengthView)
+                // MARK: cluster-fanning per-marker arrow length
+                let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? Double(arrowLengthPlan)
+                let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
+                // MARK: end cluster-fanning per-marker arrow length
+                ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
                 ArrowHead(bearingDegrees: planFrame,
-                          length: arrowLengthView,
+                          length: myArrowLengthView,
                           baseRadius: 14 * bubbleScale)
                     .fill(Color.green)
                     .frame(width: 1, height: 1)
@@ -371,7 +421,8 @@ struct PhotoGroupPickerSheet: View {
             groups[key, default: []].append(photo)
         }
         var markers: [Marker] = []
-        for (_, members) in groups {
+        for key in groups.keys.sorted() {
+            let members = groups[key]!
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let lead = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
             let lpx = lead.planPixelX ?? 0
