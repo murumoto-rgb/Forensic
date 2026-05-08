@@ -47,7 +47,6 @@ struct ProjectDetailView: View {
                     floorPlanSection(project)
                     photosSection(project)
                     exportSection(project)
-                    placeholdersSection
                 }
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
@@ -499,69 +498,6 @@ struct ProjectDetailView: View {
                 Label("Export PDF", systemImage: "doc.richtext")
             }
             .disabled(project.photos.isEmpty)
-        }
-    }
-
-    @ViewBuilder
-    private var placeholdersSection: some View {
-        Section("Roadmap") {
-            roadmapItem(
-                done: true,
-                title: "Project list, create, delete",
-                subtitle: "You're using it now."
-            )
-            roadmapItem(
-                done: true,
-                title: "Location & address",
-                subtitle: "GPS on session start, CLGeocoder reverse-geocode for the address."
-            )
-            roadmapItem(
-                done: true,
-                title: "Camera capture (AVFoundation)",
-                subtitle: "Lens picker (0.5x/1x/2x/4x/8x), Auto/On/Off flash, full-resolution save."
-            )
-            roadmapItem(
-                done: true,
-                title: "Floor plan import + calibration",
-                subtitle: "Pick image, tap A & B, enter feet. Photo bubbles render in the next push."
-            )
-            roadmapItem(
-                done: true,
-                title: "Locate flow",
-                subtitle: "Tap-to-place pin, drag for direction, batch capture into a single shared location."
-            )
-            roadmapItem(
-                done: true,
-                title: "Plan viewer with photo bubbles",
-                subtitle: "View Plan opens the calibrated plan with bubbles. Group bubbles trail the lead. Pinch to zoom."
-            )
-            roadmapItem(
-                done: true,
-                title: "PDF export",
-                subtitle: "Map page, plan with bubbles, contact sheet."
-            )
-            roadmapItem(
-                done: false,
-                title: "AI photo analysis",
-                subtitle: "Forensic description via Claude Opus 4.7."
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func roadmapItem(done: Bool, title: String, subtitle: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(done ? .green : .secondary)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .strikethrough(done, color: .secondary)
-                    .font(.subheadline)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
