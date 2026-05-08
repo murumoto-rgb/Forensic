@@ -49,6 +49,15 @@ final class CameraController: NSObject {
     var userZoom: Double = 1.0
     var flashMode: FlashMode = .auto
 
+    /// True when the active device's sensor supports a "high-res" capture
+    /// (≥40 megapixels — i.e. the 48 MP main on iPhone Pro models). Used by
+    /// the camera UI to decide whether to show the resolution toggle.
+    var supports48MP: Bool {
+        guard let device = currentDevice,
+              let max = device.activeFormat.supportedMaxPhotoDimensions.last else { return false }
+        return Int(max.width) * Int(max.height) >= 40_000_000
+    }
+
     private var captureContinuation: CheckedContinuation<Data, Error>?
     private let sessionQueue = DispatchQueue(label: "sitephoto.camera.session")
 
@@ -181,10 +190,29 @@ final class CameraController: NSObject {
         }
         settings.photoQualityPrioritization = .quality
 
+        // Opt into the device's max sensor dimensions when the user has
+        // 48 MP enabled and the active sensor supports it. Without this
+        // line photos come out at the active format's *default* dimensions
+        // (24 MP binned on iPhone 14 Pro and later).
+        if Self.shouldCapture48MP, supports48MP,
+           let device = currentDevice,
+           let max = device.activeFormat.supportedMaxPhotoDimensions.last {
+            settings.maxPhotoDimensions = max
+        }
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             captureContinuation = cont
             photoOutput.capturePhoto(with: settings, delegate: self)
         }
+    }
+
+    /// Reads the @AppStorage-backed user preference. Default is on.
+    private static var shouldCapture48MP: Bool {
+        if let any = UserDefaults.standard.object(forKey: "sitephoto.capture48MP"),
+           let b = any as? Bool {
+            return b
+        }
+        return true
     }
 
     private func avFlashMode(_ m: FlashMode) -> AVCaptureDevice.FlashMode {

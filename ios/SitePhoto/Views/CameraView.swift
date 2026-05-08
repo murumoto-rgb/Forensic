@@ -9,6 +9,7 @@ struct CameraView: View {
     @State private var setupError: String?
     @State private var capturing = false
     @State private var flashTrigger = false
+    @AppStorage("sitephoto.capture48MP") private var capture48MP: Bool = true
 
     var body: some View {
         ZStack {
@@ -78,10 +79,30 @@ struct CameraView: View {
                 flashBar
             }
             Spacer()
-            // symmetric placeholder
-            Color.clear.frame(width: 40, height: 40)
+            if controller.configured && controller.supports48MP {
+                resolutionToggle
+            } else {
+                // Symmetric placeholder so the flash bar stays centered.
+                Color.clear.frame(width: 56, height: 32)
+            }
         }
         .padding(.top, 8)
+    }
+
+    private var resolutionToggle: some View {
+        Button {
+            capture48MP.toggle()
+        } label: {
+            Text(capture48MP ? "48MP" : "24MP")
+                .font(.caption.bold().monospaced())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    capture48MP ? Color.yellow : Color.black.opacity(0.5),
+                    in: Capsule()
+                )
+                .foregroundStyle(capture48MP ? .black : .white)
+        }
     }
 
     private var flashBar: some View {
