@@ -553,15 +553,18 @@ private struct PhotoRow: View {
             }
             Spacer()
             if let onLocate, project.floorPlan != nil {
+                let isUnlocated = photo.positionSource == .none
                 Button {
                     onLocate()
                 } label: {
-                    Text(photo.positionSource == .none ? "Add Location" : "Change Location")
-                        .font(.caption2.bold())
+                    Image(systemName: isUnlocated
+                          ? "location"
+                          : "arrow.up.and.down.and.arrow.left.and.right")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(.blue)
+                .accessibilityLabel(isUnlocated ? "Add Location" : "Change Location")
             }
         }
     }
