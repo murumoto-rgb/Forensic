@@ -308,9 +308,23 @@ struct PhotoGroupPickerSheet: View {
         .offset(offset)
         .gesture(
             SimultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { value in scale = max(0.5, min(8, lastScale * value)) }
-                    .onEnded { _ in lastScale = scale },
+                MagnifyGesture()
+                    .onChanged { value in
+                        let newScale = max(0.5, min(8, lastScale * value.magnification))
+                        let aX = geo.size.width  / 2
+                        let aY = geo.size.height / 2
+                        let dx = value.startLocation.x - aX
+                        let dy = value.startLocation.y - aY
+                        offset = CGSize(
+                            width: lastOffset.width + dx * (lastScale - newScale),
+                            height: lastOffset.height + dy * (lastScale - newScale)
+                        )
+                        scale = newScale
+                    }
+                    .onEnded { _ in
+                        lastScale = scale
+                        lastOffset = offset
+                    },
                 DragGesture()
                     .onChanged { value in
                         offset = CGSize(
