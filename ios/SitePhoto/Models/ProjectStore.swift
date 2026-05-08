@@ -61,19 +61,15 @@ final class ProjectStore {
         }
 
         // Make sure both subfolders exist in the active root and (when
-        // running on iCloud) in the local root too — the local copy is used
-        // by the iCloud migration path below and as the staging area for any
-        // projects the user creates while iCloud is briefly unavailable.
+        // running on iCloud) in the local root too — the local copy is
+        // used by the local→iCloud migration below as a staging area when
+        // iCloud is briefly unavailable at project-creation time.
         Self.ensureSubfolders(in: storageRoot)
         Self.ensureSubfolders(in: local)
 
-        // Legacy housekeeping: any project folder living directly under
-        // "Projects/" (pre-Active/Deleted era) is moved into Active Projects.
-        Self.migrateFlatToActive(in: storageRoot)
-        Self.migrateFlatToActive(in: local)
-
-        // Migrate local→iCloud per subfolder so the Active/Deleted layout is
-        // preserved end-to-end.
+        // Defensive only: copies any project folders the user created in
+        // local storage (because iCloud was offline) up to iCloud now that
+        // it's available. Fast no-op when local is empty.
         if usingICloud {
             Self.migrateProjects(
                 from: local.appending(path: Self.activeFolderName, directoryHint: .isDirectory),
@@ -103,35 +99,6 @@ final class ProjectStore {
             at: root.appending(path: deletedFolderName, directoryHint: .isDirectory),
             withIntermediateDirectories: true
         )
-    }
-
-    /// Migrate any project folder that lives directly under `root/` (legacy
-    /// flat layout) into `root/Active Projects/`.
-    private static func migrateFlatToActive(in root: URL) {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey]
-        ) else { return }
-        let active = root.appending(path: activeFolderName, directoryHint: .isDirectory)
-        for entry in entries {
-            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            guard isDir else { continue }
-            let name = entry.lastPathComponent
-            // Skip our own subfolders and any system/hidden folders.
-            if name == activeFolderName || name == deletedFolderName { continue }
-            if name.hasPrefix(".") { continue }
-            let dest = active.appending(path: name, directoryHint: .isDirectory)
-            if !fm.fileExists(atPath: dest.path()) {
-                do {
-                    try fm.moveItem(at: entry, to: dest)
-                } catch {
-                    #if DEBUG
-                    print("Flat→Active migration failed for \(name): \(error)")
-                    #endif
-                }
-            }
-        }
     }
 
     /// Move every project folder from `src` to `dst`. If a folder with the
@@ -211,10 +178,9 @@ final class ProjectStore {
         deletedProjects = loadProjects(in: deletedRoot)
     }
 
-    /// Walks one root (Active Projects or Deleted Projects), decodes each
-    /// manifest, and applies on-disk migrations (folder rename, thumbnail
-    /// move, photo filename rename). The migrations only mutate paths
-    /// underneath `root`, so the same logic works for both lists.
+    /// Walks one root (Active Projects or Deleted Projects) and decodes
+    /// each manifest. Trusts the on-disk folder name as the canonical
+    /// folderName for each project — no rename is performed.
     private func loadProjects(in root: URL) -> [Project] {
         guard let dirs = try? fileManager.contentsOfDirectory(
             at: root,
@@ -230,39 +196,12 @@ final class ProjectStore {
             guard let data = try? Data(contentsOf: manifest) else { continue }
             do {
                 var project = try decoder().decode(Project.self, from: data)
-                let canonicalName = Project.makeFolderName(
-                    id: project.id,
-                    name: project.name,
-                    createdAt: project.createdAt
-                )
+                // Defend against in-memory drift between project.folderName
+                // and the actual folder name on disk: trust the folder name.
                 let actualName = dir.lastPathComponent
-                let canonicalDir = root.appending(path: canonicalName, directoryHint: .isDirectory)
-                var projectDir = dir
-                if actualName != canonicalName {
-                    if !fileManager.fileExists(atPath: canonicalDir.path()) {
-                        do {
-                            try fileManager.moveItem(at: dir, to: canonicalDir)
-                            project.folderName = canonicalName
-                            projectDir = canonicalDir
-                            let manifestNew = canonicalDir.appending(path: "manifest.json")
-                            if let bytes = try? encoder().encode(project) {
-                                try? bytes.write(to: manifestNew, options: .atomic)
-                            }
-                        } catch {
-                            #if DEBUG
-                            print("Folder rename failed for \(actualName): \(error)")
-                            #endif
-                            project.folderName = actualName
-                        }
-                    } else {
-                        project.folderName = actualName
-                    }
-                } else if project.folderName != canonicalName {
-                    project.folderName = canonicalName
+                if project.folderName != actualName {
+                    project.folderName = actualName
                 }
-
-                migrateThumbnailLocation(at: projectDir)
-                migratePhotoFilenames(for: &project, at: projectDir)
                 loaded.append(project)
             } catch {
                 #if DEBUG
@@ -271,31 +210,6 @@ final class ProjectStore {
             }
         }
         return loaded.sorted { $0.createdAt > $1.createdAt }
-    }
-
-    /// Move any thumb_*.jpg files that historically lived inside photos/ into
-    /// the new thumbnails/ subfolder so the photos folder is just full-res
-    /// JPEGs.
-    private func migrateThumbnailLocation(at projectDir: URL) {
-        let photos = projectDir.appending(path: "photos", directoryHint: .isDirectory)
-        let thumbs = projectDir.appending(path: "thumbnails", directoryHint: .isDirectory)
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: photos,
-            includingPropertiesForKeys: nil
-        ) else { return }
-        var moved = 0
-        for entry in entries where entry.lastPathComponent.hasPrefix("thumb_") {
-            if moved == 0 {
-                try? fileManager.createDirectory(at: thumbs, withIntermediateDirectories: true)
-            }
-            let dest = thumbs.appending(path: entry.lastPathComponent)
-            if !fileManager.fileExists(atPath: dest.path()) {
-                try? fileManager.moveItem(at: entry, to: dest)
-            } else {
-                try? fileManager.removeItem(at: entry)
-            }
-            moved += 1
-        }
     }
 
     @discardableResult
@@ -1033,44 +947,4 @@ final class ProjectStore {
         return "\(body) - \(sequenceNumber) - \(dateStr).jpg"
     }
 
-    /// Rename any photos whose filenames still use the old "photo_<UUID>.jpg" scheme.
-    private func migratePhotoFilenames(for project: inout Project, at projectDir: URL) {
-        let photosDir = projectDir.appending(path: "photos", directoryHint: .isDirectory)
-        let thumbsDir = projectDir.appending(path: "thumbnails", directoryHint: .isDirectory)
-        var changed = false
-
-        for i in project.photos.indices {
-            let photo = project.photos[i]
-            guard photo.imageFilename.hasPrefix("photo_") else { continue }
-
-            let newImageName = Self.makePhotoFilename(
-                sequenceNumber: photo.sequenceNumber,
-                timestamp: photo.timestamp,
-                projectName: project.name
-            )
-            let oldURL = photosDir.appending(path: photo.imageFilename)
-            let newURL = photosDir.appending(path: newImageName)
-            if fileManager.fileExists(atPath: oldURL.path()) &&
-               !fileManager.fileExists(atPath: newURL.path()) {
-                try? fileManager.moveItem(at: oldURL, to: newURL)
-            }
-            project.photos[i].imageFilename = newImageName
-            changed = true
-
-            if let oldThumb = photo.thumbnailFilename {
-                let newThumbName = "thumb_\(newImageName)"
-                let oldThumbURL = thumbsDir.appending(path: oldThumb)
-                let newThumbURL = thumbsDir.appending(path: newThumbName)
-                if fileManager.fileExists(atPath: oldThumbURL.path()) &&
-                   !fileManager.fileExists(atPath: newThumbURL.path()) {
-                    try? fileManager.moveItem(at: oldThumbURL, to: newThumbURL)
-                }
-                project.photos[i].thumbnailFilename = newThumbName
-            }
-        }
-
-        if changed, let data = try? encoder().encode(project) {
-            try? data.write(to: projectDir.appending(path: "manifest.json"), options: .atomic)
-        }
-    }
 }
