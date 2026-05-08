@@ -870,6 +870,59 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Delete a single photo: remove its image + thumbnail from disk, drop
+    /// it from the project's photos array, then renumber the remaining
+    /// photos sequentially (1…N) — and rename their files on disk to match
+    /// the new sequence numbers so the iCloud filenames stay consistent.
+    @discardableResult
+    func deletePhoto(_ project: Project, photoID: UUID) throws -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let photosDir = photosFolder(for: p)
+        let thumbsDir = thumbnailsFolder(for: p)
+
+        // Remove the deleted photo's files first.
+        let removed = p.photos.remove(at: idx)
+        try? fileManager.removeItem(at: photosDir.appending(path: removed.imageFilename))
+        if let thumb = removed.thumbnailFilename {
+            try? fileManager.removeItem(at: thumbsDir.appending(path: thumb))
+        }
+
+        // Renumber + rename the survivors so seq 1…N is contiguous and the
+        // filenames match the new sequence numbers. Iterating in array order
+        // (which is also ascending sequence order) lets each rename go to a
+        // slot that's just been freed by an earlier rename or the delete.
+        for i in p.photos.indices {
+            let oldSeq = p.photos[i].sequenceNumber
+            let newSeq = i + 1
+            guard oldSeq != newSeq else { continue }
+
+            let timestamp = p.photos[i].timestamp
+            let newImageName = Self.makePhotoFilename(
+                sequenceNumber: newSeq,
+                timestamp: timestamp,
+                projectName: p.name
+            )
+
+            let oldImageURL = photosDir.appending(path: p.photos[i].imageFilename)
+            let newImageURL = photosDir.appending(path: newImageName)
+            try? fileManager.moveItem(at: oldImageURL, to: newImageURL)
+            p.photos[i].imageFilename = newImageName
+
+            if let oldThumb = p.photos[i].thumbnailFilename {
+                let newThumb = "thumb_\(newImageName)"
+                let oldThumbURL = thumbsDir.appending(path: oldThumb)
+                let newThumbURL = thumbsDir.appending(path: newThumb)
+                try? fileManager.moveItem(at: oldThumbURL, to: newThumbURL)
+                p.photos[i].thumbnailFilename = newThumb
+            }
+
+            p.photos[i].sequenceNumber = newSeq
+        }
+
+        return save(p)
+    }
+
     /// Strip the location from an existing photo (turns it back into "NO LOC").
     @discardableResult
     func clearPhotoLocation(_ project: Project, photoID: UUID) -> Project {

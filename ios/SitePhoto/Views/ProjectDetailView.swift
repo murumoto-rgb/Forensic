@@ -28,6 +28,7 @@ struct ProjectDetailView: View {
     @State private var importing = false
     @State private var importStatus: String?
     @State private var relocatingPhoto: PhotoTarget?
+    @State private var pendingPhotoDelete: Photo?
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
@@ -119,6 +120,24 @@ struct ProjectDetailView: View {
                 } message: {
                     Text("Photo locations recorded against this plan will be cleared on the next push when location capture is wired in. The plan image will be deleted from disk.")
                 }
+                .alert(
+                    "Delete photo?",
+                    isPresented: Binding(
+                        get: { pendingPhotoDelete != nil },
+                        set: { if !$0 { pendingPhotoDelete = nil } }
+                    ),
+                    presenting: pendingPhotoDelete
+                ) { photo in
+                    Button("Delete", role: .destructive) {
+                        deletePhoto(photo)
+                        pendingPhotoDelete = nil
+                    }
+                    Button("Cancel", role: .cancel) {
+                        pendingPhotoDelete = nil
+                    }
+                } message: { photo in
+                    Text("Photo #\(photo.sequenceNumber) will be deleted and the remaining photos renumbered. This cannot be undone.")
+                }
             } else {
                 ContentUnavailableView(
                     "Project not found",
@@ -126,6 +145,15 @@ struct ProjectDetailView: View {
                     description: Text("This project may have been deleted.")
                 )
             }
+        }
+    }
+
+    private func deletePhoto(_ photo: Photo) {
+        guard let project = store.project(withID: projectID) else { return }
+        do {
+            _ = try store.deletePhoto(project, photoID: photo.id)
+        } catch {
+            captureError = "Could not delete photo: \(error.localizedDescription)"
         }
     }
 
@@ -447,20 +475,16 @@ struct ProjectDetailView: View {
                     .font(.callout)
             } else {
                 ForEach(project.photos) { photo in
-                    PhotoRow(photo: photo, project: project, store: store)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if project.floorPlan != nil {
-                                Button {
-                                    relocatingPhoto = PhotoTarget(id: photo.id)
-                                } label: {
-                                    Label(
-                                        photo.positionSource == .none ? "Locate" : "Change Location",
-                                        systemImage: "mappin.and.ellipse"
-                                    )
-                                }
-                                .tint(.blue)
-                            }
+                    PhotoRow(photo: photo, project: project, store: store) {
+                        relocatingPhoto = PhotoTarget(id: photo.id)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingPhotoDelete = photo
+                        } label: {
+                            Label("Delete", systemImage: "trash")
                         }
+                    }
                 }
             }
         }
@@ -562,6 +586,7 @@ private struct PhotoRow: View {
     let photo: Photo
     let project: Project
     let store: ProjectStore
+    var onLocate: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -579,6 +604,8 @@ private struct PhotoRow: View {
                         badge(text: "NO LOC", color: .orange)
                     } else if photo.groupID != nil {
                         badge(text: photo.isPrimary ? "GROUP★" : "GROUP", color: .blue)
+                    } else {
+                        badge(text: "LOCATED", color: .green)
                     }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
@@ -587,14 +614,19 @@ private struct PhotoRow: View {
                 Text(metaLine)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
-                if let lx = photo.localXFeet, let ly = photo.localYFeet {
-                    let head = photo.headingDegrees.map { String(format: " · H %.0f°", $0) } ?? ""
-                    Text(String(format: "X %.1f ft · Y %.1f ft%@", lx, ly, head))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
-                }
             }
             Spacer()
+            if let onLocate, project.floorPlan != nil {
+                Button {
+                    onLocate()
+                } label: {
+                    Text(photo.positionSource == .none ? "Add Location" : "Change Location")
+                        .font(.caption2.bold())
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.blue)
+            }
         }
     }
 
