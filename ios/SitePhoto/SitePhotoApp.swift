@@ -5,37 +5,27 @@ struct SitePhotoApp: App {
     @State private var store = ProjectStore()
     @State private var location = LocationService()
 
-    /// Drives ContentView's fade-in (1 = visible, 0 = hidden behind splash).
     @State private var contentVisible = false
-
-    /// Drives the logo's position (true = bottom footer, false = centered)
-    /// and its scale.
     @State private var logoMoved = false
-
-    /// Fade-in for the logo on launch.
     @State private var logoOpacity: Double = 0
-
-    /// Reported by ContentView via .onChange(path.isEmpty). True only when
-    /// the navigation stack is at its root (the projects list).
     @State private var atRoot: Bool = true
 
-    private let splashLogoWidth:  CGFloat = 280
-    private let splashLogoMaxHeight: CGFloat = 150
+    /// Fixed footer logo box. The image inside is scaledToFit, so a square
+    /// or a wide source both end up at exactly this height — which lets us
+    /// give the white band the *same* height and have the logo sit flush.
     private let footerLogoWidth:  CGFloat = 110
+    private let footerLogoHeight: CGFloat = 50
 
-    /// Visible height of the white footer band ABOVE the home-indicator
-    /// safe area. The band actually extends further down through the safe
-    /// area so the home indicator sits on white too.
-    private let footerVisibleHeight: CGFloat = 80
+    /// Splash logo is the same frame, just rendered at `splashScale`× via
+    /// scaleEffect. Layout doesn't move; only the rendered pixels grow.
+    private let splashScale: CGFloat = 2.8
 
-    /// Hard cap for the footer logo's height so a near-square logo image
-    /// can't end up taller than the band. Used as the base frame's
-    /// maxHeight; scaleEffect transports the size between splash + footer.
-    private var footerScale: CGFloat { footerLogoWidth / splashLogoWidth }
+    /// White band's visible portion above the home-indicator safe area.
+    /// Matched to the logo's frame height so the band hugs the logo on
+    /// top and bottom — no extra space.
+    private var footerVisibleHeight: CGFloat { footerLogoHeight }
 
-    private var logoOnscreen: Bool {
-        !logoMoved || atRoot
-    }
+    private var logoOnscreen: Bool { !logoMoved || atRoot }
 
     var body: some Scene {
         WindowGroup {
@@ -47,19 +37,15 @@ struct SitePhotoApp: App {
                         .environment(store)
                         .environment(location)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            // Reserve space so list content doesn't slide
-                            // under the white footer band. Detail pages
-                            // collapse this to 0 for full-screen content.
                             Color.clear
                                 .frame(height: atRoot ? footerVisibleHeight : 0)
                         }
                         .opacity(contentVisible ? 1 : 0)
                         .allowsHitTesting(contentVisible)
 
-                    // White footer band — separate ZStack layer so it can
-                    // extend through the home-indicator safe area via
-                    // .ignoresSafeArea(.bottom). The safeAreaInset above
-                    // only reserves layout space; this layer paints it.
+                    // White band: visible strip = logo height, plus a tail
+                    // through the home-indicator safe area so the home
+                    // indicator sits on white too.
                     VStack(spacing: 0) {
                         Spacer()
                         Color.white
@@ -72,22 +58,20 @@ struct SitePhotoApp: App {
                     Image("BaykalLogo")
                         .resizable()
                         .scaledToFit()
-                        // Constrain BOTH dimensions of the base size so a
-                        // near-square logo image scales down to a footer
-                        // height that fits the band. After scaleEffect the
-                        // footer logo is at most ~58pt tall regardless of
-                        // the source asset's aspect ratio.
-                        .frame(maxWidth: splashLogoWidth,
-                               maxHeight: splashLogoMaxHeight)
-                        .scaleEffect(logoMoved ? footerScale : 1.0)
+                        // Fixed frame, used for BOTH splash and footer.
+                        // scaleEffect changes only the rendered pixels.
+                        .frame(width: footerLogoWidth, height: footerLogoHeight)
+                        .scaleEffect(logoMoved ? 1.0 : splashScale)
                         .opacity(logoOpacity)
                         .opacity(logoOnscreen ? 1 : 0)
                         .position(
                             x: geo.size.width / 2,
+                            // Footer: place the logo's frame center at
+                            // (boundary − height/2) so its bottom edge lands
+                            // exactly on the safe-area boundary — flush
+                            // against the home-indicator strip.
                             y: logoMoved
-                                // Center the logo within the visible
-                                // (above home-indicator) part of the band.
-                                ? geo.size.height - geo.safeAreaInsets.bottom - footerVisibleHeight / 2
+                                ? geo.size.height - geo.safeAreaInsets.bottom - footerLogoHeight / 2
                                 : geo.size.height / 2
                         )
                         .accessibilityLabel("Baykal Consulting")
