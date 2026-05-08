@@ -55,9 +55,8 @@ private struct SplashScreen: View {
     }
 }
 
-/// Permanent banner at the bottom of the projects list. Full-width white
-/// strip that extends through the home-indicator safe area, with the logo
-/// centered inside.
+/// Permanent footer at the bottom of the projects list. The logo sits on
+/// the underlying app background — no white banner behind it.
 private struct FooterLogoBar: View {
     var body: some View {
         Image("BaykalLogo")
@@ -66,11 +65,6 @@ private struct FooterLogoBar: View {
             .frame(height: 50)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
-            .background {
-                // .ignoresSafeArea(.bottom) on the background extends the
-                // white through the home-indicator strip below the inset.
-                Color.white.ignoresSafeArea(edges: .bottom)
-            }
             .accessibilityLabel("Baykal Consulting")
     }
 }
