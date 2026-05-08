@@ -186,6 +186,7 @@ struct PlanViewerView: View {
 
         // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
         let primaryRplan = Double(primaryRview / fit)
+        let secRplan     = Double(secRview     / fit)
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
@@ -197,13 +198,25 @@ struct PlanViewerView: View {
                            isPrimary: m.isPrimary, bearing: m.bearing)
             },
             collisionRadius: primaryRplan * 2.0,
-            fanRadius: primaryRplan * 1.05
+            minSpacing: primaryRplan * 0.55
         )
         let markers = fanResult.adjusted
         // MARK: end cluster-fanning
 
         let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
-        let arrowLengthView = arrowLengthPlan * fit
+
+        // MARK: cluster-fanning arrow shortening (experimental)
+        let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
+            markers: markers,
+            id: { $0.photo.id },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            bearingDegrees: { $0.bearing },
+            primaryRadius: primaryRplan,
+            secondaryRadius: secRplan,
+            defaultArrowLength: arrowLengthPlan
+        )
+        // MARK: end cluster-fanning arrow shortening
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -235,12 +248,16 @@ struct PlanViewerView: View {
                 let planFrame = marker.bearing ?? 0
                 let centerX = originX + marker.x * fit
                 let centerY = originY + marker.y * fit
-                ArrowShape(bearingDegrees: planFrame, length: arrowLengthView)
+                // MARK: cluster-fanning per-marker arrow length (experimental)
+                let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? arrowLengthPlan
+                let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
+                // MARK: end cluster-fanning per-marker arrow length
+                ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
                 ArrowHead(bearingDegrees: planFrame,
-                          length: arrowLengthView,
+                          length: myArrowLengthView,
                           baseRadius: 14 * bubbleScale)
                     .fill(Color.green)
                     .frame(width: 1, height: 1)
