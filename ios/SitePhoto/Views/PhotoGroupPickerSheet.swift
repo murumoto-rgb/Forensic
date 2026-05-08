@@ -280,21 +280,27 @@ struct PhotoGroupPickerSheet: View {
             }
 
             // Tails first so leads draw on top of any visual overlap.
+            // contentShape + onTapGesture must come BEFORE .position(...) —
+            // .position reparents the view to fill the entire plan area for
+            // layout, which would make a trailing .contentShape(Circle())
+            // inscribe in the whole parent and steal every tap.
             ForEach(markers.filter { !$0.isPrimary }) { m in
                 bubble(seq: m.photo.sequenceNumber, radius: secRview)
-                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
+                    .frame(width: secRview * 2, height: secRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
                         pendingTargetID = m.photo.id
                     }
+                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
             }
             ForEach(markers.filter { $0.isPrimary }) { m in
                 bubble(seq: m.photo.sequenceNumber, radius: primaryRview)
-                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
+                    .frame(width: primaryRview * 2, height: primaryRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
                         pendingTargetID = m.photo.id
                     }
+                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
