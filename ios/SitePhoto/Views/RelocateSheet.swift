@@ -96,7 +96,10 @@ struct RelocateSheet: View {
     }
 
     private var navTitle: String {
-        photo?.positionSource == .none ? "Locate Photo" : "Change Location"
+        if let photo, photo.positionSource != .none {
+            return "Change Location"
+        }
+        return "Locate Photo"
     }
 
     private var instructionBar: some View {
