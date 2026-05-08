@@ -345,22 +345,6 @@ struct PlanLocateCanvas: View {
                     .frame(width: effW, height: effH)
                     .offset(x: effOX, y: effOY)
 
-                // Tap target sized to the zoomed image. Local coord space
-                // is (0…effW, 0…effH), so a tap directly maps to an image
-                // pixel via division by effScale — no transform inversion.
-                Color.clear
-                    .frame(width: effW, height: effH)
-                    .offset(x: effOX, y: effOY)
-                    .contentShape(Rectangle())
-                    .onTapGesture(coordinateSpace: .local) { tap in
-                        let inImage = CGPoint(x: tap.x / effScale,
-                                              y: tap.y / effScale)
-                        guard inImage.x >= 0, inImage.x <= imgSize.width,
-                              inImage.y >= 0, inImage.y <= imgSize.height else { return }
-                        planPoint = inImage
-                        if step == .position { step = .direction }
-                    }
-
                 if let pp = planPoint {
                     let pinView = CGPoint(
                         x: effOX + pp.x * effScale,
@@ -377,6 +361,23 @@ struct PlanLocateCanvas: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .clipped()
             .contentShape(Rectangle())
+            // Tap on the outer ZStack: the gesture's .local coord space is
+            // the ZStack's frame (geo-relative), so we subtract the image's
+            // current effective origin and divide by the effective scale to
+            // get an image pixel. This is the same pattern that worked
+            // before zoom/pan was added — and now that .scaleEffect is gone
+            // there's no transform between gesture and the outer view, so
+            // it works again at any zoom level.
+            .onTapGesture(coordinateSpace: .local) { tap in
+                let inImage = CGPoint(
+                    x: (tap.x - effOX) / effScale,
+                    y: (tap.y - effOY) / effScale
+                )
+                guard inImage.x >= 0, inImage.x <= imgSize.width,
+                      inImage.y >= 0, inImage.y <= imgSize.height else { return }
+                planPoint = inImage
+                if step == .position { step = .direction }
+            }
             .gesture(
                 SimultaneousGesture(
                     MagnifyGesture()
