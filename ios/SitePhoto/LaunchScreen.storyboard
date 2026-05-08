@@ -25,7 +25,6 @@
                             <constraint firstItem="logo-img-vw" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="logo-cx"/>
                             <constraint firstItem="logo-img-vw" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="logo-cy"/>
                             <constraint firstItem="logo-img-vw" firstAttribute="width" secondItem="Ze5-6b-2t3" secondAttribute="width" multiplier="0.65" id="logo-w"/>
-                            <constraint firstAttribute="height" relation="equal" firstItem="logo-img-vw" secondItem="logo-img-vw" multiplier="1" priority="999" id="logo-aspect-helper" constant="0"/>
                             <constraint firstItem="logo-img-vw" firstAttribute="height" secondItem="logo-img-vw" secondAttribute="width" multiplier="0.6" id="logo-aspect"/>
                         </constraints>
                     </view>
