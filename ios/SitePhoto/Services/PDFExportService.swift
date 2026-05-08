@@ -191,7 +191,8 @@ struct PDFExportService {
         let imgY = y + (areaH - dispH) / 2
 
         planImage.draw(in: CGRect(x: imgX, y: imgY, width: dispW, height: dispH))
-        drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY, scale: scale)
+        drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY,
+                    scale: scale, imgSize: imgSize)
     }
 
     // MARK: - Contact sheet page
@@ -252,19 +253,37 @@ struct PDFExportService {
     }
 
     private func drawBubbles(_ ctx: CGContext, plan: FloorPlan,
-                              originX: CGFloat, originY: CGFloat, scale: CGFloat) {
+                              originX: CGFloat, originY: CGFloat,
+                              scale: CGFloat, imgSize: CGSize) {
         let bs = bubbleScale
-        let primaryR = 18 * bs
-        let secR     = 13 * bs
+
+        // Bubbles/arrows are sized in PDF points to occupy the same fraction
+        // of the plan as they would on the iPhone 17 Pro Max screen the
+        // app is designed against. Without this, PDF pages are bigger than
+        // a phone screen, so the plan renders at a higher pt-per-pixel
+        // ratio and constant-pt bubbles look proportionally smaller.
+        //
+        // sizeMultiplier = (PDF scale) / (reference-screen fit). This also
+        // makes the cluster-fanning thresholds match: primaryR / scale
+        // collapses to primaryR_base / referenceFit, independent of PDF
+        // scale, so the same set of photos cluster either way.
+        let referenceScreenW: CGFloat = 430   // iPhone 17 Pro Max width
+        let referenceScreenH: CGFloat = 800   // approximate plan-area height
+        let referenceFit = min(referenceScreenW / imgSize.width,
+                                referenceScreenH / imgSize.height)
+        let sizeMultiplier = scale / max(referenceFit, 0.0001)
+
+        let primaryR = 18 * bs * sizeMultiplier
+        let secR     = 13 * bs * sizeMultiplier
         // Gaps are computed in PDF points first (same as screen), then converted
         // to plan-pixel space so the buildMarkers offsets work in plan coords.
-        let firstGapView = primaryR + secR - 2 * bs
-        let stepGapView  = secR * 2     - 2 * bs
+        let firstGapView = primaryR + secR - 2 * bs * sizeMultiplier
+        let stepGapView  = secR * 2     - 2 * bs * sizeMultiplier
         let firstGapPlan = Double(firstGapView) / Double(scale)
         let stepGapPlan  = Double(stepGapView)  / Double(scale)
-        let arrowLength  = primaryR + 38 * bs
-        let arrowBase    = 14 * bs
-        let strokeWidth  = 3 * bs
+        let arrowLength  = primaryR + 38 * bs * sizeMultiplier
+        let arrowBase    = 14 * bs * sizeMultiplier
+        let strokeWidth  = 3 * bs * sizeMultiplier
 
         var groups: [String: [Photo]] = [:]
         for p in project.photos where p.planPixelX != nil {
@@ -323,10 +342,12 @@ struct PDFExportService {
         // MARK: end cluster-fanning
 
         // MARK: cluster-fanning leader lines
+        // Match PlanViewerView's leader-line styling exactly so the
+        // dashed connector reads the same on screen and on paper.
         ctx.saveGState()
-        ctx.setStrokeColor(UIColor(white: 1, alpha: 0.55).cgColor)
-        ctx.setLineWidth(0.8)
-        ctx.setLineDash(phase: 0, lengths: [3, 2])
+        ctx.setStrokeColor(UIColor(white: 1, alpha: 0.4).cgColor)
+        ctx.setLineWidth(1.0 * sizeMultiplier)
+        ctx.setLineDash(phase: 0, lengths: [4 * sizeMultiplier, 3 * sizeMultiplier])
         for line in fanResult.leaderLines {
             ctx.beginPath()
             ctx.move(to: CGPoint(
