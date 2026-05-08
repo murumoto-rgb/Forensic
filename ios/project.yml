@@ -20,6 +20,15 @@ targets:
     platform: iOS
     sources:
       - path: SitePhoto
+    entitlements:
+      path: SitePhoto/SitePhoto.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.murumoto.sitephoto
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.com.murumoto.sitephoto
     info:
       path: SitePhoto/Info.plist
       properties:
@@ -33,6 +42,13 @@ targets:
         NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."
         NSLocationWhenInUseUsageDescription: "SitePhoto records the GPS location and address of each project at the start of a session."
         NSPhotoLibraryAddUsageDescription: "SitePhoto can save exported PDFs and photos to your Photos library."
+        NSUbiquitousContainers:
+          iCloud.com.murumoto.sitephoto:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerSupportedFolderLevels: Any
+            NSUbiquitousContainerName: SitePhoto
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"

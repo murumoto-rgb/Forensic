@@ -6,17 +6,91 @@ import UniformTypeIdentifiers
 @Observable
 final class ProjectStore {
     private(set) var projects: [Project] = []
+    private(set) var usingICloud: Bool = false
+    /// Human-readable explanation for why iCloud isn't being used (nil when it is).
+    private(set) var iCloudUnavailableReason: String?
 
     private let fileManager = FileManager.default
+    private let storageRoot: URL
 
-    var rootURL: URL {
-        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appending(path: "Projects", directoryHint: .isDirectory)
-    }
+    var rootURL: URL { storageRoot }
 
     init() {
-        try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let local = Self.localProjectsURL
+        try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+
+        var iCloudProjectsURL: URL?
+        var unavailableReason: String?
+
+        // url(forUbiquityContainerIdentifier:) blocks the first time iCloud is
+        // probed but is fast on subsequent calls. Doing it inline at startup is
+        // acceptable - the launch screen masks any short delay.
+        if let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil) {
+            let docs = containerURL.appending(path: "Documents", directoryHint: .isDirectory)
+            try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+            let projects = docs.appending(path: "Projects", directoryHint: .isDirectory)
+            try? FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+            iCloudProjectsURL = projects
+        } else {
+            unavailableReason = "iCloud Drive isn't enabled. Open Settings → Apple ID → iCloud → iCloud Drive and turn it on (and SitePhoto inside the app list) to back projects up to iCloud."
+        }
+
+        if let iCloud = iCloudProjectsURL {
+            // Migrate any existing local projects to iCloud on first launch
+            // with iCloud available. Each project's UUID-named folder is moved
+            // intact (manifest, photos, plan).
+            Self.migrateProjects(from: local, to: iCloud)
+            self.storageRoot = iCloud
+            self.usingICloud = true
+            self.iCloudUnavailableReason = nil
+        } else {
+            self.storageRoot = local
+            self.usingICloud = false
+            self.iCloudUnavailableReason = unavailableReason
+        }
+
         load()
+    }
+
+    private static var localProjectsURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appending(path: "Projects", directoryHint: .isDirectory)
+    }
+
+    /// Move every project folder from `src` to `dst`. If a folder with the
+    /// same name already exists in `dst` (e.g. a previous partial migration),
+    /// skip it - the iCloud copy is treated as authoritative.
+    private static func migrateProjects(from src: URL, to dst: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: src.path()) else { return }
+        guard let entries = try? fm.contentsOfDirectory(at: src,
+                                                        includingPropertiesForKeys: [.isDirectoryKey])
+        else { return }
+        for entry in entries {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            let destEntry = dst.appending(path: entry.lastPathComponent, directoryHint: .isDirectory)
+            if fm.fileExists(atPath: destEntry.path()) {
+                // Already there from a previous run; remove the local copy
+                // since iCloud is now the source of truth.
+                try? fm.removeItem(at: entry)
+                continue
+            }
+            do {
+                try fm.copyItem(at: entry, to: destEntry)
+                // Verify the manifest came through before deleting the source.
+                let manifestExists = fm.fileExists(
+                    atPath: destEntry.appending(path: "manifest.json").path()
+                )
+                if manifestExists {
+                    try fm.removeItem(at: entry)
+                }
+            } catch {
+                #if DEBUG
+                print("iCloud migration failed for \(entry.lastPathComponent): \(error)")
+                #endif
+            }
+        }
     }
 
     func projectURL(_ project: Project) -> URL {

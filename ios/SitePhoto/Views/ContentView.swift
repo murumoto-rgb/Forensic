@@ -14,16 +14,20 @@ struct ContentView: View {
                     EmptyProjectsView { showingNew = true }
                 } else {
                     List {
-                        ForEach(store.projects) { project in
-                            NavigationLink(value: project) {
-                                ProjectRow(project: project)
+                        Section {
+                            ForEach(store.projects) { project in
+                                NavigationLink(value: project) {
+                                    ProjectRow(project: project)
+                                }
                             }
-                        }
-                        .onDelete { indexSet in
-                            // First-tap-to-confirm via the system swipe-to-delete affordance.
-                            for i in indexSet {
-                                pendingDelete = store.projects[i]
+                            .onDelete { indexSet in
+                                // First-tap-to-confirm via the system swipe-to-delete affordance.
+                                for i in indexSet {
+                                    pendingDelete = store.projects[i]
+                                }
                             }
+                        } footer: {
+                            StorageStatusFooter(store: store)
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -148,6 +152,32 @@ private struct EmptyProjectsView: View {
             Button("New Project", action: onCreate)
                 .buttonStyle(.borderedProminent)
         }
+    }
+}
+
+private struct StorageStatusFooter: View {
+    let store: ProjectStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
+                .foregroundStyle(store.usingICloud ? .blue : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(store.usingICloud ? "Saved to iCloud Drive" : "Local storage only")
+                    .font(.caption.bold())
+                if store.usingICloud {
+                    Text("Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if let reason = store.iCloudUnavailableReason {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.top, 4)
     }
 }
 
