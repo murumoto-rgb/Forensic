@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// Sheet for placing a single existing photo on the floor plan, or moving
-/// one that was already located. Pre-fills the pin and direction from the
-/// photo's current location when one exists.
+/// one that was already located. The plan fills the top portion and
+/// supports zoom + pan; a preview of the photo being located fills the
+/// bottom portion so the user can see *what* they're placing while they
+/// drop the pin.
 struct RelocateSheet: View {
     let projectID: UUID
     let photoID: UUID
@@ -17,14 +19,22 @@ struct RelocateSheet: View {
     @State private var showingGroupPicker = false
 
     @State private var planImage: UIImage?
-    @State private var loadState: LoadState = .loading
+    @State private var planLoadState: LoadState = .loading
+    @State private var photoImage: UIImage?
+    @State private var photoLoadState: LoadState = .loading
     private enum LoadState { case loading, loaded, missing }
+
+    /// Photo preview's vertical share of the screen.
+    private let photoPreviewHeight: CGFloat = 220
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 instructionBar
                 planArea
+                    .frame(maxHeight: .infinity)
+                photoPreview
+                    .frame(height: photoPreviewHeight)
                 actionBar
             }
             .navigationTitle(navTitle)
@@ -44,6 +54,9 @@ struct RelocateSheet: View {
             .task {
                 await loadPlan()
             }
+            .task(id: photoID) {
+                await loadPhoto()
+            }
             .sheet(isPresented: $showingGroupPicker) {
                 PhotoGroupPickerSheet(
                     projectID: projectID,
@@ -62,7 +75,7 @@ struct RelocateSheet: View {
 
     @ViewBuilder
     private var planArea: some View {
-        switch loadState {
+        switch planLoadState {
         case .loading:
             ZStack {
                 Color.black
@@ -72,7 +85,6 @@ struct RelocateSheet: View {
                         .font(.caption).foregroundStyle(.white.opacity(0.7))
                 }
             }
-            .frame(maxHeight: .infinity)
         case .loaded:
             if let img = planImage {
                 PlanLocateCanvas(
@@ -82,7 +94,6 @@ struct RelocateSheet: View {
                     step: $step
                 )
                 .background(.black)
-                .frame(maxHeight: .infinity)
             } else {
                 missing
             }
@@ -98,6 +109,52 @@ struct RelocateSheet: View {
             systemImage: "exclamationmark.triangle"
         )
         .frame(maxHeight: .infinity)
+    }
+
+    /// Photo preview at the bottom — shows what's being located.
+    @ViewBuilder
+    private var photoPreview: some View {
+        ZStack {
+            Color.black
+
+            switch photoLoadState {
+            case .loading:
+                VStack(spacing: 6) {
+                    ProgressView().controlSize(.regular).tint(.white)
+                    Text("Loading photo…")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                }
+            case .missing:
+                ContentUnavailableView(
+                    "Photo missing",
+                    systemImage: "photo.badge.exclamationmark"
+                )
+                .foregroundStyle(.white)
+            case .loaded:
+                if let img = photoImage {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+
+            if let photo {
+                VStack {
+                    HStack {
+                        Text("#\(photo.sequenceNumber)")
+                            .font(.headline.monospaced())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.black.opacity(0.6),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .padding(8)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+            }
+        }
     }
 
     private var navTitle: String {
@@ -123,7 +180,7 @@ struct RelocateSheet: View {
 
     private var instructionText: String {
         switch step {
-        case .position: return "Tap on the plan to set the photo location."
+        case .position: return "Pinch to zoom, drag to pan, tap to place pin."
         case .direction: return "Drag from the pin in the direction the camera was facing."
         }
     }
@@ -175,23 +232,41 @@ struct RelocateSheet: View {
     }
 
     private func loadPlan() async {
-        loadState = .loading
+        planLoadState = .loading
         guard let proj = store.project(withID: projectID),
               proj.floorPlan != nil,
               let url = store.floorPlanURL(for: proj) else {
-            loadState = .missing
+            planLoadState = .missing
             return
         }
         if let data = await store.loadFileBytes(at: url),
            let img = UIImage(data: data) {
             planImage = img
-            loadState = .loaded
+            planLoadState = .loaded
             if !didPrefill {
                 prefillFromExisting()
                 didPrefill = true
             }
         } else {
-            loadState = .missing
+            planLoadState = .missing
+        }
+    }
+
+    private func loadPhoto() async {
+        photoLoadState = .loading
+        photoImage = nil
+        guard let project = store.project(withID: projectID),
+              let photo = project.photos.first(where: { $0.id == photoID }) else {
+            photoLoadState = .missing
+            return
+        }
+        let url = store.imageURL(for: photo, in: project)
+        if let data = await store.loadFileBytes(at: url),
+           let img = UIImage(data: data) {
+            photoImage = img
+            photoLoadState = .loaded
+        } else {
+            photoLoadState = .missing
         }
     }
 

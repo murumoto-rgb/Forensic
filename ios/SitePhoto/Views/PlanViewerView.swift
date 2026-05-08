@@ -74,7 +74,7 @@ struct PlanViewerView: View {
         ToolbarItem(placement: .topBarTrailing) {
             HStack {
                 Button {
-                    bubbleScale = max(0.3, bubbleScale * 0.8)
+                    bubbleScale = max(0.15, bubbleScale * 0.8)
                 } label: {
                     Image(systemName: "minus.circle")
                 }

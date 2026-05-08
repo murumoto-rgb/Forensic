@@ -309,6 +309,16 @@ struct PlanLocateCanvas: View {
     @Binding var heading: Double?
     @Binding var step: LocateStep
 
+    // Pinch-zoom + pan state.
+    @State private var zoom:       CGFloat = 1
+    @State private var lastZoom:   CGFloat = 1
+    @State private var pan:        CGSize  = .zero
+    @State private var lastPan:    CGSize  = .zero
+    /// Which mode the current drag is in. Decided once at drag start —
+    /// near the pin → set heading; elsewhere → pan the canvas.
+    @State private var dragMode:   DragMode? = nil
+    private enum DragMode { case heading, pan }
+
     var body: some View {
         GeometryReader { geo in
             let imgSize = image.size
@@ -339,43 +349,115 @@ struct PlanLocateCanvas: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .scaleEffect(zoom, anchor: .center)
+            .offset(pan)
             .contentShape(Rectangle())
             .onTapGesture(coordinateSpace: .local) { tap in
+                // tap.x / tap.y is in the gesture-view's layout coord space,
+                // which is the un-zoomed image plane — so the existing
+                // (tap - origin) / scale conversion to image pixels still
+                // works regardless of the visual zoom/pan.
                 let inImage = CGPoint(
                     x: (tap.x - originX) / scale,
                     y: (tap.y - originY) / scale
                 )
                 guard inImage.x >= 0, inImage.x <= imgSize.width,
                       inImage.y >= 0, inImage.y <= imgSize.height else { return }
-                // Tapping always (re)places the pin — including after one is
-                // already set, so the user can pick a new position without
-                // having to clear the location first. The existing heading
-                // is preserved.
                 planPoint = inImage
                 if step == .position {
                     step = .direction
                 }
             }
             .gesture(
-                DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                    .onChanged { value in
-                        guard step == .direction, let pp = planPoint else { return }
-                        let inImage = CGPoint(
-                            x: (value.location.x - originX) / scale,
-                            y: (value.location.y - originY) / scale
-                        )
-                        let dx = inImage.x - pp.x
-                        let dy = inImage.y - pp.y
-                        guard dx * dx + dy * dy > 25 else { return }
-                        let angRad = atan2(dy, dx)
-                        // Plan-frame angle (CW from page-up). Storing in plan-frame
-                        // means changes to the floor plan's northDeg never rotate
-                        // existing photo arrows - the drag direction is preserved.
-                        let h = (angRad * 180 / .pi + 90).truncatingRemainder(dividingBy: 360)
-                        heading = h < 0 ? h + 360 : h
-                    }
+                SimultaneousGesture(
+                    MagnifyGesture()
+                        .onChanged { value in
+                            // Zoom anchored at the pinch start point, like
+                            // PlanViewerView. Layout coords throughout.
+                            let newZoom = max(1, min(8, lastZoom * value.magnification))
+                            let aX = geo.size.width  / 2
+                            let aY = geo.size.height / 2
+                            let dx = value.startLocation.x - aX
+                            let dy = value.startLocation.y - aY
+                            pan = CGSize(
+                                width:  lastPan.width  + dx * (lastZoom - newZoom),
+                                height: lastPan.height + dy * (lastZoom - newZoom)
+                            )
+                            zoom = newZoom
+                        }
+                        .onEnded { _ in
+                            lastZoom = zoom
+                            lastPan  = pan
+                        },
+                    DragGesture(minimumDistance: 6, coordinateSpace: .local)
+                        .onChanged { value in
+                            // Decide once per drag: started near the pin → set
+                            // heading; otherwise → pan the canvas.
+                            if dragMode == nil {
+                                dragMode = chooseDragMode(
+                                    startLocation: value.startLocation,
+                                    geoSize: geo.size,
+                                    originX: originX, originY: originY,
+                                    scale: scale
+                                )
+                            }
+                            switch dragMode {
+                            case .heading:
+                                guard let pp = planPoint else { return }
+                                let inImage = CGPoint(
+                                    x: (value.location.x - originX) / scale,
+                                    y: (value.location.y - originY) / scale
+                                )
+                                let dx = inImage.x - pp.x
+                                let dy = inImage.y - pp.y
+                                guard dx * dx + dy * dy > 25 else { return }
+                                let angRad = atan2(dy, dx)
+                                // Plan-frame angle (CW from page-up). Storing in plan-frame
+                                // means changes to the floor plan's northDeg never rotate
+                                // existing photo arrows - the drag direction is preserved.
+                                let h = (angRad * 180 / .pi + 90).truncatingRemainder(dividingBy: 360)
+                                heading = h < 0 ? h + 360 : h
+                            case .pan:
+                                pan = CGSize(
+                                    width:  lastPan.width  + value.translation.width,
+                                    height: lastPan.height + value.translation.height
+                                )
+                            case .none:
+                                break
+                            }
+                        }
+                        .onEnded { _ in
+                            if dragMode == .pan {
+                                lastPan = pan
+                            }
+                            dragMode = nil
+                        }
+                )
             )
         }
+    }
+
+    /// "Did this drag start within finger-tap range of the pin?"
+    /// Threshold scales with zoom so the heading hit-zone stays
+    /// constant in visual size as the user zooms in.
+    private func chooseDragMode(
+        startLocation: CGPoint,
+        geoSize: CGSize,
+        originX: CGFloat,
+        originY: CGFloat,
+        scale: CGFloat
+    ) -> DragMode {
+        guard let pp = planPoint else { return .pan }
+        let pinLayout = CGPoint(
+            x: originX + pp.x * scale,
+            y: originY + pp.y * scale
+        )
+        let dx = startLocation.x - pinLayout.x
+        let dy = startLocation.y - pinLayout.y
+        // 36 visual points × current zoom = layout-space radius.
+        let rView: CGFloat = 36
+        let rLayout = rView * lastZoom
+        return (dx * dx + dy * dy) < rLayout * rLayout ? .heading : .pan
     }
 
     @ViewBuilder

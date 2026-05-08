@@ -534,7 +534,7 @@ private struct PhotoRow: View {
     var body: some View {
         HStack(spacing: 12) {
             thumbnail
-                .frame(width: 64, height: 48)
+                .frame(width: 96, height: 72)
                 .clipped()
                 .background(Color.secondary.opacity(0.2))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
