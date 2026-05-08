@@ -19,6 +19,7 @@ struct ProjectDetailView: View {
     @State private var showingPlanNorth = false
     @State private var showingPlanReplace = false
     @State private var showingPlanRecalibrate = false
+    @State private var showingExport = false
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -32,6 +33,7 @@ struct ProjectDetailView: View {
                     actionsSection(project)
                     floorPlanSection(project)
                     photosSection(project)
+                    exportSection(project)
                     placeholdersSection
                 }
                 .navigationTitle(project.name)
@@ -74,6 +76,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingPlanRecalibrate) {
                     FloorPlanRecalibrateView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingExport) {
+                    ExportView(projectID: projectID)
                         .environment(store)
                 }
                 .confirmationDialog(
@@ -343,6 +349,18 @@ struct ProjectDetailView: View {
     }
 
     @ViewBuilder
+    private func exportSection(_ project: Project) -> some View {
+        Section("Export") {
+            Button {
+                showingExport = true
+            } label: {
+                Label("Export PDF", systemImage: "doc.richtext")
+            }
+            .disabled(project.photos.isEmpty)
+        }
+    }
+
+    @ViewBuilder
     private var placeholdersSection: some View {
         Section("Roadmap") {
             roadmapItem(
@@ -376,7 +394,7 @@ struct ProjectDetailView: View {
                 subtitle: "View Plan opens the calibrated plan with bubbles. Group bubbles trail the lead. Pinch to zoom."
             )
             roadmapItem(
-                done: false,
+                done: true,
                 title: "PDF export",
                 subtitle: "Map page, plan with bubbles, contact sheet."
             )

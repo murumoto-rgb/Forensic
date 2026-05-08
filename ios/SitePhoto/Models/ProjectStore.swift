@@ -173,6 +173,7 @@ final class ProjectStore {
                 }
 
                 migrateThumbnailLocation(for: project)
+                migratePhotoFilenames(for: &project)
                 loaded.append(project)
             } catch {
                 #if DEBUG
@@ -455,22 +456,23 @@ final class ProjectStore {
         try fileManager.createDirectory(at: photosFolder, withIntermediateDirectories: true)
 
         let photoID = UUID()
-        let imageName = "photo_\(photoID.uuidString).jpg"
+        let seq = p.photos.count + 1
+        let now = Date()
+        let imageName = Self.makePhotoFilename(sequenceNumber: seq, timestamp: now, projectName: p.name)
         let imageURL = photosFolder.appending(path: imageName)
         try captured.data.write(to: imageURL, options: .atomic)
 
         var thumbName: String?
         if let thumb = Self.makeThumbnail(from: captured.data, maxPixelSize: 256) {
             try? fileManager.createDirectory(at: thumbsFolder, withIntermediateDirectories: true)
-            let n = "thumb_\(photoID.uuidString).jpg"
+            let n = "thumb_\(imageName)"
             let url = thumbsFolder.appending(path: n)
             try? thumb.write(to: url, options: .atomic)
             thumbName = n
         }
 
-        var photo = Photo(id: photoID,
-                          sequenceNumber: p.photos.count + 1,
-                          imageFilename: imageName)
+        var photo = Photo(id: photoID, sequenceNumber: seq, imageFilename: imageName)
+        photo.timestamp = now
         photo.thumbnailFilename = thumbName
         photo.cameraZoom = captured.userZoom
         photo.lensName = captured.lensName
@@ -569,5 +571,62 @@ final class ProjectStore {
         CGImageDestinationAddImage(dest, opaque, writeOpts as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return mut as Data
+    }
+
+    // MARK: - Photo filename scheme
+
+    /// "Project Name - 3 - 260508 14-30-22.jpg"
+    /// Colons replaced with hyphens (invalid in file names on iOS/macOS).
+    static func makePhotoFilename(sequenceNumber: Int, timestamp: Date, projectName: String) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyMMdd HH-mm-ss"
+        fmt.timeZone = TimeZone.current
+        let dateStr = fmt.string(from: timestamp)
+        let safe = projectName
+            .replacingOccurrences(of: "[/\\\\:*?\"<>|]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        let body = String(safe.prefix(30)).isEmpty ? "project" : String(safe.prefix(30))
+        return "\(body) - \(sequenceNumber) - \(dateStr).jpg"
+    }
+
+    /// Rename any photos whose filenames still use the old "photo_<UUID>.jpg" scheme.
+    private func migratePhotoFilenames(for project: inout Project) {
+        let photosDir = photosFolder(for: project)
+        let thumbsDir = thumbnailsFolder(for: project)
+        var changed = false
+
+        for i in project.photos.indices {
+            let photo = project.photos[i]
+            guard photo.imageFilename.hasPrefix("photo_") else { continue }
+
+            let newImageName = Self.makePhotoFilename(
+                sequenceNumber: photo.sequenceNumber,
+                timestamp: photo.timestamp,
+                projectName: project.name
+            )
+            let oldURL = photosDir.appending(path: photo.imageFilename)
+            let newURL = photosDir.appending(path: newImageName)
+            if fileManager.fileExists(atPath: oldURL.path()) &&
+               !fileManager.fileExists(atPath: newURL.path()) {
+                try? fileManager.moveItem(at: oldURL, to: newURL)
+            }
+            project.photos[i].imageFilename = newImageName
+            changed = true
+
+            if let oldThumb = photo.thumbnailFilename {
+                let newThumbName = "thumb_\(newImageName)"
+                let oldThumbURL = thumbsDir.appending(path: oldThumb)
+                let newThumbURL = thumbsDir.appending(path: newThumbName)
+                if fileManager.fileExists(atPath: oldThumbURL.path()) &&
+                   !fileManager.fileExists(atPath: newThumbURL.path()) {
+                    try? fileManager.moveItem(at: oldThumbURL, to: newThumbURL)
+                }
+                project.photos[i].thumbnailFilename = newThumbName
+            }
+        }
+
+        if changed, let data = try? encoder().encode(project) {
+            try? data.write(to: manifestURL(for: project), options: .atomic)
+        }
     }
 }
