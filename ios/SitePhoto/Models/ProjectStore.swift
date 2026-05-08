@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 
 @Observable
 final class ProjectStore {
-    private(set) var projects: [Project] = []
+    private(set) var activeProjects: [Project] = []
+    private(set) var deletedProjects: [Project] = []
     private(set) var usingICloud: Bool = false
     /// Human-readable explanation for why iCloud isn't being used (nil when it is).
     private(set) var iCloudUnavailableReason: String?
@@ -14,6 +15,20 @@ final class ProjectStore {
     private let storageRoot: URL
 
     var rootURL: URL { storageRoot }
+
+    /// "Active Projects" subfolder — projects shown in the main list.
+    var activeRoot: URL {
+        storageRoot.appending(path: Self.activeFolderName, directoryHint: .isDirectory)
+    }
+
+    /// "Deleted Projects" subfolder — soft-deleted projects, recoverable
+    /// until permanently deleted.
+    var deletedRoot: URL {
+        storageRoot.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+    }
+
+    static let activeFolderName  = "Active Projects"
+    static let deletedFolderName = "Deleted Projects"
 
     init() {
         let local = Self.localProjectsURL
@@ -36,10 +51,6 @@ final class ProjectStore {
         }
 
         if let iCloud = iCloudProjectsURL {
-            // Migrate any existing local projects to iCloud on first launch
-            // with iCloud available. Each project's UUID-named folder is moved
-            // intact (manifest, photos, plan).
-            Self.migrateProjects(from: local, to: iCloud)
             self.storageRoot = iCloud
             self.usingICloud = true
             self.iCloudUnavailableReason = nil
@@ -49,12 +60,78 @@ final class ProjectStore {
             self.iCloudUnavailableReason = unavailableReason
         }
 
+        // Make sure both subfolders exist in the active root and (when
+        // running on iCloud) in the local root too — the local copy is used
+        // by the iCloud migration path below and as the staging area for any
+        // projects the user creates while iCloud is briefly unavailable.
+        Self.ensureSubfolders(in: storageRoot)
+        Self.ensureSubfolders(in: local)
+
+        // Legacy housekeeping: any project folder living directly under
+        // "Projects/" (pre-Active/Deleted era) is moved into Active Projects.
+        Self.migrateFlatToActive(in: storageRoot)
+        Self.migrateFlatToActive(in: local)
+
+        // Migrate local→iCloud per subfolder so the Active/Deleted layout is
+        // preserved end-to-end.
+        if usingICloud {
+            Self.migrateProjects(
+                from: local.appending(path: Self.activeFolderName, directoryHint: .isDirectory),
+                to: storageRoot.appending(path: Self.activeFolderName, directoryHint: .isDirectory)
+            )
+            Self.migrateProjects(
+                from: local.appending(path: Self.deletedFolderName, directoryHint: .isDirectory),
+                to: storageRoot.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+            )
+        }
+
         load()
     }
 
     private static var localProjectsURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appending(path: "Projects", directoryHint: .isDirectory)
+    }
+
+    private static func ensureSubfolders(in root: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(
+            at: root.appending(path: activeFolderName, directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        try? fm.createDirectory(
+            at: root.appending(path: deletedFolderName, directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+    }
+
+    /// Migrate any project folder that lives directly under `root/` (legacy
+    /// flat layout) into `root/Active Projects/`.
+    private static func migrateFlatToActive(in root: URL) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return }
+        let active = root.appending(path: activeFolderName, directoryHint: .isDirectory)
+        for entry in entries {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            let name = entry.lastPathComponent
+            // Skip our own subfolders and any system/hidden folders.
+            if name == activeFolderName || name == deletedFolderName { continue }
+            if name.hasPrefix(".") { continue }
+            let dest = active.appending(path: name, directoryHint: .isDirectory)
+            if !fm.fileExists(atPath: dest.path()) {
+                do {
+                    try fm.moveItem(at: entry, to: dest)
+                } catch {
+                    #if DEBUG
+                    print("Flat→Active migration failed for \(name): \(error)")
+                    #endif
+                }
+            }
+        }
     }
 
     /// Move every project folder from `src` to `dst`. If a folder with the
@@ -96,7 +173,12 @@ final class ProjectStore {
     func projectURL(_ project: Project) -> URL {
         let folderName = project.folderName
             ?? Project.makeFolderName(id: project.id, name: project.name, createdAt: project.createdAt)
-        return rootURL.appending(path: folderName, directoryHint: .isDirectory)
+        let root = isDeleted(project) ? deletedRoot : activeRoot
+        return root.appending(path: folderName, directoryHint: .isDirectory)
+    }
+
+    private func isDeleted(_ project: Project) -> Bool {
+        deletedProjects.contains { $0.id == project.id }
     }
 
     func photosFolder(for project: Project) -> URL {
@@ -125,12 +207,20 @@ final class ProjectStore {
     }
 
     func load() {
+        activeProjects = loadProjects(in: activeRoot)
+        deletedProjects = loadProjects(in: deletedRoot)
+    }
+
+    /// Walks one root (Active Projects or Deleted Projects), decodes each
+    /// manifest, and applies on-disk migrations (folder rename, thumbnail
+    /// move, photo filename rename). The migrations only mutate paths
+    /// underneath `root`, so the same logic works for both lists.
+    private func loadProjects(in root: URL) -> [Project] {
         guard let dirs = try? fileManager.contentsOfDirectory(
-            at: rootURL,
+            at: root,
             includingPropertiesForKeys: [.isDirectoryKey]
         ) else {
-            projects = []
-            return
+            return []
         }
         var loaded: [Project] = []
         for dir in dirs {
@@ -140,21 +230,20 @@ final class ProjectStore {
             guard let data = try? Data(contentsOf: manifest) else { continue }
             do {
                 var project = try decoder().decode(Project.self, from: data)
-                // Migrate: project predates folderName field, or its folder is
-                // not at the canonical location.
                 let canonicalName = Project.makeFolderName(
                     id: project.id,
                     name: project.name,
                     createdAt: project.createdAt
                 )
                 let actualName = dir.lastPathComponent
-                let canonicalDir = rootURL.appending(path: canonicalName, directoryHint: .isDirectory)
+                let canonicalDir = root.appending(path: canonicalName, directoryHint: .isDirectory)
+                var projectDir = dir
                 if actualName != canonicalName {
                     if !fileManager.fileExists(atPath: canonicalDir.path()) {
                         do {
                             try fileManager.moveItem(at: dir, to: canonicalDir)
                             project.folderName = canonicalName
-                            // Re-write the manifest with the new folderName.
+                            projectDir = canonicalDir
                             let manifestNew = canonicalDir.appending(path: "manifest.json")
                             if let bytes = try? encoder().encode(project) {
                                 try? bytes.write(to: manifestNew, options: .atomic)
@@ -172,8 +261,8 @@ final class ProjectStore {
                     project.folderName = canonicalName
                 }
 
-                migrateThumbnailLocation(for: project)
-                migratePhotoFilenames(for: &project)
+                migrateThumbnailLocation(at: projectDir)
+                migratePhotoFilenames(for: &project, at: projectDir)
                 loaded.append(project)
             } catch {
                 #if DEBUG
@@ -181,15 +270,15 @@ final class ProjectStore {
                 #endif
             }
         }
-        projects = loaded.sorted { $0.createdAt > $1.createdAt }
+        return loaded.sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Move any thumb_*.jpg files that historically lived inside photos/ into
     /// the new thumbnails/ subfolder so the photos folder is just full-res
     /// JPEGs.
-    private func migrateThumbnailLocation(for project: Project) {
-        let photos = photosFolder(for: project)
-        let thumbs = thumbnailsFolder(for: project)
+    private func migrateThumbnailLocation(at projectDir: URL) {
+        let photos = projectDir.appending(path: "photos", directoryHint: .isDirectory)
+        let thumbs = projectDir.appending(path: "thumbnails", directoryHint: .isDirectory)
         guard let entries = try? fileManager.contentsOfDirectory(
             at: photos,
             includingPropertiesForKeys: nil
@@ -222,29 +311,102 @@ final class ProjectStore {
             print("Failed to save project: \(error)")
             #endif
         }
-        if let idx = projects.firstIndex(where: { $0.id == project.id }) {
-            projects[idx] = project
+        // Keep existing projects in their current list; new projects go into
+        // Active Projects.
+        if let idx = activeProjects.firstIndex(where: { $0.id == project.id }) {
+            activeProjects[idx] = project
+        } else if let idx = deletedProjects.firstIndex(where: { $0.id == project.id }) {
+            deletedProjects[idx] = project
         } else {
-            projects.insert(project, at: 0)
+            activeProjects.insert(project, at: 0)
         }
         return project
     }
 
+    /// Soft delete: move the project's folder from "Active Projects" to
+    /// "Deleted Projects" so the data stays available for recovery. The
+    /// permanent purge happens in `permanentlyDelete(_)`.
     func delete(_ project: Project) {
-        // Match folders by the project UUID embedded in the folder name —
-        // canonical "<date>_<name>_<idPrefix>" or the legacy raw UUID. We do
-        // NOT read manifests here because iCloud placeholders are unreadable
-        // until downloaded and would silently slip through.
         let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
         let fullUUID = project.id.uuidString.lowercased()
 
-        removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: rootURL)
+        moveMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID,
+                            from: activeRoot, to: deletedRoot)
         if usingICloud {
-            // Catch any local copy that would be re-migrated on next launch.
-            removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: Self.localProjectsURL)
+            moveMatchingFolders(
+                idPrefix: idPrefix, fullUUID: fullUUID,
+                from: Self.localProjectsURL.appending(path: Self.activeFolderName, directoryHint: .isDirectory),
+                to:   Self.localProjectsURL.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+            )
         }
 
-        projects.removeAll { $0.id == project.id }
+        activeProjects.removeAll { $0.id == project.id }
+        if !deletedProjects.contains(where: { $0.id == project.id }) {
+            deletedProjects.insert(project, at: 0)
+        }
+    }
+
+    /// Restore a soft-deleted project — move its folder from "Deleted
+    /// Projects" back to "Active Projects".
+    func restore(_ project: Project) {
+        let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
+        let fullUUID = project.id.uuidString.lowercased()
+
+        moveMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID,
+                            from: deletedRoot, to: activeRoot)
+        if usingICloud {
+            moveMatchingFolders(
+                idPrefix: idPrefix, fullUUID: fullUUID,
+                from: Self.localProjectsURL.appending(path: Self.deletedFolderName, directoryHint: .isDirectory),
+                to:   Self.localProjectsURL.appending(path: Self.activeFolderName, directoryHint: .isDirectory)
+            )
+        }
+
+        deletedProjects.removeAll { $0.id == project.id }
+        if !activeProjects.contains(where: { $0.id == project.id }) {
+            activeProjects.insert(project, at: 0)
+        }
+    }
+
+    /// Permanently remove every folder for this project — from both
+    /// Active/Deleted in the active root and the legacy local root.
+    func permanentlyDelete(_ project: Project) {
+        let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
+        let fullUUID = project.id.uuidString.lowercased()
+
+        removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: activeRoot)
+        removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: deletedRoot)
+        if usingICloud {
+            removeMatchingFolders(
+                idPrefix: idPrefix, fullUUID: fullUUID,
+                under: Self.localProjectsURL.appending(path: Self.activeFolderName, directoryHint: .isDirectory)
+            )
+            removeMatchingFolders(
+                idPrefix: idPrefix, fullUUID: fullUUID,
+                under: Self.localProjectsURL.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+            )
+        }
+
+        activeProjects.removeAll { $0.id == project.id }
+        deletedProjects.removeAll { $0.id == project.id }
+    }
+
+    private func moveMatchingFolders(idPrefix: String, fullUUID: String,
+                                      from src: URL, to dst: URL) {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: src,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return }
+        try? fileManager.createDirectory(at: dst, withIntermediateDirectories: true)
+
+        for entry in entries {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            let nameLower = entry.lastPathComponent.lowercased()
+            guard nameLower.hasSuffix("_\(idPrefix)") || nameLower == fullUUID else { continue }
+            let target = dst.appending(path: entry.lastPathComponent, directoryHint: .isDirectory)
+            coordinatedMove(from: entry, to: target)
+        }
     }
 
     private func removeMatchingFolders(idPrefix: String, fullUUID: String, under root: URL) {
@@ -257,10 +419,37 @@ final class ProjectStore {
             let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard isDir else { continue }
             let nameLower = entry.lastPathComponent.lowercased()
-            // Canonical: "<date>_<name>_<6-char idPrefix>"
-            // Legacy:    full UUID string
             guard nameLower.hasSuffix("_\(idPrefix)") || nameLower == fullUUID else { continue }
             coordinatedRemove(entry)
+        }
+    }
+
+    /// File-coordinated move (for iCloud safety). If a folder already exists
+    /// at the destination it is removed first so the move can proceed.
+    private func coordinatedMove(from src: URL, to dst: URL) {
+        if fileManager.fileExists(atPath: dst.path()) {
+            coordinatedRemove(dst)
+        }
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(
+            writingItemAt: src, options: .forMoving,
+            writingItemAt: dst, options: .forReplacing,
+            error: &coordError
+        ) { newSrc, newDst in
+            do {
+                try fileManager.moveItem(at: newSrc, to: newDst)
+            } catch {
+                #if DEBUG
+                print("coordinated move failed \(newSrc.lastPathComponent) → \(newDst.lastPathComponent): \(error)")
+                #endif
+            }
+        }
+        if let coordError {
+            #if DEBUG
+            print("move coordination failed for \(src.lastPathComponent): \(coordError)")
+            #endif
+            try? fileManager.moveItem(at: src, to: dst)
         }
     }
 
@@ -288,7 +477,7 @@ final class ProjectStore {
     }
 
     func project(withID id: UUID) -> Project? {
-        projects.first { $0.id == id }
+        activeProjects.first { $0.id == id } ?? deletedProjects.first { $0.id == id }
     }
 
     // MARK: - Session lifecycle
@@ -641,9 +830,9 @@ final class ProjectStore {
     }
 
     /// Rename any photos whose filenames still use the old "photo_<UUID>.jpg" scheme.
-    private func migratePhotoFilenames(for project: inout Project) {
-        let photosDir = photosFolder(for: project)
-        let thumbsDir = thumbnailsFolder(for: project)
+    private func migratePhotoFilenames(for project: inout Project, at projectDir: URL) {
+        let photosDir = projectDir.appending(path: "photos", directoryHint: .isDirectory)
+        let thumbsDir = projectDir.appending(path: "thumbnails", directoryHint: .isDirectory)
         var changed = false
 
         for i in project.photos.indices {
@@ -677,7 +866,7 @@ final class ProjectStore {
         }
 
         if changed, let data = try? encoder().encode(project) {
-            try? data.write(to: manifestURL(for: project), options: .atomic)
+            try? data.write(to: projectDir.appending(path: "manifest.json"), options: .atomic)
         }
     }
 }

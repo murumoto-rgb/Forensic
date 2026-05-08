@@ -6,29 +6,52 @@ struct ContentView: View {
     @State private var path = NavigationPath()
     @State private var showingNew = false
     @State private var pendingDelete: Project?
+    @State private var pendingPermanentDelete: Project?
 
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if store.projects.isEmpty {
+                if store.activeProjects.isEmpty && store.deletedProjects.isEmpty {
                     EmptyProjectsView { showingNew = true }
                 } else {
                     List {
-                        Section {
-                            ForEach(store.projects) { project in
+                        Section("Active Projects") {
+                            ForEach(store.activeProjects) { project in
                                 NavigationLink(value: project) {
                                     ProjectRow(project: project)
                                 }
                             }
                             .onDelete { indexSet in
-                                // First-tap-to-confirm via the system swipe-to-delete affordance.
                                 for i in indexSet {
-                                    pendingDelete = store.projects[i]
+                                    pendingDelete = store.activeProjects[i]
                                 }
                             }
-                        } footer: {
-                            StorageStatusFooter(store: store)
                         }
+
+                        if !store.deletedProjects.isEmpty {
+                            Section("Deleted Projects") {
+                                ForEach(store.deletedProjects) { project in
+                                    DeletedProjectRow(project: project)
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                            Button(role: .destructive) {
+                                                pendingPermanentDelete = project
+                                            } label: {
+                                                Label("Delete Forever", systemImage: "trash.fill")
+                                            }
+                                        }
+                                        .swipeActions(edge: .leading) {
+                                            Button {
+                                                store.restore(project)
+                                            } label: {
+                                                Label("Restore", systemImage: "arrow.uturn.backward")
+                                            }
+                                            .tint(.green)
+                                        }
+                                }
+                            }
+                        }
+
+                        Section { StorageStatusFooter(store: store) }
                     }
                     .listStyle(.insetGrouped)
                 }
@@ -53,7 +76,7 @@ struct ContentView: View {
                 }
             }
             .alert(
-                "Delete project?",
+                "Move to Deleted Projects?",
                 isPresented: Binding(
                     get: { pendingDelete != nil },
                     set: { if !$0 { pendingDelete = nil } }
@@ -68,9 +91,52 @@ struct ContentView: View {
                     pendingDelete = nil
                 }
             } message: { project in
-                Text("\"\(project.name)\" and all its photos will be deleted from this device. This cannot be undone.")
+                Text("\"\(project.name)\" will be moved to Deleted Projects. You can restore it from there until you delete it permanently.")
+            }
+            .alert(
+                "Delete forever?",
+                isPresented: Binding(
+                    get: { pendingPermanentDelete != nil },
+                    set: { if !$0 { pendingPermanentDelete = nil } }
+                ),
+                presenting: pendingPermanentDelete
+            ) { project in
+                Button("Delete Forever", role: .destructive) {
+                    store.permanentlyDelete(project)
+                    pendingPermanentDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingPermanentDelete = nil
+                }
+            } message: { project in
+                Text("\"\(project.name)\" and all its photos will be permanently removed from iCloud. This cannot be undone.")
             }
         }
+    }
+}
+
+private struct DeletedProjectRow: View {
+    let project: Project
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "trash")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project.name)
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text("\(project.photos.count) photo\(project.photos.count == 1 ? "" : "s") · created \(project.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Text("Swipe right to restore, left to delete forever")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 4)
     }
 }
 
