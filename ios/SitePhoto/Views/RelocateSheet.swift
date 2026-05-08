@@ -48,6 +48,8 @@ struct RelocateSheet: View {
                 PhotoGroupPickerSheet(
                     projectID: projectID,
                     excludingPhotoIDs: [photoID],
+                    fromPhotoID: photoID,
+                    pendingCount: 0,
                     onSelect: { leadID in
                         attachToGroup(leadID: leadID)
                     }

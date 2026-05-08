@@ -76,6 +76,8 @@ struct LocateSheet: View {
                 PhotoGroupPickerSheet(
                     projectID: projectID,
                     excludingPhotoIDs: [],
+                    fromPhotoID: nil,
+                    pendingCount: pendingPhotos.count,
                     onSelect: { leadID in
                         saveAttachedToGroup(leadID: leadID)
                     }

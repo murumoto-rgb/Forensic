@@ -1,16 +1,22 @@
 import SwiftUI
 
 /// Lets the user choose which photo to stack a new/relocated photo onto.
-/// Two modes: a thumbnail List, and an interactive plan view with the same
-/// numbered bubbles as the plan viewer — tap a bubble to pick that photo.
+/// Two modes (List / Plan) plus a confirmation step that shows both
+/// thumbnails before the group is created.
 struct PhotoGroupPickerSheet: View {
     let projectID: UUID
-    /// Photo IDs to omit — typically the photo currently being (re)located.
+    /// Photo IDs to omit (typically the photo currently being relocated).
     let excludingPhotoIDs: Set<UUID>
+    /// Photo being relocated, used to render the "from" thumbnail in the
+    /// confirmation. Pass nil for new captures (LocateSheet).
+    let fromPhotoID: UUID?
+    /// Number of yet-unsaved captures being grouped (LocateSheet's case).
+    let pendingCount: Int
     let onSelect: (UUID) -> Void
 
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("sitephoto.bubbleScale") private var bubbleScale: Double = 1.5
 
     @State private var mode: Mode = .list
     @State private var planImage: UIImage?
@@ -19,9 +25,22 @@ struct PhotoGroupPickerSheet: View {
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+    @State private var pendingTargetID: UUID?
 
     private enum Mode { case list, plan }
     private enum PlanLoadState { case loading, loaded, missing }
+
+    init(projectID: UUID,
+         excludingPhotoIDs: Set<UUID>,
+         fromPhotoID: UUID? = nil,
+         pendingCount: Int = 0,
+         onSelect: @escaping (UUID) -> Void) {
+        self.projectID = projectID
+        self.excludingPhotoIDs = excludingPhotoIDs
+        self.fromPhotoID = fromPhotoID
+        self.pendingCount = pendingCount
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         NavigationStack {
@@ -56,8 +75,29 @@ struct PhotoGroupPickerSheet: View {
                     await loadPlan()
                 }
             }
+            .sheet(item: Binding(
+                get: { pendingTargetID.map { TargetID(id: $0) } },
+                set: { pendingTargetID = $0?.id }
+            )) { target in
+                ConfirmGroupSheet(
+                    projectID: projectID,
+                    fromPhotoID: fromPhotoID,
+                    pendingCount: pendingCount,
+                    targetPhotoID: target.id,
+                    onConfirm: {
+                        let id = target.id
+                        pendingTargetID = nil
+                        onSelect(id)
+                        dismiss()
+                    },
+                    onCancel: { pendingTargetID = nil }
+                )
+                .environment(store)
+            }
         }
     }
+
+    private struct TargetID: Identifiable { let id: UUID }
 
     private func toggleMode() {
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -80,8 +120,7 @@ struct PhotoGroupPickerSheet: View {
                 Section {
                     ForEach(eligible) { photo in
                         Button {
-                            onSelect(photo.id)
-                            dismiss()
+                            pendingTargetID = photo.id
                         } label: {
                             row(for: photo)
                         }
@@ -203,15 +242,19 @@ struct PhotoGroupPickerSheet: View {
         let originX = (geo.size.width - dispW) / 2
         let originY = (geo.size.height - dispH) / 2
 
-        let primaryR: CGFloat = 18
-        let secR: CGFloat = 13
-        let firstGapView = primaryR + secR - 2
-        let stepGapView = secR * 2 - 2
+        // Match PlanViewerView's sizing exactly.
+        let primaryRview = 18 * bubbleScale
+        let secRview = 13 * bubbleScale
+        let firstGapView = primaryRview + secRview - 2 * bubbleScale
+        let stepGapView = secRview * 2 - 2 * bubbleScale
 
         let markers = buildMarkers(
             firstGapPlan: firstGapView / fit,
             stepGapPlan: stepGapView / fit
         )
+
+        let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
+        let arrowLengthView = arrowLengthPlan * fit
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -219,21 +262,38 @@ struct PhotoGroupPickerSheet: View {
                 .frame(width: dispW, height: dispH)
                 .offset(x: originX, y: originY)
 
-            // Tails first so leads draw on top.
+            // Direction arrows on primary bubbles with a stored bearing.
+            ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
+                let planFrame = marker.bearing ?? 0
+                let centerX = originX + marker.x * fit
+                let centerY = originY + marker.y * fit
+                ArrowShape(bearingDegrees: planFrame, length: arrowLengthView)
+                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
+                    .frame(width: 1, height: 1)
+                    .position(x: centerX, y: centerY)
+                ArrowHead(bearingDegrees: planFrame,
+                          length: arrowLengthView,
+                          baseRadius: 14 * bubbleScale)
+                    .fill(Color.green)
+                    .frame(width: 1, height: 1)
+                    .position(x: centerX, y: centerY)
+            }
+
+            // Tails first so leads draw on top of any visual overlap.
             ForEach(markers.filter { !$0.isPrimary }) { m in
-                bubble(seq: m.photo.sequenceNumber, radius: secR)
+                bubble(seq: m.photo.sequenceNumber, radius: secRview)
                     .position(x: originX + m.x * fit, y: originY + m.y * fit)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
-                        pick(m.photo.id)
+                        pendingTargetID = m.photo.id
                     }
             }
             ForEach(markers.filter { $0.isPrimary }) { m in
-                bubble(seq: m.photo.sequenceNumber, radius: primaryR)
+                bubble(seq: m.photo.sequenceNumber, radius: primaryRview)
                     .position(x: originX + m.x * fit, y: originY + m.y * fit)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
-                        pick(m.photo.id)
+                        pendingTargetID = m.photo.id
                     }
             }
         }
@@ -270,11 +330,6 @@ struct PhotoGroupPickerSheet: View {
         }
     }
 
-    private func pick(_ photoID: UUID) {
-        onSelect(photoID)
-        dismiss()
-    }
-
     // MARK: - Marker layout (mirrors PlanViewerView)
 
     private struct Marker: Identifiable {
@@ -283,6 +338,7 @@ struct PhotoGroupPickerSheet: View {
         let x: Double
         let y: Double
         let isPrimary: Bool
+        let bearing: Double?
     }
 
     private func buildMarkers(firstGapPlan: Double, stepGapPlan: Double) -> [Marker] {
@@ -300,7 +356,10 @@ struct PhotoGroupPickerSheet: View {
             let lead = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
             let lpx = lead.planPixelX ?? 0
             let lpy = lead.planPixelY ?? 0
-            markers.append(Marker(id: lead.id, photo: lead, x: lpx, y: lpy, isPrimary: true))
+            markers.append(Marker(
+                id: lead.id, photo: lead, x: lpx, y: lpy,
+                isPrimary: true, bearing: lead.headingDegrees
+            ))
 
             let bearing = lead.headingDegrees ?? 0
             let oppRad = (bearing + 90) * .pi / 180
@@ -311,9 +370,8 @@ struct PhotoGroupPickerSheet: View {
                 let dist = firstGapPlan + Double(i) * stepGapPlan
                 markers.append(Marker(
                     id: t.id, photo: t,
-                    x: lpx + dx * dist,
-                    y: lpy + dy * dist,
-                    isPrimary: false
+                    x: lpx + dx * dist, y: lpy + dy * dist,
+                    isPrimary: false, bearing: nil
                 ))
             }
         }
@@ -334,6 +392,159 @@ struct PhotoGroupPickerSheet: View {
             planLoadState = .loaded
         } else {
             planLoadState = .missing
+        }
+    }
+}
+
+// MARK: - Confirmation sheet
+
+private struct ConfirmGroupSheet: View {
+    let projectID: UUID
+    let fromPhotoID: UUID?
+    let pendingCount: Int
+    let targetPhotoID: UUID
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    @Environment(ProjectStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Text("Group these photos?")
+                .font(.title3.bold())
+                .padding(.top, 8)
+
+            HStack(alignment: .center, spacing: 12) {
+                fromTile
+                Image(systemName: "plus")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                targetTile
+            }
+            .padding(.horizontal)
+
+            if let target = targetPhoto {
+                Text("It will share #\(target.sequenceNumber)'s location on the plan and join its group.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            Spacer()
+
+            HStack(spacing: 12) {
+                Button(role: .cancel) {
+                    onCancel()
+                    dismiss()
+                } label: {
+                    Text("Cancel").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
+                Button {
+                    onConfirm()
+                    dismiss()
+                } label: {
+                    Text("Group").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 12)
+        }
+        .padding(.top)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var targetPhoto: Photo? {
+        store.project(withID: projectID)?.photos.first { $0.id == targetPhotoID }
+    }
+
+    private var fromPhoto: Photo? {
+        guard let id = fromPhotoID else { return nil }
+        return store.project(withID: projectID)?.photos.first { $0.id == id }
+    }
+
+    @ViewBuilder
+    private var fromTile: some View {
+        if let from = fromPhoto {
+            tile(for: from, caption: "Move this")
+        } else if pendingCount > 0 {
+            placeholderTile(
+                glyph: "camera.fill",
+                primary: pendingCount == 1 ? "1 new photo" : "\(pendingCount) new photos",
+                caption: "Add these"
+            )
+        } else {
+            placeholderTile(glyph: "questionmark", primary: "—", caption: "Move this")
+        }
+    }
+
+    @ViewBuilder
+    private var targetTile: some View {
+        if let target = targetPhoto {
+            tile(for: target, caption: "Onto this")
+        } else {
+            placeholderTile(glyph: "questionmark", primary: "—", caption: "Onto this")
+        }
+    }
+
+    @ViewBuilder
+    private func tile(for photo: Photo, caption: String) -> some View {
+        VStack(spacing: 6) {
+            tileImage(for: photo)
+                .frame(width: 110, height: 110)
+                .clipped()
+                .background(Color.secondary.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text("#\(photo.sequenceNumber)")
+                .font(.headline.monospaced())
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func tileImage(for photo: Photo) -> some View {
+        if let project = store.project(withID: projectID),
+           let url = store.thumbnailURL(for: photo, in: project),
+           let data = try? Data(contentsOf: url),
+           let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "photo")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func placeholderTile(glyph: String, primary: String, caption: String) -> some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.2))
+                Image(systemName: glyph)
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 110, height: 110)
+            Text(primary)
+                .font(.headline.monospaced())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }

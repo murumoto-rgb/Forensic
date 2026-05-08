@@ -454,7 +454,7 @@ struct PlanMarker: Identifiable {
     let bearing: Double?
 }
 
-private struct ArrowShape: Shape {
+struct ArrowShape: Shape {
     let bearingDegrees: Double
     let length: CGFloat
 
@@ -472,7 +472,7 @@ private struct ArrowShape: Shape {
     }
 }
 
-private struct ArrowHead: Shape {
+struct ArrowHead: Shape {
     let bearingDegrees: Double
     let length: CGFloat
     let baseRadius: CGFloat
