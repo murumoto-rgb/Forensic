@@ -178,11 +178,29 @@ struct PlanViewerView: View {
         let firstGapView = primaryRview + secRview - 2 * bubbleScale
         let stepGapView = secRview * 2 - 2 * bubbleScale
 
-        let markers = buildMarkers(
+        let initialMarkers = buildMarkers(
             project: project,
             firstGapPlan: firstGapView / fit,
             stepGapPlan: stepGapView / fit
         )
+
+        // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
+        let primaryRplan = Double(primaryRview / fit)
+        let fanResult = ClusterFanning.apply(
+            markers: initialMarkers,
+            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
+            position: { CGPoint(x: $0.x, y: $0.y) },
+            isPrimary: { $0.isPrimary },
+            setPosition: { m, p in
+                PlanMarker(id: m.id, photo: m.photo,
+                           x: p.x, y: p.y,
+                           isPrimary: m.isPrimary, bearing: m.bearing)
+            },
+            collisionRadius: primaryRplan * 2.0,
+            fanRadius: primaryRplan * 1.05
+        )
+        let markers = fanResult.adjusted
+        // MARK: end cluster-fanning
 
         let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
         let arrowLengthView = arrowLengthPlan * fit
@@ -192,6 +210,23 @@ struct PlanViewerView: View {
                 .resizable()
                 .frame(width: dispW, height: dispH)
                 .offset(x: originX, y: originY)
+
+            // MARK: cluster-fanning leader lines (experimental)
+            ForEach(fanResult.leaderLines, id: \.self) { line in
+                Path { p in
+                    p.move(to: CGPoint(
+                        x: originX + line.from.x * fit,
+                        y: originY + line.from.y * fit
+                    ))
+                    p.addLine(to: CGPoint(
+                        x: originX + line.to.x * fit,
+                        y: originY + line.to.y * fit
+                    ))
+                }
+                .stroke(Color.white.opacity(0.4),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            // MARK: end cluster-fanning leader lines
 
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
                 // Heading is stored in plan-frame (CW from page-up at the time of
