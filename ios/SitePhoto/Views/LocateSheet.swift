@@ -321,33 +321,40 @@ struct PlanLocateCanvas: View {
 
     var body: some View {
         GeometryReader { geo in
-            let imgSize = image.size
-            let scale = min(geo.size.width / max(1, imgSize.width),
-                            geo.size.height / max(1, imgSize.height))
-            let dispW = imgSize.width * scale
-            let dispH = imgSize.height * scale
-            let originX = (geo.size.width - dispW) / 2
-            let originY = (geo.size.height - dispH) / 2
+            let imgSize  = image.size
+            let baseFit  = min(geo.size.width  / max(1, imgSize.width),
+                               geo.size.height / max(1, imgSize.height))
+            let baseW    = imgSize.width  * baseFit
+            let baseH    = imgSize.height * baseFit
+            let baseOX   = (geo.size.width  - baseW) / 2
+            let baseOY   = (geo.size.height - baseH) / 2
+
+            // Effective scale = base fit × user zoom. We render the image
+            // at its zoomed size directly (no scaleEffect), so all
+            // gestures see true layout coordinates and the conversion to
+            // image pixels is trivial.
+            let effScale = baseFit * zoom
+            let effW     = imgSize.width  * effScale
+            let effH     = imgSize.height * effScale
+            let effOX    = baseOX - (effW - baseW) / 2 + pan.width
+            let effOY    = baseOY - (effH - baseH) / 2 + pan.height
 
             ZStack(alignment: .topLeading) {
                 Image(uiImage: image)
                     .resizable()
-                    .frame(width: dispW, height: dispH)
-                    .offset(x: originX, y: originY)
+                    .frame(width: effW, height: effH)
+                    .offset(x: effOX, y: effOY)
 
-                // Tap target: a transparent rectangle aligned with the image.
-                // Its local coordinate space is (0…dispW, 0…dispH), so a
-                // tap inside it is already image-relative regardless of the
-                // parent's scaleEffect/offset. This avoids the gesture
-                // coordinate-space ambiguity we hit when the tap was on the
-                // outer (visually-transformed) container.
+                // Tap target sized to the zoomed image. Local coord space
+                // is (0…effW, 0…effH), so a tap directly maps to an image
+                // pixel via division by effScale — no transform inversion.
                 Color.clear
-                    .frame(width: dispW, height: dispH)
-                    .offset(x: originX, y: originY)
+                    .frame(width: effW, height: effH)
+                    .offset(x: effOX, y: effOY)
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { tap in
-                        let inImage = CGPoint(x: tap.x / scale,
-                                              y: tap.y / scale)
+                        let inImage = CGPoint(x: tap.x / effScale,
+                                              y: tap.y / effScale)
                         guard inImage.x >= 0, inImage.x <= imgSize.width,
                               inImage.y >= 0, inImage.y <= imgSize.height else { return }
                         planPoint = inImage
@@ -356,8 +363,8 @@ struct PlanLocateCanvas: View {
 
                 if let pp = planPoint {
                     let pinView = CGPoint(
-                        x: originX + pp.x * scale,
-                        y: originY + pp.y * scale
+                        x: effOX + pp.x * effScale,
+                        y: effOY + pp.y * effScale
                     )
 
                     if let h = heading {
@@ -368,23 +375,30 @@ struct PlanLocateCanvas: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .scaleEffect(zoom, anchor: .center)
-            .offset(pan)
+            .clipped()
             .contentShape(Rectangle())
             .gesture(
                 SimultaneousGesture(
                     MagnifyGesture()
                         .onChanged { value in
-                            // Zoom anchored at the pinch start point, like
-                            // PlanViewerView. Layout coords throughout.
                             let newZoom = max(1, min(8, lastZoom * value.magnification))
-                            let aX = geo.size.width  / 2
-                            let aY = geo.size.height / 2
-                            let dx = value.startLocation.x - aX
-                            let dy = value.startLocation.y - aY
+                            // Anchor zoom at the pinch start point: the
+                            // image pixel under value.startLocation should
+                            // stay there as the zoom changes.
+                            //
+                            // Derivation: imagePx under X_pinch is
+                            //   (X_pinch − imgCenterBase − pan) / (baseFit · zoom)
+                            // Holding it constant across (zoom, pan) gives
+                            //   pan_new = q·(1 − r) + pan_start·r
+                            // where r = magnification, q = X_pinch − imgCenterBase.
+                            let imgCenterX = baseOX + baseW / 2
+                            let imgCenterY = baseOY + baseH / 2
+                            let qx = value.startLocation.x - imgCenterX
+                            let qy = value.startLocation.y - imgCenterY
+                            let r  = value.magnification
                             pan = CGSize(
-                                width:  lastPan.width  + dx * (lastZoom - newZoom),
-                                height: lastPan.height + dy * (lastZoom - newZoom)
+                                width:  qx * (1 - r) + lastPan.width  * r,
+                                height: qy * (1 - r) + lastPan.height * r
                             )
                             zoom = newZoom
                         }
@@ -394,30 +408,29 @@ struct PlanLocateCanvas: View {
                         },
                     DragGesture(minimumDistance: 6, coordinateSpace: .local)
                         .onChanged { value in
-                            // Decide once per drag: started near the pin → set
-                            // heading; otherwise → pan the canvas.
+                            // Decide once per drag: started near the pin →
+                            // set heading; otherwise → pan the canvas.
                             if dragMode == nil {
                                 dragMode = chooseDragMode(
                                     startLocation: value.startLocation,
-                                    geoSize: geo.size,
-                                    originX: originX, originY: originY,
-                                    scale: scale
+                                    effOX: effOX, effOY: effOY,
+                                    effScale: effScale
                                 )
                             }
                             switch dragMode {
                             case .heading:
                                 guard let pp = planPoint else { return }
+                                // value.location is in ZStack-local layout
+                                // coords (no scaleEffect to invert), so
+                                // converting to an image pixel is just:
                                 let inImage = CGPoint(
-                                    x: (value.location.x - originX) / scale,
-                                    y: (value.location.y - originY) / scale
+                                    x: (value.location.x - effOX) / effScale,
+                                    y: (value.location.y - effOY) / effScale
                                 )
                                 let dx = inImage.x - pp.x
                                 let dy = inImage.y - pp.y
                                 guard dx * dx + dy * dy > 25 else { return }
                                 let angRad = atan2(dy, dx)
-                                // Plan-frame angle (CW from page-up). Storing in plan-frame
-                                // means changes to the floor plan's northDeg never rotate
-                                // existing photo arrows - the drag direction is preserved.
                                 let h = (angRad * 180 / .pi + 90).truncatingRemainder(dividingBy: 360)
                                 heading = h < 0 ? h + 360 : h
                             case .pan:
@@ -440,27 +453,25 @@ struct PlanLocateCanvas: View {
         }
     }
 
-    /// "Did this drag start within finger-tap range of the pin?"
-    /// Threshold scales with zoom so the heading hit-zone stays
-    /// constant in visual size as the user zooms in.
+    /// Drag started within finger-tap distance of the pin → heading mode.
+    /// Hit zone radius is in screen points (~36 pt) and does NOT need to
+    /// scale with zoom because the pin's screen-position is computed live
+    /// from the current effective scale.
     private func chooseDragMode(
         startLocation: CGPoint,
-        geoSize: CGSize,
-        originX: CGFloat,
-        originY: CGFloat,
-        scale: CGFloat
+        effOX: CGFloat,
+        effOY: CGFloat,
+        effScale: CGFloat
     ) -> DragMode {
         guard let pp = planPoint else { return .pan }
-        let pinLayout = CGPoint(
-            x: originX + pp.x * scale,
-            y: originY + pp.y * scale
+        let pinScreen = CGPoint(
+            x: effOX + pp.x * effScale,
+            y: effOY + pp.y * effScale
         )
-        let dx = startLocation.x - pinLayout.x
-        let dy = startLocation.y - pinLayout.y
-        // 36 visual points × current zoom = layout-space radius.
-        let rView: CGFloat = 36
-        let rLayout = rView * lastZoom
-        return (dx * dx + dy * dy) < rLayout * rLayout ? .heading : .pan
+        let dx = startLocation.x - pinScreen.x
+        let dy = startLocation.y - pinScreen.y
+        let r: CGFloat = 36
+        return (dx * dx + dy * dy) < r * r ? .heading : .pan
     }
 
     @ViewBuilder
