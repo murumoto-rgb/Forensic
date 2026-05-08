@@ -286,7 +286,7 @@ struct ProjectDetailView: View {
                 matching: .images,
                 photoLibrary: .shared()
             ) {
-                Label("Add from Photos", systemImage: "photo.on.rectangle")
+                Label("Add from Photo Library", systemImage: "photo.on.rectangle")
             }
             .disabled(importing)
             .onChange(of: photoPickerItems) { _, newItems in
@@ -416,27 +416,13 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private func floorPlanSection(_ project: Project) -> some View {
         Section("Floor Plan") {
-            if let plan = project.floorPlan {
-                HStack(spacing: 12) {
-                    floorPlanThumbnail(project)
-                        .frame(width: 84, height: 64)
-                        .clipped()
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Calibrated").font(.subheadline.weight(.semibold))
-                        Text(String(format: "%.1f px / ft", plan.pixelsPerFoot))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "calibration: %.1f ft", plan.calibrationDistanceFeet))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "north: %.0f° (CW from page up)", plan.northDeg))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
+            if project.floorPlan != nil {
+                floorPlanThumbnail(project)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 120)
+                    .clipped()
+                    .background(Color.secondary.opacity(0.2))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 Button {
                     showingPlanViewer = true
