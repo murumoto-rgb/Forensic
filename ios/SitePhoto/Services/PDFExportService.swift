@@ -47,14 +47,17 @@ struct PDFExportService {
         // ── 2. Render synchronously with UIGraphicsPDFRenderer ─────────────────
 
         onProgress("Building PDF…")
+        let logo = UIImage(named: "BaykalLogo")
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
         let pdfData = renderer.pdfData { ctx in
             ctx.beginPage()
             drawCover(ctx.cgContext, pageRect: pageRect, margin: margin, mapSnap: mapSnap)
+            drawLogo(logo, pageRect: pageRect, margin: margin)
 
             if let img = planImage, project.floorPlan != nil {
                 ctx.beginPage()
                 drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin, planImage: img)
+                drawLogo(logo, pageRect: pageRect, margin: margin)
             }
 
             let perPage = 6
@@ -63,6 +66,7 @@ struct PDFExportService {
                 let slice = Array(loaded[start..<min(start + perPage, loaded.count)])
                 drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
                                  photos: slice, rangeStart: start, total: loaded.count)
+                drawLogo(logo, pageRect: pageRect, margin: margin)
             }
         }
 
@@ -407,6 +411,22 @@ struct PDFExportService {
             in: CGRect(x: x, y: y, width: maxW, height: bounds.height + 2),
             withAttributes: attrs)
         return y + bounds.height + 2
+    }
+
+    /// Draws the Baykal Consulting logo in the top-right corner of the page.
+    /// Sized to ~75pt wide so it stays out of the way of headers and project
+    /// names while still being legible on a printed page.
+    private func drawLogo(_ logo: UIImage?, pageRect: CGRect, margin: CGFloat) {
+        guard let logo, logo.size.width > 0, logo.size.height > 0 else { return }
+        let targetW: CGFloat = 75
+        let aspect = logo.size.width / logo.size.height
+        let targetH = targetW / aspect
+        let rect = CGRect(
+            x: pageRect.maxX - margin - targetW,
+            y: max(8, margin - targetH / 2 + 4),
+            width: targetW, height: targetH
+        )
+        logo.draw(in: rect)
     }
 
     private func safeFilename(_ name: String) -> String {
