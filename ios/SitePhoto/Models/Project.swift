@@ -12,6 +12,9 @@ struct Project: Identifiable, Codable, Hashable {
     var projectAddress: String?
     var photos: [Photo]
     var floorPlan: FloorPlan?
+    /// Stable, human-readable folder name used on disk. Computed once at
+    /// creation; nil only on projects created before this field existed.
+    var folderName: String?
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -25,10 +28,27 @@ struct Project: Identifiable, Codable, Hashable {
         self.projectAddress = nil
         self.photos = []
         self.floorPlan = nil
+        self.folderName = Self.makeFolderName(id: id, name: name, createdAt: self.createdAt)
     }
 
     var isActive: Bool { startedAt != nil && !stopped }
     var hasBeenStarted: Bool { startedAt != nil }
+
+    static func makeFolderName(id: UUID, name: String, createdAt: Date) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.timeZone = TimeZone.current
+        let dateStr = dateFormatter.string(from: createdAt)
+
+        let cleaned = name
+            .replacingOccurrences(of: "[^A-Za-z0-9 -]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        let dashed = cleaned.replacingOccurrences(of: " +", with: "-", options: .regularExpression)
+        let safe = String(dashed.prefix(40))
+        let body = safe.isEmpty ? "project" : safe
+        let idPrefix = String(id.uuidString.lowercased().prefix(6))
+        return "\(dateStr)_\(body)_\(idPrefix)"
+    }
 }
 
 struct ProjectGPS: Codable, Hashable {

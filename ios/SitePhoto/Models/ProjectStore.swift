@@ -94,11 +94,17 @@ final class ProjectStore {
     }
 
     func projectURL(_ project: Project) -> URL {
-        rootURL.appending(path: project.id.uuidString, directoryHint: .isDirectory)
+        let folderName = project.folderName
+            ?? Project.makeFolderName(id: project.id, name: project.name, createdAt: project.createdAt)
+        return rootURL.appending(path: folderName, directoryHint: .isDirectory)
     }
 
     func photosFolder(for project: Project) -> URL {
         projectURL(project).appending(path: "photos", directoryHint: .isDirectory)
+    }
+
+    func thumbnailsFolder(for project: Project) -> URL {
+        projectURL(project).appending(path: "thumbnails", directoryHint: .isDirectory)
     }
 
     func manifestURL(for project: Project) -> URL {
@@ -133,7 +139,40 @@ final class ProjectStore {
             let manifest = dir.appending(path: "manifest.json")
             guard let data = try? Data(contentsOf: manifest) else { continue }
             do {
-                let project = try decoder().decode(Project.self, from: data)
+                var project = try decoder().decode(Project.self, from: data)
+                // Migrate: project predates folderName field, or its folder is
+                // not at the canonical location.
+                let canonicalName = Project.makeFolderName(
+                    id: project.id,
+                    name: project.name,
+                    createdAt: project.createdAt
+                )
+                let actualName = dir.lastPathComponent
+                let canonicalDir = rootURL.appending(path: canonicalName, directoryHint: .isDirectory)
+                if actualName != canonicalName {
+                    if !fileManager.fileExists(atPath: canonicalDir.path()) {
+                        do {
+                            try fileManager.moveItem(at: dir, to: canonicalDir)
+                            project.folderName = canonicalName
+                            // Re-write the manifest with the new folderName.
+                            let manifestNew = canonicalDir.appending(path: "manifest.json")
+                            if let bytes = try? encoder().encode(project) {
+                                try? bytes.write(to: manifestNew, options: .atomic)
+                            }
+                        } catch {
+                            #if DEBUG
+                            print("Folder rename failed for \(actualName): \(error)")
+                            #endif
+                            project.folderName = actualName
+                        }
+                    } else {
+                        project.folderName = actualName
+                    }
+                } else if project.folderName != canonicalName {
+                    project.folderName = canonicalName
+                }
+
+                migrateThumbnailLocation(for: project)
                 loaded.append(project)
             } catch {
                 #if DEBUG
@@ -142,6 +181,31 @@ final class ProjectStore {
             }
         }
         projects = loaded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// Move any thumb_*.jpg files that historically lived inside photos/ into
+    /// the new thumbnails/ subfolder so the photos folder is just full-res
+    /// JPEGs.
+    private func migrateThumbnailLocation(for project: Project) {
+        let photos = photosFolder(for: project)
+        let thumbs = thumbnailsFolder(for: project)
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: photos,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        var moved = 0
+        for entry in entries where entry.lastPathComponent.hasPrefix("thumb_") {
+            if moved == 0 {
+                try? fileManager.createDirectory(at: thumbs, withIntermediateDirectories: true)
+            }
+            let dest = thumbs.appending(path: entry.lastPathComponent)
+            if !fileManager.fileExists(atPath: dest.path()) {
+                try? fileManager.moveItem(at: entry, to: dest)
+            } else {
+                try? fileManager.removeItem(at: entry)
+            }
+            moved += 1
+        }
     }
 
     @discardableResult
@@ -386,18 +450,20 @@ final class ProjectStore {
     @discardableResult
     func addPhoto(to project: Project, captured: CapturedPhoto, location: PhotoLocation? = nil) throws -> Project {
         var p = project
-        let folder = photosFolder(for: p)
-        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let photosFolder = photosFolder(for: p)
+        let thumbsFolder = thumbnailsFolder(for: p)
+        try fileManager.createDirectory(at: photosFolder, withIntermediateDirectories: true)
 
         let photoID = UUID()
         let imageName = "photo_\(photoID.uuidString).jpg"
-        let imageURL = folder.appending(path: imageName)
+        let imageURL = photosFolder.appending(path: imageName)
         try captured.data.write(to: imageURL, options: .atomic)
 
         var thumbName: String?
         if let thumb = Self.makeThumbnail(from: captured.data, maxPixelSize: 256) {
+            try? fileManager.createDirectory(at: thumbsFolder, withIntermediateDirectories: true)
             let n = "thumb_\(photoID.uuidString).jpg"
-            let url = folder.appending(path: n)
+            let url = thumbsFolder.appending(path: n)
             try? thumb.write(to: url, options: .atomic)
             thumbName = n
         }
@@ -431,7 +497,40 @@ final class ProjectStore {
 
     func thumbnailURL(for photo: Photo, in project: Project) -> URL? {
         guard let name = photo.thumbnailFilename else { return nil }
-        return photosFolder(for: project).appending(path: name)
+        return thumbnailsFolder(for: project).appending(path: name)
+    }
+
+    // MARK: - iCloud-aware loading
+
+    /// Read the bytes at `url`, ensuring an iCloud Drive placeholder is downloaded
+    /// first if necessary. Returns nil if the file isn't there or download
+    /// times out.
+    func loadFileBytes(at url: URL, timeoutSeconds: Double = 30) async -> Data? {
+        await ensureDownloaded(url, timeoutSeconds: timeoutSeconds)
+        return try? Data(contentsOf: url)
+    }
+
+    /// If `url` is an iCloud-backed item that hasn't been downloaded to this
+    /// device, request a download and wait until it lands.
+    func ensureDownloaded(_ url: URL, timeoutSeconds: Double = 30) async {
+        let keys: Set<URLResourceKey> = [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ]
+        guard let values = try? url.resourceValues(forKeys: keys),
+              values.isUbiquitousItem == true else { return }
+        if values.ubiquitousItemDownloadingStatus == .current { return }
+
+        try? fileManager.startDownloadingUbiquitousItem(at: url)
+        let stepMillis: UInt64 = 250
+        let total = max(1, Int(timeoutSeconds * 1000) / Int(stepMillis))
+        for _ in 0..<total {
+            try? await Task.sleep(nanoseconds: stepMillis * 1_000_000)
+            if let v = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]),
+               v.ubiquitousItemDownloadingStatus == .current {
+                return
+            }
+        }
     }
 
     private static func makeThumbnail(from imageData: Data, maxPixelSize: CGFloat) -> Data? {

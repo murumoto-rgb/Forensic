@@ -12,6 +12,10 @@ struct PlanViewerView: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var pendingRecenterID: UUID?
+    @State private var planImage: UIImage?
+    @State private var planLoadState: PlanLoadState = .loading
+
+    private enum PlanLoadState { case loading, loaded, missing }
 
     var body: some View {
         NavigationStack {
@@ -41,7 +45,21 @@ struct PlanViewerView: View {
             .navigationTitle("Plan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
+            .task(id: planTaskID) {
+                await loadPlanImage()
+            }
         }
+    }
+
+    /// Re-trigger the plan image load when the project, the floor-plan
+    /// filename, or the calibration changes (e.g. after a re-calibrate or
+    /// plan replace).
+    private var planTaskID: String {
+        guard let proj = store.project(withID: projectID) else { return "none" }
+        if let plan = proj.floorPlan {
+            return "\(proj.id)|\(plan.imageFilename)|\(plan.pixelsPerFoot)"
+        }
+        return "\(proj.id)|none"
     }
 
     @ToolbarContentBuilder
@@ -75,15 +93,34 @@ struct PlanViewerView: View {
     @ViewBuilder
     private var planArea: some View {
         if let proj = store.project(withID: projectID),
-           let plan = proj.floorPlan,
-           let url = store.floorPlanURL(for: proj),
-           let data = try? Data(contentsOf: url),
-           let img = UIImage(data: data) {
-            GeometryReader { geo in
-                planContent(geo: geo, project: proj, plan: plan, image: img)
+           let plan = proj.floorPlan {
+            switch planLoadState {
+            case .loading:
+                ZStack {
+                    Color.black
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.large)
+                            .tint(.white)
+                        Text("Downloading plan from iCloud…")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            case .loaded:
+                if let img = planImage {
+                    GeometryReader { geo in
+                        planContent(geo: geo, project: proj, plan: plan, image: img)
+                    }
+                    .background(Color.black)
+                    .clipped()
+                } else {
+                    missingPlanView
+                }
+            case .missing:
+                missingPlanView
             }
-            .background(Color.black)
-            .clipped()
         } else {
             ContentUnavailableView(
                 "No plan",
@@ -91,6 +128,38 @@ struct PlanViewerView: View {
                 description: Text("Set up the floor plan from the project screen.")
             )
             .frame(maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var missingPlanView: some View {
+        ZStack {
+            Color.black
+            ContentUnavailableView(
+                "Plan unavailable",
+                systemImage: "doc.badge.ellipsis",
+                description: Text("The plan image could not be loaded from iCloud.")
+            )
+            .foregroundStyle(.white)
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func loadPlanImage() async {
+        planLoadState = .loading
+        planImage = nil
+        guard let proj = store.project(withID: projectID),
+              proj.floorPlan != nil,
+              let url = store.floorPlanURL(for: proj) else {
+            planLoadState = .missing
+            return
+        }
+        if let data = await store.loadFileBytes(at: url),
+           let img = UIImage(data: data) {
+            planImage = img
+            planLoadState = .loaded
+        } else {
+            planLoadState = .missing
         }
     }
 
@@ -472,23 +541,39 @@ private struct PhotoPreviewBar: View {
     let onDismiss: () -> Void
 
     @Environment(ProjectStore.self) private var store
+    @State private var loadedImage: UIImage?
+    @State private var loadState: LoadState = .loading
+
+    private enum LoadState { case loading, loaded, missing }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black
 
-            if let project = store.project(withID: projectID) {
-                let url = store.imageURL(for: photo, in: project)
-                if let img = UIImage(contentsOfFile: url.path()) {
+            switch loadState {
+            case .loading:
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                    Text("Downloading from iCloud…")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            case .missing:
+                ContentUnavailableView(
+                    "Photo missing",
+                    systemImage: "photo.badge.exclamationmark"
+                )
+                .foregroundStyle(.white)
+            case .loaded:
+                if let img = loadedImage {
                     Image(uiImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .id(photo.id)
-                        .transition(.asymmetric(insertion: .opacity, removal: .opacity))
-                } else {
-                    ContentUnavailableView("Photo missing", systemImage: "photo.badge.exclamationmark")
-                        .foregroundStyle(.white)
+                        .transition(.opacity)
                 }
             }
 
@@ -554,6 +639,26 @@ private struct PhotoPreviewBar: View {
                     }
                 }
         )
+        .task(id: photo.id) {
+            await loadCurrentPhoto()
+        }
+    }
+
+    private func loadCurrentPhoto() async {
+        loadState = .loading
+        loadedImage = nil
+        guard let project = store.project(withID: projectID) else {
+            loadState = .missing
+            return
+        }
+        let url = store.imageURL(for: photo, in: project)
+        if let data = await store.loadFileBytes(at: url),
+           let img = UIImage(data: data) {
+            loadedImage = img
+            loadState = .loaded
+        } else {
+            loadState = .missing
+        }
     }
 
     @ViewBuilder
