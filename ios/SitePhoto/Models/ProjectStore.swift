@@ -742,6 +742,114 @@ final class ProjectStore {
         return thumbnailsFolder(for: project).appending(path: name)
     }
 
+    // MARK: - Photo import (from Photos library / Files)
+
+    /// Save an externally-sourced JPEG/HEIC into the project. Same naming and
+    /// thumbnail behaviour as a camera capture, but the timestamp comes from
+    /// the source EXIF/TIFF data when available so the filename reflects the
+    /// real capture time rather than today's date.
+    @discardableResult
+    func importPhoto(to project: Project, imageData: Data, capturedAt: Date) throws -> Project {
+        var p = project
+        let photosFolder = photosFolder(for: p)
+        let thumbsFolder = thumbnailsFolder(for: p)
+        try fileManager.createDirectory(at: photosFolder, withIntermediateDirectories: true)
+
+        let photoID = UUID()
+        let seq = p.photos.count + 1
+        let imageName = Self.makePhotoFilename(sequenceNumber: seq, timestamp: capturedAt, projectName: p.name)
+        let imageURL = photosFolder.appending(path: imageName)
+        try imageData.write(to: imageURL, options: .atomic)
+
+        var thumbName: String?
+        if let thumb = Self.makeThumbnail(from: imageData, maxPixelSize: 256) {
+            try? fileManager.createDirectory(at: thumbsFolder, withIntermediateDirectories: true)
+            let n = "thumb_\(imageName)"
+            let url = thumbsFolder.appending(path: n)
+            try? thumb.write(to: url, options: .atomic)
+            thumbName = n
+        }
+
+        var photo = Photo(id: photoID, sequenceNumber: seq, imageFilename: imageName)
+        photo.timestamp = capturedAt
+        photo.thumbnailFilename = thumbName
+        photo.cameraZoom = 1.0
+        photo.lensName = "imported"
+        photo.flashMode = .off
+
+        p.photos.append(photo)
+        return save(p)
+    }
+
+    /// Pull DateTimeOriginal (or TIFF DateTime) out of an image's metadata.
+    /// Returns nil when the source has no usable date — caller should fall
+    /// back to Date().
+    static func extractCaptureDate(from imageData: Data) -> Date? {
+        guard let src = CGImageSourceCreateWithData(imageData as CFData, nil),
+              let metadata = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any]
+        else { return nil }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        formatter.timeZone = .current
+
+        if let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any],
+           let s = exif[kCGImagePropertyExifDateTimeOriginal as String] as? String,
+           let d = formatter.date(from: s) {
+            return d
+        }
+        if let tiff = metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
+           let s = tiff[kCGImagePropertyTIFFDateTime as String] as? String,
+           let d = formatter.date(from: s) {
+            return d
+        }
+        return nil
+    }
+
+    // MARK: - Photo location updates
+
+    /// Set or replace the plan-pixel location of an existing photo. Also
+    /// re-derives the localXFeet/Y from the current calibration. Use this
+    /// for photos imported without a location, or to relocate a photo that
+    /// was previously placed.
+    @discardableResult
+    func setPhotoLocation(_ project: Project,
+                          photoID: UUID,
+                          planPixelX: Double,
+                          planPixelY: Double,
+                          headingDegrees: Double?) -> Project {
+        var p = project
+        guard let plan = p.floorPlan,
+              let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].planPixelX = planPixelX
+        p.photos[idx].planPixelY = planPixelY
+        p.photos[idx].localXFeet = (planPixelX - plan.anchorPixelX) / plan.pixelsPerFoot
+        p.photos[idx].localYFeet = (planPixelY - plan.anchorPixelY) / plan.pixelsPerFoot
+        p.photos[idx].headingDegrees = headingDegrees
+        p.photos[idx].positionSource = .manual
+        // A re-located photo is always treated as a standalone marker — don't
+        // tail off some other group's lead just because it shares a groupID.
+        p.photos[idx].groupID = nil
+        p.photos[idx].isPrimary = false
+        return save(p)
+    }
+
+    /// Strip the location from an existing photo (turns it back into "NO LOC").
+    @discardableResult
+    func clearPhotoLocation(_ project: Project, photoID: UUID) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].planPixelX = nil
+        p.photos[idx].planPixelY = nil
+        p.photos[idx].localXFeet = nil
+        p.photos[idx].localYFeet = nil
+        p.photos[idx].headingDegrees = nil
+        p.photos[idx].positionSource = .none
+        p.photos[idx].groupID = nil
+        p.photos[idx].isPrimary = false
+        return save(p)
+    }
+
     // MARK: - iCloud-aware loading
 
     /// Read the bytes at `url`, ensuring an iCloud Drive placeholder is downloaded

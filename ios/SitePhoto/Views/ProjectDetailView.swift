@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ProjectDetailView: View {
     @Environment(ProjectStore.self) private var store
@@ -20,6 +22,16 @@ struct ProjectDetailView: View {
     @State private var showingPlanReplace = false
     @State private var showingPlanRecalibrate = false
     @State private var showingExport = false
+
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var showingFileImporter = false
+    @State private var importing = false
+    @State private var importStatus: String?
+    @State private var relocatingPhoto: PhotoTarget?
+
+    private struct PhotoTarget: Identifiable {
+        let id: UUID
+    }
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -81,6 +93,19 @@ struct ProjectDetailView: View {
                 .sheet(isPresented: $showingExport) {
                     ExportView(projectID: projectID)
                         .environment(store)
+                }
+                .sheet(item: $relocatingPhoto) { target in
+                    RelocateSheet(projectID: projectID, photoID: target.id)
+                        .environment(store)
+                }
+                .fileImporter(
+                    isPresented: $showingFileImporter,
+                    allowedContentTypes: [.image],
+                    allowsMultipleSelection: true
+                ) { result in
+                    if case .success(let urls) = result {
+                        Task { await importFromFiles(urls) }
+                    }
                 }
                 .confirmationDialog(
                     "Remove the floor plan?",
@@ -177,6 +202,27 @@ struct ProjectDetailView: View {
             .disabled(!project.isActive)
             .foregroundStyle(project.isActive ? Color.accentColor : Color.secondary)
 
+            PhotosPicker(
+                selection: $photoPickerItems,
+                maxSelectionCount: 50,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                Label("Add from Photos", systemImage: "photo.on.rectangle")
+            }
+            .disabled(importing)
+            .onChange(of: photoPickerItems) { _, newItems in
+                guard !newItems.isEmpty else { return }
+                Task { await importFromPhotosLibrary(newItems) }
+            }
+
+            Button {
+                showingFileImporter = true
+            } label: {
+                Label("Add from Files", systemImage: "folder")
+            }
+            .disabled(importing)
+
             if !project.isActive && project.hasBeenStarted {
                 Text("Resume the session to take photos.")
                     .font(.caption)
@@ -187,6 +233,12 @@ struct ProjectDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let status = importStatus {
+                HStack(spacing: 6) {
+                    if importing { ProgressView().controlSize(.small) }
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if let err = sessionError {
                 Text(err)
                     .font(.caption)
@@ -198,6 +250,59 @@ struct ProjectDetailView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    // MARK: - Photo import helpers
+
+    @MainActor
+    private func importFromPhotosLibrary(_ items: [PhotosPickerItem]) async {
+        defer {
+            photoPickerItems = []
+            importing = false
+        }
+        importing = true
+        var added = 0
+        for (i, item) in items.enumerated() {
+            importStatus = "Importing \(i + 1) of \(items.count)…"
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            guard let project = store.project(withID: projectID) else { return }
+            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
+            do {
+                _ = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                added += 1
+            } catch {
+                captureError = "Import failed: \(error.localizedDescription)"
+                importStatus = nil
+                return
+            }
+        }
+        importStatus = added > 0 ? "Imported \(added) photo\(added == 1 ? "" : "s")." : nil
+    }
+
+    @MainActor
+    private func importFromFiles(_ urls: [URL]) async {
+        defer {
+            importing = false
+        }
+        importing = true
+        var added = 0
+        for (i, url) in urls.enumerated() {
+            importStatus = "Importing \(i + 1) of \(urls.count)…"
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { continue }
+            guard let project = store.project(withID: projectID) else { return }
+            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
+            do {
+                _ = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                added += 1
+            } catch {
+                captureError = "Import failed: \(error.localizedDescription)"
+                importStatus = nil
+                return
+            }
+        }
+        importStatus = added > 0 ? "Imported \(added) photo\(added == 1 ? "" : "s")." : nil
     }
 
     private func toggleStartStop() async {
@@ -343,6 +448,19 @@ struct ProjectDetailView: View {
             } else {
                 ForEach(project.photos) { photo in
                     PhotoRow(photo: photo, project: project, store: store)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if project.floorPlan != nil {
+                                Button {
+                                    relocatingPhoto = PhotoTarget(id: photo.id)
+                                } label: {
+                                    Label(
+                                        photo.positionSource == .none ? "Locate" : "Change Location",
+                                        systemImage: "mappin.and.ellipse"
+                                    )
+                                }
+                                .tint(.blue)
+                            }
+                        }
                 }
             }
         }

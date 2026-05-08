@@ -231,7 +231,7 @@ struct LocateSheet: View {
 
 // MARK: - Plan canvas
 
-private struct PlanLocateCanvas: View {
+struct PlanLocateCanvas: View {
     let image: UIImage
     @Binding var planPoint: CGPoint?
     @Binding var heading: Double?
