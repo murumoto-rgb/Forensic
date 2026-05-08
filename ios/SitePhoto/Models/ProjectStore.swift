@@ -231,35 +231,59 @@ final class ProjectStore {
     }
 
     func delete(_ project: Project) {
-        // We already know every possible folder name for this project, so
-        // delete by name — no need to read manifests (which may be iCloud
-        // placeholders and would fail silently, leaving the folder behind).
-        let knownNames: [String] = [
-            // Current canonical name.
-            project.folderName
-                ?? Project.makeFolderName(id: project.id, name: project.name, createdAt: project.createdAt),
-            // Pre-folderName era: folder was just the raw UUID string.
-            project.id.uuidString
-        ]
-        for name in knownNames {
-            removeIfExists(rootURL.appending(path: name, directoryHint: .isDirectory))
-            if usingICloud {
-                // Also remove any surviving local copy that would be
-                // re-migrated to iCloud on the next launch.
-                removeIfExists(Self.localProjectsURL.appending(path: name, directoryHint: .isDirectory))
-            }
+        // Match folders by the project UUID embedded in the folder name —
+        // canonical "<date>_<name>_<idPrefix>" or the legacy raw UUID. We do
+        // NOT read manifests here because iCloud placeholders are unreadable
+        // until downloaded and would silently slip through.
+        let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
+        let fullUUID = project.id.uuidString.lowercased()
+
+        removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: rootURL)
+        if usingICloud {
+            // Catch any local copy that would be re-migrated on next launch.
+            removeMatchingFolders(idPrefix: idPrefix, fullUUID: fullUUID, under: Self.localProjectsURL)
         }
+
         projects.removeAll { $0.id == project.id }
     }
 
-    private func removeIfExists(_ url: URL) {
-        guard fileManager.fileExists(atPath: url.path()) else { return }
-        do {
-            try fileManager.removeItem(at: url)
-        } catch {
+    private func removeMatchingFolders(idPrefix: String, fullUUID: String, under root: URL) {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return }
+
+        for entry in entries {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            let nameLower = entry.lastPathComponent.lowercased()
+            // Canonical: "<date>_<name>_<6-char idPrefix>"
+            // Legacy:    full UUID string
+            guard nameLower.hasSuffix("_\(idPrefix)") || nameLower == fullUUID else { continue }
+            coordinatedRemove(entry)
+        }
+    }
+
+    /// Use NSFileCoordinator so the iCloud sync daemon registers the delete
+    /// and won't push the folder back. Falls back to a direct remove if
+    /// coordination itself fails.
+    private func coordinatedRemove(_ url: URL) {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &coordError) { newURL in
+            do {
+                try fileManager.removeItem(at: newURL)
+            } catch {
+                #if DEBUG
+                print("coordinated removeItem failed at \(newURL.lastPathComponent): \(error)")
+                #endif
+            }
+        }
+        if let coordError {
             #if DEBUG
-            print("removeItem failed at \(url.lastPathComponent): \(error)")
+            print("file coordination failed for \(url.lastPathComponent): \(coordError)")
             #endif
+            try? fileManager.removeItem(at: url)
         }
     }
 
