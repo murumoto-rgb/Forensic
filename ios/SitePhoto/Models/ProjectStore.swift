@@ -549,6 +549,12 @@ final class ProjectStore {
             anchorLocalYFeet: 0,
             northDeg: northDeg
         )
+        // If photos already carry localXFeet/Y from a previous plan
+        // (e.g. user removed the plan, then added a new one), project
+        // them onto the new plan using the new calibration. New projects
+        // with no located photos are unaffected since the helper skips
+        // photos without local coords.
+        Self.recomputePixelCoords(in: &p)
         return save(p)
     }
 

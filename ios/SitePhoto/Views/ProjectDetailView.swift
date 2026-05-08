@@ -128,7 +128,7 @@ struct ProjectDetailView: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Photo locations recorded against this plan will be cleared on the next push when location capture is wired in. The plan image will be deleted from disk.")
+                    Text("The plan image will be deleted from this project. Photo positions are preserved — they'll reappear in the same physical locations when you set up a new plan with calibration and origin.")
                 }
                 .alert(
                     "Delete photo?",

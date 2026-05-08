@@ -19,13 +19,19 @@ struct SitePhotoApp: App {
     /// the navigation stack is at its root (the projects list).
     @State private var atRoot: Bool = true
 
-    private let splashLogoWidth: CGFloat = 280
-    private let footerLogoWidth: CGFloat = 110
+    private let splashLogoWidth:  CGFloat = 280
+    private let splashLogoMaxHeight: CGFloat = 150
+    private let footerLogoWidth:  CGFloat = 110
 
     /// Visible height of the white footer band ABOVE the home-indicator
     /// safe area. The band actually extends further down through the safe
     /// area so the home indicator sits on white too.
-    private let footerVisibleHeight: CGFloat = 64
+    private let footerVisibleHeight: CGFloat = 80
+
+    /// Hard cap for the footer logo's height so a near-square logo image
+    /// can't end up taller than the band. Used as the base frame's
+    /// maxHeight; scaleEffect transports the size between splash + footer.
+    private var footerScale: CGFloat { footerLogoWidth / splashLogoWidth }
 
     private var logoOnscreen: Bool {
         !logoMoved || atRoot
@@ -66,8 +72,14 @@ struct SitePhotoApp: App {
                     Image("BaykalLogo")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: splashLogoWidth)
-                        .scaleEffect(logoMoved ? footerLogoWidth / splashLogoWidth : 1.0)
+                        // Constrain BOTH dimensions of the base size so a
+                        // near-square logo image scales down to a footer
+                        // height that fits the band. After scaleEffect the
+                        // footer logo is at most ~58pt tall regardless of
+                        // the source asset's aspect ratio.
+                        .frame(maxWidth: splashLogoWidth,
+                               maxHeight: splashLogoMaxHeight)
+                        .scaleEffect(logoMoved ? footerScale : 1.0)
                         .opacity(logoOpacity)
                         .opacity(logoOnscreen ? 1 : 0)
                         .position(
