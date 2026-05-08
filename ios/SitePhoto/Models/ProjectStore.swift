@@ -231,9 +231,54 @@ final class ProjectStore {
     }
 
     func delete(_ project: Project) {
-        let dir = projectURL(project)
-        try? fileManager.removeItem(at: dir)
+        // Remove every folder whose manifest carries this project's id, in
+        // both the active root (iCloud or local) AND the legacy local root
+        // when running on iCloud. The legacy cleanup is what prevents the
+        // local→iCloud migration from re-resurrecting a deleted project on
+        // the next launch.
+        deleteAllFolders(forID: project.id, under: rootURL)
+        if usingICloud {
+            deleteAllFolders(forID: project.id, under: Self.localProjectsURL)
+        }
         projects.removeAll { $0.id == project.id }
+    }
+
+    private func deleteAllFolders(forID id: UUID, under root: URL) {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return }
+        for entry in entries {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            let manifest = entry.appending(path: "manifest.json")
+            guard let data = try? Data(contentsOf: manifest),
+                  let project = try? decoder().decode(Project.self, from: data),
+                  project.id == id else { continue }
+            deleteCoordinated(at: entry)
+        }
+    }
+
+    /// Use NSFileCoordinator for the actual remove so the iCloud daemon
+    /// registers the delete properly and won't restore the folder.
+    private func deleteCoordinated(at url: URL) {
+        guard fileManager.fileExists(atPath: url.path()) else { return }
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &coordError) { newURL in
+            do {
+                try fileManager.removeItem(at: newURL)
+            } catch {
+                #if DEBUG
+                print("removeItem failed at \(newURL.path()): \(error)")
+                #endif
+            }
+        }
+        if let coordError {
+            #if DEBUG
+            print("file coordination failed for \(url.path()): \(coordError)")
+            #endif
+        }
     }
 
     func project(withID id: UUID) -> Project? {
