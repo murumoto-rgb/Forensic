@@ -37,11 +37,11 @@ struct PDFExportService {
         }
 
         onProgress("Generating map…")
-        var mapImage: UIImage?
+        var mapSnap: MapSnap?
         if let gps = project.projectGPS {
             let mapW = pageRect.width - 2 * margin
-            mapImage = await mapSnapshot(lat: gps.latitude, lon: gps.longitude,
-                                         sizePt: CGSize(width: mapW, height: pageRect.height - 130 - margin))
+            mapSnap = await mapSnapshot(lat: gps.latitude, lon: gps.longitude,
+                                        sizePt: CGSize(width: mapW, height: pageRect.height - 130 - margin))
         }
 
         // ── 2. Render synchronously with UIGraphicsPDFRenderer ─────────────────
@@ -50,7 +50,7 @@ struct PDFExportService {
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
         let pdfData = renderer.pdfData { ctx in
             ctx.beginPage()
-            drawCover(ctx.cgContext, pageRect: pageRect, margin: margin, mapImage: mapImage)
+            drawCover(ctx.cgContext, pageRect: pageRect, margin: margin, mapSnap: mapSnap)
 
             if let img = planImage, project.floorPlan != nil {
                 ctx.beginPage()
@@ -78,7 +78,14 @@ struct PDFExportService {
 
     // MARK: - Cover page
 
-    private func drawCover(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat, mapImage: UIImage?) {
+    /// Map snapshot bundled with the GPS-coordinate point so the PDF can put
+    /// a star marker exactly on top of the project location.
+    private struct MapSnap {
+        let image: UIImage
+        let starPointInImage: CGPoint
+    }
+
+    private func drawCover(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat, mapSnap: MapSnap?) {
         let contentW = pageRect.width - 2 * margin
         var y = margin
 
@@ -116,13 +123,49 @@ struct PDFExportService {
 
         let mapRect = CGRect(x: margin, y: y,
                              width: contentW, height: pageRect.height - y - margin)
-        if let img = mapImage {
-            img.draw(in: mapRect)
+        if let snap = mapSnap {
+            snap.image.draw(in: mapRect)
+            // Convert the star point from snapshot-image space → mapRect space.
+            let imgSize = snap.image.size
+            let scaleX = mapRect.width / imgSize.width
+            let scaleY = mapRect.height / imgSize.height
+            let starCenter = CGPoint(
+                x: mapRect.minX + snap.starPointInImage.x * scaleX,
+                y: mapRect.minY + snap.starPointInImage.y * scaleY
+            )
+            drawStar(ctx, center: starCenter, outerRadius: 11)
         } else if project.projectGPS == nil {
             drawText("(no GPS recorded for this project)",
                      at: CGPoint(x: margin, y: y + 8),
                      font: .italicSystemFont(ofSize: 9), color: .lightGray)
         }
+    }
+
+    /// 5-point star with a white halo so it stays visible on any map style.
+    private func drawStar(_ ctx: CGContext, center: CGPoint, outerRadius: CGFloat) {
+        let points = 5
+        let innerRadius = outerRadius * 0.45
+        let path = CGMutablePath()
+        for i in 0..<(points * 2) {
+            let r = i.isMultiple(of: 2) ? outerRadius : innerRadius
+            let angle = -CGFloat.pi / 2 + CGFloat(i) * .pi / CGFloat(points)
+            let p = CGPoint(x: center.x + cos(angle) * r, y: center.y + sin(angle) * r)
+            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+        }
+        path.closeSubpath()
+
+        ctx.saveGState()
+        // White halo behind the star.
+        ctx.addPath(path)
+        ctx.setStrokeColor(UIColor.white.cgColor)
+        ctx.setLineJoin(.round)
+        ctx.setLineWidth(3.5)
+        ctx.strokePath()
+        // Filled star on top.
+        ctx.addPath(path)
+        ctx.setFillColor(UIColor.systemRed.cgColor)
+        ctx.fillPath()
+        ctx.restoreGState()
     }
 
     // MARK: - Floor plan page
@@ -178,7 +221,10 @@ struct PDFExportService {
             let cellAspect = innerW / innerH
             let (dW, dH): (CGFloat, CGFloat) = aspect > cellAspect
                 ? (innerW, innerW / aspect) : (innerH * aspect, innerH)
-            let ox = cx + pad + (innerW - dW) / 2
+            // Left-align horizontally so portrait photos hug the cell's left
+            // edge instead of floating in the middle. Vertical centering is
+            // preserved so landscape photos still sit in the middle of the row.
+            let ox = cx + pad
             let oy = cy + pad + (innerH - dH) / 2
             item.image.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
 
@@ -320,14 +366,15 @@ struct PDFExportService {
 
     // MARK: - Helpers
 
-    private func mapSnapshot(lat: Double, lon: Double, sizePt: CGSize) async -> UIImage? {
+    private func mapSnapshot(lat: Double, lon: Double, sizePt: CGSize) async -> MapSnap? {
+        let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
         let opts = MKMapSnapshotter.Options()
-        opts.region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: lat, longitude: lon),
-            latitudinalMeters: 300, longitudinalMeters: 300)
+        opts.region = MKCoordinateRegion(center: coord,
+                                         latitudinalMeters: 300, longitudinalMeters: 300)
         opts.size = CGSize(width: sizePt.width * 2, height: sizePt.height * 2)
         opts.mapType = .standard
-        return try? await MKMapSnapshotter(options: opts).start().image
+        guard let snapshot = try? await MKMapSnapshotter(options: opts).start() else { return nil }
+        return MapSnap(image: snapshot.image, starPointInImage: snapshot.point(for: coord))
     }
 
     private func downsample(data: Data, maxPixel: CGFloat) -> UIImage? {

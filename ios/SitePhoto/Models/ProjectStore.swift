@@ -834,6 +834,42 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Attach `photoID` as a tail of `leadPhotoID`'s group. The photo inherits
+    /// the lead's plan position; if the lead doesn't yet have a groupID, a new
+    /// one is minted and the lead is marked as the group's primary. Used by
+    /// the Locate / Change-Location flow's "Group with another photo" option.
+    @discardableResult
+    func attachToGroup(_ project: Project, photoID: UUID, leadPhotoID: UUID) -> Project {
+        var p = project
+        guard let plan = p.floorPlan,
+              let leadIdx = p.photos.firstIndex(where: { $0.id == leadPhotoID }),
+              let joinIdx = p.photos.firstIndex(where: { $0.id == photoID }),
+              leadPhotoID != photoID,
+              let lpx = p.photos[leadIdx].planPixelX,
+              let lpy = p.photos[leadIdx].planPixelY else { return p }
+
+        let gid: UUID
+        if let existing = p.photos[leadIdx].groupID {
+            gid = existing
+        } else {
+            gid = UUID()
+            p.photos[leadIdx].groupID = gid
+            p.photos[leadIdx].isPrimary = true
+        }
+
+        p.photos[joinIdx].planPixelX = lpx
+        p.photos[joinIdx].planPixelY = lpy
+        p.photos[joinIdx].localXFeet = (lpx - plan.anchorPixelX) / plan.pixelsPerFoot
+        p.photos[joinIdx].localYFeet = (lpy - plan.anchorPixelY) / plan.pixelsPerFoot
+        // Tails don't carry a direction arrow — the lead owns the heading.
+        p.photos[joinIdx].headingDegrees = nil
+        p.photos[joinIdx].positionSource = .manual
+        p.photos[joinIdx].groupID = gid
+        p.photos[joinIdx].isPrimary = false
+
+        return save(p)
+    }
+
     /// Strip the location from an existing photo (turns it back into "NO LOC").
     @discardableResult
     func clearPhotoLocation(_ project: Project, photoID: UUID) -> Project {

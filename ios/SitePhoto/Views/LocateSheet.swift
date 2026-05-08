@@ -16,6 +16,7 @@ struct LocateSheet: View {
     @State private var planPoint: CGPoint?
     @State private var heading: Double?
     @State private var showingMoreCamera = false
+    @State private var showingGroupPicker = false
     @State private var error: String?
 
     var body: some View {
@@ -54,6 +55,13 @@ struct LocateSheet: View {
                         }
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingGroupPicker = true
+                    } label: {
+                        Label("Group", systemImage: "rectangle.stack")
+                    }
+                }
             }
             .fullScreenCover(isPresented: $showingMoreCamera) {
                 CameraView(
@@ -63,6 +71,16 @@ struct LocateSheet: View {
                     },
                     onCancel: { showingMoreCamera = false }
                 )
+            }
+            .sheet(isPresented: $showingGroupPicker) {
+                PhotoGroupPickerSheet(
+                    projectID: projectID,
+                    excludingPhotoIDs: [],
+                    onSelect: { leadID in
+                        saveAttachedToGroup(leadID: leadID)
+                    }
+                )
+                .environment(store)
             }
         }
         .interactiveDismissDisabled(true)
@@ -227,6 +245,58 @@ struct LocateSheet: View {
         step = .position
         dismiss()
     }
+
+    /// Save every pending photo at the chosen lead's plan position, joining
+    /// the lead's group so they render as stack tails.
+    private func saveAttachedToGroup(leadID: UUID) {
+        guard var current = store.project(withID: projectID),
+              let plan = current.floorPlan,
+              let leadIdx = current.photos.firstIndex(where: { $0.id == leadID }),
+              let lpx = current.photos[leadIdx].planPixelX,
+              let lpy = current.photos[leadIdx].planPixelY,
+              !pendingPhotos.isEmpty else {
+            dismiss()
+            return
+        }
+
+        // Make sure the lead has a groupID and is marked as the primary.
+        let gid: UUID
+        if let existing = current.photos[leadIdx].groupID {
+            gid = existing
+        } else {
+            gid = UUID()
+            var leadCopy = current.photos[leadIdx]
+            leadCopy.groupID = gid
+            leadCopy.isPrimary = true
+            current.photos[leadIdx] = leadCopy
+            current = store.save(current)
+        }
+
+        let lx = (lpx - plan.anchorPixelX) / plan.pixelsPerFoot
+        let ly = (lpy - plan.anchorPixelY) / plan.pixelsPerFoot
+
+        for captured in pendingPhotos {
+            let loc = ProjectStore.PhotoLocation(
+                planPixelX: lpx, planPixelY: lpy,
+                localXFeet: lx, localYFeet: ly,
+                headingDegrees: nil,
+                groupID: gid,
+                isPrimary: false
+            )
+            do {
+                current = try store.addPhoto(to: current, captured: captured, location: loc)
+            } catch {
+                self.error = "Could not save: \(error.localizedDescription)"
+                return
+            }
+        }
+
+        pendingPhotos = []
+        planPoint = nil
+        heading = nil
+        step = .position
+        dismiss()
+    }
 }
 
 // MARK: - Plan canvas
@@ -269,15 +339,20 @@ struct PlanLocateCanvas: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .contentShape(Rectangle())
             .onTapGesture(coordinateSpace: .local) { tap in
-                guard step == .position else { return }
                 let inImage = CGPoint(
                     x: (tap.x - originX) / scale,
                     y: (tap.y - originY) / scale
                 )
                 guard inImage.x >= 0, inImage.x <= imgSize.width,
                       inImage.y >= 0, inImage.y <= imgSize.height else { return }
+                // Tapping always (re)places the pin — including after one is
+                // already set, so the user can pick a new position without
+                // having to clear the location first. The existing heading
+                // is preserved.
                 planPoint = inImage
-                step = .direction
+                if step == .position {
+                    step = .direction
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 8, coordinateSpace: .local)

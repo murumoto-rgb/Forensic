@@ -14,6 +14,7 @@ struct RelocateSheet: View {
     @State private var heading: Double?
     @State private var error: String?
     @State private var didPrefill = false
+    @State private var showingGroupPicker = false
 
     @State private var planImage: UIImage?
     @State private var loadState: LoadState = .loading
@@ -32,27 +33,29 @@ struct RelocateSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
-                if step == .direction && !didPrefillNeeded {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Back") {
-                            planPoint = nil
-                            heading = nil
-                            step = .position
-                        }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingGroupPicker = true
+                    } label: {
+                        Label("Group", systemImage: "rectangle.stack")
                     }
                 }
             }
             .task {
                 await loadPlan()
             }
+            .sheet(isPresented: $showingGroupPicker) {
+                PhotoGroupPickerSheet(
+                    projectID: projectID,
+                    excludingPhotoIDs: [photoID],
+                    onSelect: { leadID in
+                        attachToGroup(leadID: leadID)
+                    }
+                )
+                .environment(store)
+            }
         }
         .interactiveDismissDisabled(true)
-    }
-
-    /// True only if we already pre-filled from an existing location — then
-    /// the "Back" affordance is hidden because the user expects edit mode.
-    private var didPrefillNeeded: Bool {
-        photo?.positionSource != PositionSource.none
     }
 
     @ViewBuilder
@@ -219,6 +222,12 @@ struct RelocateSheet: View {
     private func clearLocation() {
         guard let project = store.project(withID: projectID) else { return }
         store.clearPhotoLocation(project, photoID: photoID)
+        dismiss()
+    }
+
+    private func attachToGroup(leadID: UUID) {
+        guard let project = store.project(withID: projectID) else { return }
+        store.attachToGroup(project, photoID: photoID, leadPhotoID: leadID)
         dismiss()
     }
 }
