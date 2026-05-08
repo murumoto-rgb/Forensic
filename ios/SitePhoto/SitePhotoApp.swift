@@ -9,17 +9,25 @@ struct SitePhotoApp: App {
     @State private var contentVisible = false
 
     /// Drives the logo's position (true = bottom footer, false = centered)
-    /// and its scale. Same withAnimation block as `contentVisible` so the
-    /// move and the cross-fade happen together.
+    /// and its scale.
     @State private var logoMoved = false
 
     /// Fade-in for the logo on launch.
     @State private var logoOpacity: Double = 0
 
-    /// Splash size in points; everything else scales relative to this so the
-    /// transform stays on the GPU rather than going through layout.
+    /// Reported by ContentView via .onChange(path.isEmpty). True only when
+    /// the navigation stack is at its root (the projects list).
+    @State private var atRoot: Bool = true
+
     private let splashLogoWidth: CGFloat = 280
     private let footerLogoWidth: CGFloat = 110
+
+    /// Whether the logo should be visible at the bottom right now.
+    /// True during the splash (`!logoMoved`) and on the projects list
+    /// (`atRoot`); false on detail / nested screens.
+    private var logoOnscreen: Bool {
+        !logoMoved || atRoot
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -27,16 +35,14 @@ struct SitePhotoApp: App {
                 ZStack {
                     Color(.systemBackground).ignoresSafeArea()
 
-                    // ContentView is always in the tree; we just fade it in.
-                    // Adding/removing it conditionally was making the
-                    // transition look discrete despite withAnimation.
-                    ContentView()
+                    ContentView(atRoot: $atRoot)
                         .environment(store)
                         .environment(location)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            // Reserve space at the bottom so list content
-                            // never slides under the logo footer.
-                            Color.clear.frame(height: 56)
+                            // Reserve room for the footer logo only on the
+                            // projects list — collapse to 0 on detail pages
+                            // so they get the full screen.
+                            Color.clear.frame(height: atRoot ? 56 : 0)
                         }
                         .opacity(contentVisible ? 1 : 0)
                         .allowsHitTesting(contentVisible)
@@ -45,10 +51,9 @@ struct SitePhotoApp: App {
                         .resizable()
                         .scaledToFit()
                         .frame(width: splashLogoWidth)
-                        // scaleEffect (transform) animates smoothly, unlike
-                        // changing .frame which goes through layout.
                         .scaleEffect(logoMoved ? footerLogoWidth / splashLogoWidth : 1.0)
                         .opacity(logoOpacity)
+                        .opacity(logoOnscreen ? 1 : 0)
                         .position(
                             x: geo.size.width / 2,
                             y: logoMoved
@@ -58,13 +63,10 @@ struct SitePhotoApp: App {
                         .accessibilityLabel("Baykal Consulting")
                 }
                 .task {
-                    // Fade in centered.
                     withAnimation(.easeOut(duration: 0.5)) {
                         logoOpacity = 1
                     }
-                    // Hold briefly.
                     try? await Task.sleep(for: .milliseconds(900))
-                    // Move + shrink + cross-fade.
                     withAnimation(.easeInOut(duration: 0.8)) {
                         logoMoved = true
                         contentVisible = true

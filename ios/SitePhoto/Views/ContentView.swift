@@ -1,6 +1,11 @@
 import SwiftUI
 
 struct ContentView: View {
+    /// Reports whether the navigation stack is at its root — wired through
+    /// to SitePhotoApp so the App-level Baykal logo footer can hide itself
+    /// while a project detail or sheet is open.
+    @Binding var atRoot: Bool
+
     @Environment(ProjectStore.self) private var store
 
     @State private var path = NavigationPath()
@@ -110,6 +115,11 @@ struct ContentView: View {
                 }
             } message: { project in
                 Text("\"\(project.name)\" and all its photos will be permanently removed from iCloud. This cannot be undone.")
+            }
+            .onChange(of: path.isEmpty) { _, isEmpty in
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    atRoot = isEmpty
+                }
             }
         }
     }
@@ -248,7 +258,7 @@ private struct StorageStatusFooter: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(atRoot: .constant(true))
         .environment(ProjectStore())
         .environment(LocationService())
 }
