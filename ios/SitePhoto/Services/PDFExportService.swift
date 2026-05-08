@@ -194,12 +194,27 @@ struct PDFExportService {
 
     // MARK: - Bubble drawing (mirrors PlanViewerView logic)
 
+    /// Read the same bubble scale the plan viewer uses (@AppStorage key) so the
+    /// PDF matches whatever the user has dialed in on screen.
+    private var bubbleScale: CGFloat {
+        let v = UserDefaults.standard.double(forKey: "sitephoto.bubbleScale")
+        return v > 0 ? CGFloat(v) : 1.5
+    }
+
     private func drawBubbles(_ ctx: CGContext, plan: FloorPlan,
                               originX: CGFloat, originY: CGFloat, scale: CGFloat) {
-        let primaryR: CGFloat = 9
-        let secR: CGFloat = 6.5
-        let firstGap = Double(primaryR + secR) / Double(scale)
-        let stepGap  = Double(secR * 2)      / Double(scale)
+        let bs = bubbleScale
+        let primaryR = 18 * bs
+        let secR     = 13 * bs
+        // Gaps are computed in PDF points first (same as screen), then converted
+        // to plan-pixel space so the buildMarkers offsets work in plan coords.
+        let firstGapView = primaryR + secR - 2 * bs
+        let stepGapView  = secR * 2     - 2 * bs
+        let firstGapPlan = Double(firstGapView) / Double(scale)
+        let stepGapPlan  = Double(stepGapView)  / Double(scale)
+        let arrowLength  = primaryR + 38 * bs
+        let arrowBase    = 14 * bs
+        let strokeWidth  = 3 * bs
 
         var groups: [String: [Photo]] = [:]
         for p in project.photos where p.planPixelX != nil {
@@ -216,7 +231,7 @@ struct PDFExportService {
                               isPrimary: true, bearing: lead.headingDegrees))
             let oppRad = ((lead.headingDegrees ?? 0) + 90) * .pi / 180
             for (i, t) in sorted.filter({ $0.id != lead.id }).enumerated() {
-                let d = firstGap + Double(i) * stepGap
+                let d = firstGapPlan + Double(i) * stepGapPlan
                 markers.append(M(photo: t,
                                   x: lead.planPixelX! + cos(oppRad) * d,
                                   y: lead.planPixelY! + sin(oppRad) * d,
@@ -224,58 +239,83 @@ struct PDFExportService {
             }
         }
 
-        let green = UIColor(red: 0.18, green: 0.80, blue: 0.44, alpha: 1).cgColor
+        // SwiftUI Color.green maps to UIColor.systemGreen (#34C759 in light mode).
+        let green = UIColor(red: 52.0/255, green: 199.0/255, blue: 89.0/255, alpha: 1).cgColor
+
         for m in markers where !m.isPrimary {
             paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
                         cy: originY + CGFloat(m.y) * scale,
-                        radius: secR, seq: m.photo.sequenceNumber, bearing: nil, color: green)
+                        radius: secR, seq: m.photo.sequenceNumber, bearing: nil,
+                        arrowLength: arrowLength, arrowBase: arrowBase,
+                        strokeWidth: strokeWidth, color: green)
         }
         for m in markers where m.isPrimary {
             paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
                         cy: originY + CGFloat(m.y) * scale,
-                        radius: primaryR, seq: m.photo.sequenceNumber, bearing: m.bearing, color: green)
+                        radius: primaryR, seq: m.photo.sequenceNumber, bearing: m.bearing,
+                        arrowLength: arrowLength, arrowBase: arrowBase,
+                        strokeWidth: strokeWidth, color: green)
         }
     }
 
     private func paintBubble(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, radius: CGFloat,
-                              seq: Int, bearing: Double?, color: CGColor) {
+                              seq: Int, bearing: Double?,
+                              arrowLength: CGFloat, arrowBase: CGFloat, strokeWidth: CGFloat,
+                              color: CGColor) {
         if let b = bearing {
             let ang = CGFloat((b - 90) * .pi / 180)
-            let arrowLen = radius * 2.5
-            let tipLen   = radius * 3.0
-            let baseLen  = radius * 2.0
-            ctx.setStrokeColor(color); ctx.setLineWidth(1.2)
+            let tipX = cx + cos(ang) * arrowLength
+            let tipY = cy + sin(ang) * arrowLength
+            ctx.saveGState()
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(strokeWidth)
+            ctx.setLineCap(.round)
             ctx.beginPath()
             ctx.move(to: CGPoint(x: cx, y: cy))
-            ctx.addLine(to: CGPoint(x: cx + cos(ang) * arrowLen, y: cy + sin(ang) * arrowLen))
+            ctx.addLine(to: CGPoint(x: tipX, y: tipY))
             ctx.strokePath()
-            let tipX = cx + cos(ang) * tipLen; let tipY = cy + sin(ang) * tipLen
             let back = ang + .pi
-            ctx.setFillColor(color); ctx.beginPath()
+            ctx.setFillColor(color)
+            ctx.beginPath()
             ctx.move(to: CGPoint(x: tipX, y: tipY))
-            ctx.addLine(to: CGPoint(x: tipX + cos(back + 0.45) * baseLen,
-                                     y: tipY + sin(back + 0.45) * baseLen))
-            ctx.addLine(to: CGPoint(x: tipX + cos(back - 0.45) * baseLen,
-                                     y: tipY + sin(back - 0.45) * baseLen))
-            ctx.closePath(); ctx.fillPath()
+            ctx.addLine(to: CGPoint(x: tipX + cos(back + 0.42) * arrowBase,
+                                     y: tipY + sin(back + 0.42) * arrowBase))
+            ctx.addLine(to: CGPoint(x: tipX + cos(back - 0.42) * arrowBase,
+                                     y: tipY + sin(back - 0.42) * arrowBase))
+            ctx.closePath()
+            ctx.fillPath()
+            ctx.restoreGState()
         }
+
         ctx.setFillColor(color)
         ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius,
                                     width: radius * 2, height: radius * 2))
 
         let numStr = String(seq) as NSString
-        var fontSize = radius * 1.4
+        var fontSize = radius * 1.1
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.boldSystemFont(ofSize: fontSize),
+            .font: roundedBoldFont(size: fontSize),
             .foregroundColor: UIColor.white
         ]
-        let measured = numStr.size(withAttributes: attrs)
-        if measured.width > radius * 1.6 {
-            fontSize *= radius * 1.6 / measured.width
-            attrs[.font] = UIFont.boldSystemFont(ofSize: fontSize)
+        let maxW = radius * 1.6
+        var measured = numStr.size(withAttributes: attrs)
+        if measured.width > maxW {
+            // Match SwiftUI's minimumScaleFactor(0.4).
+            let factor = max(0.4, maxW / measured.width)
+            fontSize *= factor
+            attrs[.font] = roundedBoldFont(size: fontSize)
+            measured = numStr.size(withAttributes: attrs)
         }
-        let ts = numStr.size(withAttributes: attrs)
-        numStr.draw(at: CGPoint(x: cx - ts.width / 2, y: cy - ts.height / 2), withAttributes: attrs)
+        numStr.draw(at: CGPoint(x: cx - measured.width / 2, y: cy - measured.height / 2),
+                    withAttributes: attrs)
+    }
+
+    private func roundedBoldFont(size: CGFloat) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: .bold)
+        if let descriptor = base.fontDescriptor.withDesign(.rounded) {
+            return UIFont(descriptor: descriptor, size: size)
+        }
+        return base
     }
 
     // MARK: - Helpers
