@@ -512,7 +512,8 @@ final class ProjectStore {
     @discardableResult
     func updateAddress(_ project: Project, _ address: String) -> Project {
         var p = project
-        p.projectAddress = address
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.projectAddress = trimmed.isEmpty ? nil : trimmed
         return save(p)
     }
 

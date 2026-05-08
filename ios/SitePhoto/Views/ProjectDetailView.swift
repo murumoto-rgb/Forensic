@@ -29,6 +29,8 @@ struct ProjectDetailView: View {
     @State private var importStatus: String?
     @State private var relocatingPhoto: PhotoTarget?
     @State private var pendingPhotoDelete: Photo?
+    @State private var showingAddressEditor = false
+    @State private var addressUpdating = false
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
@@ -98,6 +100,16 @@ struct ProjectDetailView: View {
                     RelocateSheet(projectID: projectID, photoID: target.id)
                         .environment(store)
                 }
+                .sheet(isPresented: $showingAddressEditor) {
+                    AddressEditSheet(
+                        projectID: projectID,
+                        currentAddress: project.projectAddress ?? "",
+                        onSave: { newAddress in
+                            Task { await applyNewAddress(newAddress) }
+                        }
+                    )
+                    .environment(store)
+                }
                 .fileImporter(
                     isPresented: $showingFileImporter,
                     allowedContentTypes: [.image],
@@ -156,6 +168,37 @@ struct ProjectDetailView: View {
         }
     }
 
+    @MainActor
+    private func applyNewAddress(_ raw: String) async {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        addressUpdating = true
+        defer { addressUpdating = false }
+
+        guard !trimmed.isEmpty else {
+            // Clear the address but leave coordinates alone.
+            if let project = store.project(withID: projectID) {
+                _ = store.updateAddress(project, "")
+            }
+            return
+        }
+
+        guard let result = await location.forwardGeocode(trimmed) else {
+            sessionError = "Couldn't resolve that address. Try a more complete street address."
+            return
+        }
+        guard var current = store.project(withID: projectID) else { return }
+        let newGPS = ProjectGPS(
+            latitude: result.coordinate.latitude,
+            longitude: result.coordinate.longitude,
+            altitude: nil,
+            accuracyFeet: nil,
+            timestamp: Date()
+        )
+        current = store.updateGPS(current, newGPS)
+        _ = store.updateAddress(current, result.address)
+        sessionError = nil
+    }
+
     private func handleCapture(_ captured: CapturedPhoto) {
         guard let project = store.project(withID: projectID) else { return }
         if project.floorPlan != nil {
@@ -176,7 +219,7 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func metadataSection(_ project: Project) -> some View {
-        Section("Details") {
+        Section("Project Information") {
             LabeledContent("Created", value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
 
             HStack {
@@ -186,7 +229,7 @@ struct ProjectDetailView: View {
             }
 
             if let gps = project.projectGPS {
-                LabeledContent("GPS") {
+                LabeledContent("Coordinates") {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(String(format: "%.5f, %.5f", gps.latitude, gps.longitude))
                             .font(.caption.monospaced())
@@ -199,14 +242,36 @@ struct ProjectDetailView: View {
                 }
             }
 
-            if let address = project.projectAddress {
-                LabeledContent("Address") {
-                    Text(address)
-                        .multilineTextAlignment(.trailing)
+            Button {
+                showingAddressEditor = true
+            } label: {
+                HStack {
+                    Text("Address")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    addressTrailing(project)
                 }
-            } else if project.projectGPS != nil {
-                LabeledContent("Address", value: addressLookupRunning ? "looking up…" : "—")
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func addressTrailing(_ project: Project) -> some View {
+        HStack(spacing: 6) {
+            if let address = project.projectAddress {
+                Text(address)
+                    .multilineTextAlignment(.trailing)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            } else {
+                Text(addressLookupRunning || addressUpdating ? "looking up…" : "Tap to add")
+                    .foregroundStyle(.secondary)
+            }
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 

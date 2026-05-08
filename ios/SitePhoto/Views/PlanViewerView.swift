@@ -213,21 +213,28 @@ struct PlanViewerView: View {
             }
 
             // Tail bubbles first (under), then leads on top so a tap on a stack hits the lead.
+            // contentShape + onTapGesture must come BEFORE .position(...) —
+            // .position reparents the view to fill the entire plan area for
+            // layout, so a trailing .contentShape(Circle()) would inscribe in
+            // the whole parent and steal every tap (always selecting the
+            // last-drawn bubble).
             ForEach(markers.filter { !$0.isPrimary }) { marker in
                 bubble(for: marker, radius: secRview)
-                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .frame(width: secRview * 2, height: secRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
                         select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
                     }
+                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
             }
             ForEach(markers.filter { $0.isPrimary }) { marker in
                 bubble(for: marker, radius: primaryRview)
-                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .frame(width: primaryRview * 2, height: primaryRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
                         select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
                     }
+                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
             }
 
             NorthIndicator(northDeg: plan.northDeg)

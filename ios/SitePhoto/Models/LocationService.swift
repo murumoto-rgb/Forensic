@@ -60,6 +60,20 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         return Self.formatAddress(from: placemark)
     }
 
+    /// Forward-geocode a free-form address string into a coordinate + a
+    /// canonicalized address. Returns nil if the geocoder can't resolve it.
+    func forwardGeocode(_ address: String) async -> (coordinate: CLLocationCoordinate2D, address: String)? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let geocoder = CLGeocoder()
+        guard let placemark = try? await geocoder.geocodeAddressString(trimmed).first,
+              let location = placemark.location else {
+            return nil
+        }
+        let formatted = Self.formatAddress(from: placemark) ?? trimmed
+        return (location.coordinate, formatted)
+    }
+
     static func formatAddress(from p: CLPlacemark) -> String? {
         var parts: [String] = []
         if let num = p.subThoroughfare, let road = p.thoroughfare {
