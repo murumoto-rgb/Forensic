@@ -35,7 +35,10 @@ targets:
         CFBundleDisplayName: SitePhoto
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
-        UILaunchStoryboardName: LaunchScreen
+        UILaunchScreen:
+          UIBackgroundColor: "FFFFFF"
+          UIImageName: BaykalLogo
+          UIImageRespectsSafeAreaInsets: true
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."
