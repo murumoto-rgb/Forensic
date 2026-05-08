@@ -231,52 +231,34 @@ final class ProjectStore {
     }
 
     func delete(_ project: Project) {
-        // Remove every folder whose manifest carries this project's id, in
-        // both the active root (iCloud or local) AND the legacy local root
-        // when running on iCloud. The legacy cleanup is what prevents the
-        // local→iCloud migration from re-resurrecting a deleted project on
-        // the next launch.
-        deleteAllFolders(forID: project.id, under: rootURL)
-        if usingICloud {
-            deleteAllFolders(forID: project.id, under: Self.localProjectsURL)
+        // We already know every possible folder name for this project, so
+        // delete by name — no need to read manifests (which may be iCloud
+        // placeholders and would fail silently, leaving the folder behind).
+        let knownNames: [String] = [
+            // Current canonical name.
+            project.folderName
+                ?? Project.makeFolderName(id: project.id, name: project.name, createdAt: project.createdAt),
+            // Pre-folderName era: folder was just the raw UUID string.
+            project.id.uuidString
+        ]
+        for name in knownNames {
+            removeIfExists(rootURL.appending(path: name, directoryHint: .isDirectory))
+            if usingICloud {
+                // Also remove any surviving local copy that would be
+                // re-migrated to iCloud on the next launch.
+                removeIfExists(Self.localProjectsURL.appending(path: name, directoryHint: .isDirectory))
+            }
         }
         projects.removeAll { $0.id == project.id }
     }
 
-    private func deleteAllFolders(forID id: UUID, under root: URL) {
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey]
-        ) else { return }
-        for entry in entries {
-            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            guard isDir else { continue }
-            let manifest = entry.appending(path: "manifest.json")
-            guard let data = try? Data(contentsOf: manifest),
-                  let project = try? decoder().decode(Project.self, from: data),
-                  project.id == id else { continue }
-            deleteCoordinated(at: entry)
-        }
-    }
-
-    /// Use NSFileCoordinator for the actual remove so the iCloud daemon
-    /// registers the delete properly and won't restore the folder.
-    private func deleteCoordinated(at url: URL) {
+    private func removeIfExists(_ url: URL) {
         guard fileManager.fileExists(atPath: url.path()) else { return }
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &coordError) { newURL in
-            do {
-                try fileManager.removeItem(at: newURL)
-            } catch {
-                #if DEBUG
-                print("removeItem failed at \(newURL.path()): \(error)")
-                #endif
-            }
-        }
-        if let coordError {
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
             #if DEBUG
-            print("file coordination failed for \(url.path()): \(coordError)")
+            print("removeItem failed at \(url.lastPathComponent): \(error)")
             #endif
         }
     }
