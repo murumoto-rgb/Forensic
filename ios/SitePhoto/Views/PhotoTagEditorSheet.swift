@@ -108,9 +108,9 @@ struct PhotoTagEditorSheet: View {
 
     @ViewBuilder
     private var aiMetadataSection: some View {
-        let severity    = photo?.aiSeverity?.nilIfBlank
-        let observation = photo?.aiObservation?.nilIfBlank
-        let followUp    = photo?.aiFollowUp?.nilIfBlank
+        let severity    = photo?.aiSeverity.nilIfBlank
+        let observation = photo?.aiObservation.nilIfBlank
+        let followUp    = photo?.aiFollowUp.nilIfBlank
         if severity != nil || observation != nil || followUp != nil {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
