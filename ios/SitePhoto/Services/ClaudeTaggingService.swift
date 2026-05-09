@@ -102,23 +102,68 @@ enum ClaudeTaggingService {
         req.httpBody = payload
         req.timeoutInterval = 60
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await URLSession.shared.data(for: req)
-        } catch {
-            throw Error.network(error.localizedDescription)
-        }
+        let data = try await sendWithRetry(req)
+        return try parseSuggestions(from: data)
+    }
 
-        guard let http = response as? HTTPURLResponse else {
-            throw Error.network("No HTTP response")
-        }
-        if http.statusCode != 200 {
+    /// Send the request, retrying on 429 (rate limit) and 5xx (transient
+    /// server errors) with exponential backoff. Honours the `Retry-After`
+    /// header when present. Other 4xx responses fail immediately — they
+    /// won't fix themselves.
+    private static func sendWithRetry(_ req: URLRequest,
+                                       maxRetries: Int = 4) async throws -> Data {
+        var attempt = 0
+        while true {
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: req)
+            } catch {
+                // Network-class error — retry a couple of times for transient
+                // blips (Wi-Fi handoff, DNS hiccup) before giving up.
+                if attempt < maxRetries {
+                    try await Task.sleep(for: .seconds(backoffSeconds(attempt: attempt)))
+                    attempt += 1
+                    continue
+                }
+                throw Error.network(error.localizedDescription)
+            }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw Error.network("No HTTP response")
+            }
+            if http.statusCode == 200 {
+                return data
+            }
+
+            let retryable = (http.statusCode == 429) || (http.statusCode >= 500 && http.statusCode < 600)
+            if retryable && attempt < maxRetries {
+                let delay = retryAfterSeconds(in: http) ?? backoffSeconds(attempt: attempt)
+                try await Task.sleep(for: .seconds(delay))
+                attempt += 1
+                continue
+            }
+
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
             throw Error.http(status: http.statusCode, body: bodyStr)
         }
+    }
 
-        return try parseSuggestions(from: data)
+    /// Anthropic returns Retry-After either as integer seconds or as an
+    /// HTTP-date. We only handle the seconds form — good enough for the
+    /// rate-limit case we see in practice.
+    private static func retryAfterSeconds(in http: HTTPURLResponse) -> Double? {
+        guard let raw = http.value(forHTTPHeaderField: "retry-after"),
+              let seconds = Double(raw) else { return nil }
+        return min(seconds, 30)  // cap so a misconfigured response can't stall the batch forever
+    }
+
+    /// 1s → 2s → 4s → 8s, with a small random jitter so 5 concurrent
+    /// requests hitting the same 429 don't all retry in lock-step.
+    private static func backoffSeconds(attempt: Int) -> Double {
+        let base = pow(2.0, Double(attempt))
+        let jitter = Double.random(in: 0...0.5)
+        return base + jitter
     }
 
     // MARK: - Prompt

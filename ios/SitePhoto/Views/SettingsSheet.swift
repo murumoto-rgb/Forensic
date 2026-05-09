@@ -9,6 +9,10 @@ struct SettingsSheet: View {
     @State private var hasStoredKey: Bool = false
     @State private var saved: Bool = false
 
+    /// Concurrency cap for the AI batch-tagging task group. Tier 1 Anthropic
+    /// accounts comfortably handle 5; higher tiers can go higher.
+    @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 5
+
     var body: some View {
         NavigationStack {
             Form {
@@ -46,10 +50,27 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    Stepper(value: $aiConcurrency, in: 1...20) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Parallel AI requests")
+                            Text("\(aiConcurrency) at a time")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("AI Batch Tagging Speed")
+                } footer: {
+                    Text("Number of photos processed in parallel during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts). Bump higher if you have a Tier 2+ account or run into idle CPU; the app retries with backoff on rate-limit responses.")
+                }
+
+                Section {
                     Link("Get an API key →",
                          destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                     Link("Anthropic pricing →",
                          destination: URL(string: "https://www.anthropic.com/pricing")!)
+                    Link("Anthropic rate limits →",
+                         destination: URL(string: "https://docs.anthropic.com/en/api/rate-limits")!)
                 }
             }
             .navigationTitle("Settings")

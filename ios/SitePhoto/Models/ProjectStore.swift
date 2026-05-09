@@ -1088,41 +1088,117 @@ final class ProjectStore {
         }
         let skipped = project.photos.count - candidates.count
         let total = candidates.count
+        let instructions = project.effectiveAIInstructions
+
+        // Read concurrency from the user's setting (default 5). Tier-1
+        // Anthropic accounts handle ~5 concurrent comfortably; users on
+        // higher tiers can dial it up in Settings.
+        let raw = UserDefaults.standard.integer(forKey: "sitephoto.aiConcurrency")
+        let maxConcurrent = max(1, min(20, raw == 0 ? 5 : raw))
+
+        // Pre-compute the per-photo work list on the main actor so the
+        // task closures don't have to call back into `self` for URLs —
+        // keeps the closures Sendable-clean.
+        struct WorkItem {
+            let photoID: UUID
+            let sequenceNumber: Int
+            let url: URL
+        }
+        let work: [WorkItem] = candidates.map { p in
+            WorkItem(photoID: p.id,
+                      sequenceNumber: p.sequenceNumber,
+                      url: self.imageURL(for: p, in: project))
+        }
 
         var tagged = 0
         var failed = 0
-        for (i, photo) in candidates.enumerated() {
-            try Task.checkCancellation()
-            onProgress(i + 1, total, photo.sequenceNumber)
+        var completed = 0
 
-            guard let proj = self.project(withID: projectID) else { break }
-            let url = self.imageURL(for: photo, in: proj)
-            await self.ensureDownloaded(url)
+        try await withTaskGroup(of: PhotoTagResult.self) { group in
+            var iterator = work.makeIterator()
 
-            do {
-                let suggestions = try await ClaudeTaggingService.tag(
-                    imageURL: url,
-                    instructions: proj.effectiveAIInstructions
-                )
-                if !suggestions.isEmpty {
-                    let merged = proj.photos.first(where: { $0.id == photo.id })?.tags ?? []
-                    let newTags = merged + suggestions.map { $0.label }
-                    _ = self.setTags(proj, photoID: photo.id, tags: newTags)
-                    tagged += 1
+            // Helper: launch the next photo's API call. Returns false once
+            // the iterator is empty so the drain loop can stop scheduling.
+            // Captures only value types (URL, UUID, Int, String) so the
+            // Sendable contract on `addTask` holds.
+            func launchNext() -> Bool {
+                guard let item = iterator.next() else { return false }
+                let url = item.url
+                let pid = item.photoID
+                let seq = item.sequenceNumber
+                let inst = instructions
+                group.addTask {
+                    await Self.ensureDownloadedStatic(at: url)
+                    do {
+                        let s = try await ClaudeTaggingService.tag(
+                            imageURL: url,
+                            instructions: inst
+                        )
+                        return PhotoTagResult(photoID: pid, sequenceNumber: seq,
+                                              outcome: .success(s))
+                    } catch ClaudeTaggingService.Error.missingAPIKey {
+                        return PhotoTagResult(photoID: pid, sequenceNumber: seq,
+                                              outcome: .authFailure)
+                    } catch {
+                        return PhotoTagResult(photoID: pid, sequenceNumber: seq,
+                                              outcome: .otherFailure(error.localizedDescription))
+                    }
                 }
-            } catch ClaudeTaggingService.Error.missingAPIKey {
-                // Auth-class failure: stop the batch so the user can fix
-                // their key in Settings instead of burning network calls.
-                throw ClaudeTaggingService.Error.missingAPIKey
-            } catch {
-                failed += 1
-                #if DEBUG
-                print("Claude batch failed for #\(photo.sequenceNumber): \(error)")
-                #endif
+                return true
+            }
+
+            // Seed the pool with up to `maxConcurrent` in-flight tasks.
+            for _ in 0..<maxConcurrent {
+                if !launchNext() { break }
+            }
+
+            // Drain: as each task finishes, apply its result on the main
+            // actor and queue the next one. Maintains a steady N tasks in
+            // flight until `iterator` is exhausted.
+            for await result in group {
+                try Task.checkCancellation()
+                completed += 1
+
+                switch result.outcome {
+                case .authFailure:
+                    group.cancelAll()
+                    throw ClaudeTaggingService.Error.missingAPIKey
+                case .success(let suggestions):
+                    if !suggestions.isEmpty,
+                       let proj = self.project(withID: projectID) {
+                        let existing = proj.photos.first(where: { $0.id == result.photoID })?.tags ?? []
+                        let newTags = existing + suggestions.map { $0.label }
+                        _ = self.setTags(proj, photoID: result.photoID, tags: newTags)
+                        tagged += 1
+                    }
+                case .otherFailure(let msg):
+                    failed += 1
+                    #if DEBUG
+                    print("Claude batch failed for #\(result.sequenceNumber): \(msg)")
+                    #endif
+                }
+
+                onProgress(completed, total, result.sequenceNumber)
+                _ = launchNext()
             }
         }
+
         onProgress(total, total, nil)
         return (tagged: tagged, failed: failed, skipped: skipped)
+    }
+
+    /// Per-photo result emitted by the batch task group. Aggregating the
+    /// outcome inside one envelope keeps the drain loop's switch tidy.
+    private struct PhotoTagResult: Sendable {
+        let photoID: UUID
+        let sequenceNumber: Int
+        let outcome: Outcome
+
+        enum Outcome: Sendable {
+            case success([TagSuggestion])
+            case authFailure
+            case otherFailure(String)
+        }
     }
 
     /// Strip the location from an existing photo (turns it back into "NO LOC").
@@ -1154,6 +1230,14 @@ final class ProjectStore {
     /// If `url` is an iCloud-backed item that hasn't been downloaded to this
     /// device, request a download and wait until it lands.
     func ensureDownloaded(_ url: URL, timeoutSeconds: Double = 30) async {
+        await Self.ensureDownloadedStatic(at: url, timeoutSeconds: timeoutSeconds)
+    }
+
+    /// Sendable-friendly variant — usable from inside `TaskGroup.addTask`
+    /// closures without capturing `self`. Same behaviour as the instance
+    /// method.
+    static func ensureDownloadedStatic(at url: URL,
+                                        timeoutSeconds: Double = 30) async {
         let keys: Set<URLResourceKey> = [
             .isUbiquitousItemKey,
             .ubiquitousItemDownloadingStatusKey
@@ -1162,7 +1246,7 @@ final class ProjectStore {
               values.isUbiquitousItem == true else { return }
         if values.ubiquitousItemDownloadingStatus == .current { return }
 
-        try? fileManager.startDownloadingUbiquitousItem(at: url)
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
         let stepMillis: UInt64 = 250
         let total = max(1, Int(timeoutSeconds * 1000) / Int(stepMillis))
         for _ in 0..<total {
