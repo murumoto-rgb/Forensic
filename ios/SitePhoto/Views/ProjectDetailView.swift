@@ -347,7 +347,11 @@ struct ProjectDetailView: View {
 
             PhotosPicker(
                 selection: $photoPickerItems,
-                maxSelectionCount: 50,
+                // No cap — the loop in importFromPhotosLibrary processes
+                // items serially, so memory stays flat regardless of
+                // selection size. Large batches just take proportionally
+                // longer, with the "Importing N of M…" line ticking up.
+                maxSelectionCount: nil,
                 matching: .images,
                 photoLibrary: .shared()
             ) {
