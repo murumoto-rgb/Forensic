@@ -31,6 +31,13 @@ struct ProjectDetailView: View {
     @State private var importStatus: String?
     @State private var relocatingPhoto: PhotoTarget?
     @State private var pendingPhotoDelete: Photo?
+    /// True when the photos list is in multi-select / batch-delete mode.
+    /// While on, rows show a check circle and tapping toggles selection
+    /// instead of opening the tag editor; the per-row swipe-to-delete is
+    /// also suspended.
+    @State private var selectionMode: Bool = false
+    @State private var selectedPhotoIDs: Set<UUID> = []
+    @State private var confirmingBatchDelete: Bool = false
     @State private var showingAddressEditor = false
     @State private var addressUpdating = false
     @State private var taggingPhoto: PhotoTarget?
@@ -205,6 +212,17 @@ struct ProjectDetailView: View {
                     }
                 } message: { photo in
                     Text("Photo #\(photo.sequenceNumber) will be deleted and the remaining photos renumbered. This cannot be undone.")
+                }
+                .alert(
+                    "Delete \(selectedPhotoIDs.count) photo\(selectedPhotoIDs.count == 1 ? "" : "s")?",
+                    isPresented: $confirmingBatchDelete
+                ) {
+                    Button("Delete", role: .destructive) {
+                        deleteSelectedPhotos()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The selected photos will be deleted and the remaining photos will be renumbered. This cannot be undone.")
                 }
                 .modifier(BatchTagModifiers(
                     confirm: $batchTagConfirm,
@@ -583,29 +601,63 @@ struct ProjectDetailView: View {
                     .foregroundStyle(.secondary)
                     .font(.callout)
             } else {
+                if selectionMode {
+                    selectionActionRow(visiblePhotos: visiblePhotos)
+                }
                 ForEach(visiblePhotos) { photo in
-                    PhotoRow(
-                        photo: photo,
-                        project: project,
-                        store: store,
-                        onLocate: {
-                            relocatingPhoto = PhotoTarget(id: photo.id)
-                        },
-                        onTag: {
-                            taggingPhoto = PhotoTarget(id: photo.id)
-                        }
-                    )
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            pendingPhotoDelete = photo
-                        } label: {
-                            Label("Delete", systemImage: "trash")
+                    if selectionMode {
+                        selectablePhotoRow(photo: photo, project: project)
+                    } else {
+                        PhotoRow(
+                            photo: photo,
+                            project: project,
+                            store: store,
+                            onLocate: {
+                                relocatingPhoto = PhotoTarget(id: photo.id)
+                            },
+                            onTag: {
+                                taggingPhoto = PhotoTarget(id: photo.id)
+                            }
+                        )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingPhotoDelete = photo
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
                 }
             }
         } header: {
-            HStack {
+            photosSectionHeader(project: project, visiblePhotos: visiblePhotos)
+        }
+    }
+
+    @ViewBuilder
+    private func photosSectionHeader(project: Project, visiblePhotos: [Photo]) -> some View {
+        HStack(spacing: 8) {
+            if selectionMode {
+                Text("\(selectedPhotoIDs.count) selected")
+                    .textCase(nil)
+                Spacer()
+                let allVisibleSelected = !visiblePhotos.isEmpty
+                    && visiblePhotos.allSatisfy { selectedPhotoIDs.contains($0.id) }
+                Button(allVisibleSelected ? "None" : "All") {
+                    if allVisibleSelected {
+                        selectedPhotoIDs.subtract(visiblePhotos.map(\.id))
+                    } else {
+                        selectedPhotoIDs.formUnion(visiblePhotos.map(\.id))
+                    }
+                }
+                .textCase(nil)
+                .font(.caption)
+                Button("Cancel") {
+                    exitSelectionMode()
+                }
+                .textCase(nil)
+                .font(.caption)
+            } else {
                 Text("Photos · \(project.photos.count)")
                 if !activeTagFilters.isEmpty
                     || !recommendedUseFilter.isEmpty
@@ -613,7 +665,75 @@ struct ProjectDetailView: View {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
                 }
+                Spacer()
+                if !project.photos.isEmpty {
+                    Button("Select") {
+                        selectionMode = true
+                    }
+                    .textCase(nil)
+                    .font(.caption)
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
+        HStack {
+            Button(role: .destructive) {
+                confirmingBatchDelete = true
+            } label: {
+                Label(
+                    "Delete \(selectedPhotoIDs.count) Photo\(selectedPhotoIDs.count == 1 ? "" : "s")",
+                    systemImage: "trash"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(selectedPhotoIDs.isEmpty)
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func selectablePhotoRow(photo: Photo, project: Project) -> some View {
+        let isSelected = selectedPhotoIDs.contains(photo.id)
+        Button {
+            if isSelected {
+                selectedPhotoIDs.remove(photo.id)
+            } else {
+                selectedPhotoIDs.insert(photo.id)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title2)
+                    .foregroundStyle(isSelected ? Color.blue : Color.secondary)
+                PhotoRow(
+                    photo: photo,
+                    project: project,
+                    store: store
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func exitSelectionMode() {
+        selectionMode = false
+        selectedPhotoIDs.removeAll()
+    }
+
+    private func deleteSelectedPhotos() {
+        guard let project = store.project(withID: projectID) else { return }
+        let ids = selectedPhotoIDs
+        guard !ids.isEmpty else { return }
+        do {
+            _ = try store.deletePhotos(project, photoIDs: ids)
+            exitSelectionMode()
+        } catch {
+            captureError = "Could not delete photos: \(error.localizedDescription)"
         }
     }
 

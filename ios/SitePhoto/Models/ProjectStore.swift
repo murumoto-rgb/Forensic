@@ -813,22 +813,33 @@ final class ProjectStore {
     /// the new sequence numbers so the iCloud filenames stay consistent.
     @discardableResult
     func deletePhoto(_ project: Project, photoID: UUID) throws -> Project {
+        return try deletePhotos(project, photoIDs: [photoID])
+    }
+
+    /// Delete every photo in `photoIDs` in a single pass, removing their
+    /// image + thumbnail files and renumbering the survivors so sequence
+    /// numbers stay contiguous from 1. The renumber walks survivors in
+    /// ascending order and only ever assigns a smaller sequence number,
+    /// so each rename targets a slot that's already free (either vacated
+    /// by a delete or by an earlier rename in the loop).
+    func deletePhotos(_ project: Project, photoIDs: Set<UUID>) throws -> Project {
         var p = project
-        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        guard !photoIDs.isEmpty else { return p }
+
         let photosDir = photosFolder(for: p)
         let thumbsDir = thumbnailsFolder(for: p)
 
-        // Remove the deleted photo's files first.
-        let removed = p.photos.remove(at: idx)
-        try? fileManager.removeItem(at: photosDir.appending(path: removed.imageFilename))
-        if let thumb = removed.thumbnailFilename {
-            try? fileManager.removeItem(at: thumbsDir.appending(path: thumb))
+        let removed = p.photos.filter { photoIDs.contains($0.id) }
+        guard !removed.isEmpty else { return p }
+        p.photos.removeAll { photoIDs.contains($0.id) }
+
+        for photo in removed {
+            try? fileManager.removeItem(at: photosDir.appending(path: photo.imageFilename))
+            if let thumb = photo.thumbnailFilename {
+                try? fileManager.removeItem(at: thumbsDir.appending(path: thumb))
+            }
         }
 
-        // Renumber + rename the survivors so seq 1…N is contiguous and the
-        // filenames match the new sequence numbers. Iterating in array order
-        // (which is also ascending sequence order) lets each rename go to a
-        // slot that's just been freed by an earlier rename or the delete.
         for i in p.photos.indices {
             let oldSeq = p.photos[i].sequenceNumber
             let newSeq = i + 1
