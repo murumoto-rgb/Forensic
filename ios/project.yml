@@ -37,8 +37,6 @@ targets:
         CFBundleVersion: "1"
         UILaunchScreen:
           UIBackgroundColor: "FFFFFF"
-          UIImageName: BaykalLogo
-          UIImageRespectsSafeAreaInsets: true
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."

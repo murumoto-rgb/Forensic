@@ -13,6 +13,10 @@ struct SitePhotoApp: App {
     /// whether the white logo banner is shown at the bottom.
     @State private var atRoot: Bool = true
 
+    /// Minimum time the splash stays visible — prevents a flash if iCloud
+    /// is already warm and loadInitial finishes in milliseconds.
+    private let minSplashDuration: TimeInterval = 1.0
+
     var body: some Scene {
         WindowGroup {
             ContentView(atRoot: $atRoot)
@@ -31,26 +35,36 @@ struct SitePhotoApp: App {
                 }
                 .animation(.easeInOut(duration: 0.5), value: splashDone)
                 .task {
-                    // Hold the splash for ~1.3s, then cross-fade to main.
-                    try? await Task.sleep(for: .milliseconds(1300))
+                    let start = Date()
+                    await store.loadInitial()
+                    let elapsed = Date().timeIntervalSince(start)
+                    if elapsed < minSplashDuration {
+                        try? await Task.sleep(for: .seconds(minSplashDuration - elapsed))
+                    }
                     splashDone = true
                 }
         }
     }
 }
 
-/// Full white background with the logo centered. Covers the entire window
-/// (including the status bar and home-indicator strip) until the app fades
-/// it out.
+/// Full white background with the logo centered + a loading indicator
+/// underneath. Covers the entire window until the app fades it out.
 private struct SplashScreen: View {
     var body: some View {
         ZStack {
             Color.white.ignoresSafeArea()
-            Image("BaykalLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 280, maxHeight: 200)
-                .accessibilityLabel("Baykal Consulting")
+            VStack(spacing: 28) {
+                Image("BaykalLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 280, maxHeight: 200)
+                    .accessibilityLabel("Baykal Consulting")
+                ProgressView()
+                    .controlSize(.regular)
+                    // Match the navy from the logo so it reads as part of
+                    // the same identity rather than a system grey spinner.
+                    .tint(Color(red: 0.06, green: 0.16, blue: 0.31))
+            }
         }
     }
 }

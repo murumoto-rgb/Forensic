@@ -10,9 +10,16 @@ final class ProjectStore {
     private(set) var usingICloud: Bool = false
     /// Human-readable explanation for why iCloud isn't being used (nil when it is).
     private(set) var iCloudUnavailableReason: String?
+    /// True once `loadInitial()` has finished — the App scene's splash
+    /// keeps showing until this flips, so the slow first-launch iCloud
+    /// probe doesn't push the splash render back behind a blank screen.
+    private(set) var isReady: Bool = false
 
     private let fileManager = FileManager.default
-    private let storageRoot: URL
+    /// Mutated once during `loadInitial()` when the iCloud probe finishes.
+    /// Defaults to local while loadInitial is in flight so the rest of the
+    /// API never has a nil rootURL to deal with.
+    private var storageRoot: URL
 
     var rootURL: URL { storageRoot }
 
@@ -30,58 +37,67 @@ final class ProjectStore {
     static let activeFolderName  = "Active Projects"
     static let deletedFolderName = "Deleted Projects"
 
+    /// Fast init — only sets up the local storage root. The slow iCloud
+    /// probe + project load is in `loadInitial()` so the splash screen can
+    /// render immediately and the user doesn't see a 1–3-second white
+    /// pause before any UI appears.
     init() {
         let local = Self.localProjectsURL
         try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        Self.ensureSubfolders(in: local)
+        self.storageRoot = local
+    }
 
-        var iCloudProjectsURL: URL?
-        var unavailableReason: String?
+    /// Async setup: probe iCloud (slow on cold launch), promote storageRoot
+    /// to iCloud if available, run the local→iCloud migration, then load
+    /// projects. Safe to call multiple times — guarded by `isReady`.
+    @MainActor
+    func loadInitial() async {
+        guard !isReady else { return }
 
-        // url(forUbiquityContainerIdentifier:) blocks the first time iCloud is
-        // probed but is fast on subsequent calls. Doing it inline at startup is
-        // acceptable - the launch screen masks any short delay.
-        if let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil) {
+        // The iCloud-container probe is the dominant cost on first launch
+        // (sometimes 1–3 s while iOS sets up the container). Run it on a
+        // background task so the main actor stays free to render the
+        // splash screen.
+        let iCloudURL: URL? = await Task.detached {
+            guard let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
+                return nil
+            }
             let docs = containerURL.appending(path: "Documents", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
             let projects = docs.appending(path: "Projects", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
-            iCloudProjectsURL = projects
-        } else {
-            unavailableReason = "iCloud Drive isn't enabled. Open Settings → Apple ID → iCloud → iCloud Drive and turn it on (and SitePhoto inside the app list) to back projects up to iCloud."
-        }
+            return projects
+        }.value
 
-        if let iCloud = iCloudProjectsURL {
+        if let iCloud = iCloudURL {
             self.storageRoot = iCloud
             self.usingICloud = true
             self.iCloudUnavailableReason = nil
         } else {
-            self.storageRoot = local
             self.usingICloud = false
-            self.iCloudUnavailableReason = unavailableReason
+            self.iCloudUnavailableReason = "iCloud Drive isn't enabled. Open Settings → Apple ID → iCloud → iCloud Drive and turn it on (and SitePhoto inside the app list) to back projects up to iCloud."
         }
 
-        // Make sure both subfolders exist in the active root and (when
-        // running on iCloud) in the local root too — the local copy is
-        // used by the local→iCloud migration below as a staging area when
-        // iCloud is briefly unavailable at project-creation time.
         Self.ensureSubfolders(in: storageRoot)
-        Self.ensureSubfolders(in: local)
 
         // Defensive only: copies any project folders the user created in
         // local storage (because iCloud was offline) up to iCloud now that
         // it's available. Fast no-op when local is empty.
         if usingICloud {
-            Self.migrateProjects(
-                from: local.appending(path: Self.activeFolderName, directoryHint: .isDirectory),
-                to: storageRoot.appending(path: Self.activeFolderName, directoryHint: .isDirectory)
-            )
-            Self.migrateProjects(
-                from: local.appending(path: Self.deletedFolderName, directoryHint: .isDirectory),
-                to: storageRoot.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
-            )
+            let local = Self.localProjectsURL
+            let activeLocal   = local.appending(path: Self.activeFolderName,  directoryHint: .isDirectory)
+            let activeICloud  = storageRoot.appending(path: Self.activeFolderName,  directoryHint: .isDirectory)
+            let deletedLocal  = local.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+            let deletedICloud = storageRoot.appending(path: Self.deletedFolderName, directoryHint: .isDirectory)
+            await Task.detached {
+                Self.migrateProjects(from: activeLocal,  to: activeICloud)
+                Self.migrateProjects(from: deletedLocal, to: deletedICloud)
+            }.value
         }
 
         load()
+        isReady = true
     }
 
     private static var localProjectsURL: URL {
