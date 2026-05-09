@@ -20,11 +20,58 @@ struct BatchTagSummarySheet: View {
 
     private var project: Project? { store.project(withID: projectID) }
 
+    /// Holder for the share-sheet-as-text export. Identifiable so SwiftUI
+    /// can drive the sheet presentation.
+    private struct ShareItem: Identifiable {
+        let id = UUID()
+        let text: String
+    }
+    @State private var sharing: ShareItem?
+    @State private var navigatePhotoID: UUID?
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     summaryCard
+                    if !result.countsByPrimary.isEmpty {
+                        primariesCard
+                    }
+                    if !result.countsByRecommendedUse.isEmpty {
+                        recommendedUseCard
+                    }
+                    if !result.lowConfidence.isEmpty {
+                        needsReviewSection(
+                            title: "Low Confidence",
+                            icon: "questionmark.circle.fill",
+                            color: .orange,
+                            refs: result.lowConfidence
+                        )
+                    }
+                    if !result.reviewerFlagged.isEmpty {
+                        needsReviewSection(
+                            title: "Reviewer Flag",
+                            icon: "exclamationmark.triangle.fill",
+                            color: .orange,
+                            refs: result.reviewerFlagged
+                        )
+                    }
+                    if !result.validationIssues.isEmpty {
+                        needsReviewSection(
+                            title: "Validation Issues",
+                            icon: "xmark.octagon.fill",
+                            color: .red,
+                            refs: result.validationIssues
+                        )
+                    }
+                    if !result.parseFailed.isEmpty {
+                        needsReviewSection(
+                            title: "Parse Failed",
+                            icon: "doc.questionmark",
+                            color: .red,
+                            refs: result.parseFailed
+                        )
+                    }
                     if !result.failures.isEmpty {
                         failuresList
                         explainer
@@ -36,6 +83,13 @@ struct BatchTagSummarySheet: View {
             .navigationTitle("Batch Result")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        sharing = ShareItem(text: shareText)
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -44,6 +98,9 @@ struct BatchTagSummarySheet: View {
                 if !result.failures.isEmpty {
                     retryBar
                 }
+            }
+            .sheet(item: $sharing) { item in
+                ShareSheet(items: [item.text])
             }
         }
     }
@@ -104,6 +161,156 @@ struct BatchTagSummarySheet: View {
     }
 
     @ViewBuilder
+    private var primariesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Primary Tags")
+                .font(.headline)
+            VStack(spacing: 0) {
+                ForEach(Array(result.countsByPrimary.enumerated()),
+                        id: \.offset) { idx, row in
+                    HStack {
+                        Text(row.primary)
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("\(row.count)")
+                            .font(.body.monospaced().bold())
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    if idx < result.countsByPrimary.count - 1 {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    @ViewBuilder
+    private var recommendedUseCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recommended Use")
+                .font(.headline)
+            VStack(spacing: 0) {
+                ForEach(Array(result.countsByRecommendedUse.enumerated()),
+                        id: \.offset) { idx, row in
+                    HStack {
+                        Text(row.bucket)
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("\(row.count)")
+                            .font(.body.monospaced().bold())
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    if idx < result.countsByRecommendedUse.count - 1 {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    @ViewBuilder
+    private func needsReviewSection(title: String,
+                                     icon: String,
+                                     color: Color,
+                                     refs: [ProjectStore.BatchPhotoRef]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.headline)
+                    .foregroundStyle(color)
+                Spacer()
+                Text("\(refs.count)")
+                    .font(.subheadline.monospaced().bold())
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 0) {
+                ForEach(refs) { ref in
+                    NeedsReviewRow(ref: ref, project: project, store: store)
+                    if ref.id != refs.last?.id {
+                        Divider().padding(.leading, 76)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    /// Plain-text dump of the batch summary, suitable for emailing /
+    /// pasting into a project log. Mirrors the on-screen sections in the
+    /// same order so a reader can cross-reference.
+    private var shareText: String {
+        var lines: [String] = []
+        lines.append("Batch tagging summary")
+        lines.append(String(repeating: "=", count: 32))
+        lines.append("Photos processed: \(candidateCount)")
+        lines.append("  Tagged:  \(result.tagged)")
+        lines.append("  Failed:  \(result.failed)")
+        lines.append("  Skipped: \(result.skipped)")
+        lines.append("")
+
+        if !result.countsByPrimary.isEmpty {
+            lines.append("Primary tag counts:")
+            for row in result.countsByPrimary {
+                lines.append("  \(row.primary): \(row.count)")
+            }
+            lines.append("")
+        }
+        if !result.countsByRecommendedUse.isEmpty {
+            lines.append("Recommended use:")
+            for row in result.countsByRecommendedUse {
+                lines.append("  \(row.bucket): \(row.count)")
+            }
+            lines.append("")
+        }
+        if !result.lowConfidence.isEmpty {
+            lines.append("Low confidence (\(result.lowConfidence.count)):")
+            for ref in result.lowConfidence {
+                lines.append("  #\(ref.sequenceNumber)\(ref.detail.map { " — \($0)" } ?? "")")
+            }
+            lines.append("")
+        }
+        if !result.reviewerFlagged.isEmpty {
+            lines.append("Reviewer flag (\(result.reviewerFlagged.count)):")
+            for ref in result.reviewerFlagged {
+                lines.append("  #\(ref.sequenceNumber)\(ref.detail.map { " — \($0)" } ?? "")")
+            }
+            lines.append("")
+        }
+        if !result.validationIssues.isEmpty {
+            lines.append("Validation issues (\(result.validationIssues.count)):")
+            for ref in result.validationIssues {
+                lines.append("  #\(ref.sequenceNumber)\(ref.detail.map { " — \($0)" } ?? "")")
+            }
+            lines.append("")
+        }
+        if !result.parseFailed.isEmpty {
+            lines.append("Parse failed (\(result.parseFailed.count)):")
+            for ref in result.parseFailed {
+                lines.append("  #\(ref.sequenceNumber)\(ref.detail.map { " — \($0)" } ?? "")")
+            }
+            lines.append("")
+        }
+        if !result.failures.isEmpty {
+            lines.append("Network/HTTP failures (\(result.failures.count)):")
+            for f in result.failures {
+                lines.append("  #\(f.sequenceNumber): \(f.message)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    @ViewBuilder
     private var explainer: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("About these failures", systemImage: "info.circle")
@@ -159,6 +366,71 @@ struct BatchTagSummarySheet: View {
         }
         .background(.ultraThinMaterial)
     }
+}
+
+/// One row in the "needs review" sub-sections of the batch summary.
+/// Shows the photo's thumbnail, sequence number, and the optional
+/// detail line (reviewer flag, validation message, etc.). Doesn't yet
+/// link through to the editor — the user dismisses the sheet and taps
+/// the photo in the project list.
+private struct NeedsReviewRow: View {
+    let ref: ProjectStore.BatchPhotoRef
+    let project: Project?
+    let store: ProjectStore
+
+    private var photo: Photo? {
+        project?.photos.first(where: { $0.id == ref.photoID })
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            thumbnail
+                .frame(width: 64, height: 48)
+                .clipped()
+                .background(Color.secondary.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("#\(ref.sequenceNumber)")
+                    .font(.subheadline.monospaced().bold())
+                if let detail = ref.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let photo, let project,
+           let url = store.thumbnailURL(for: photo, in: project),
+           let data = try? Data(contentsOf: url),
+           let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// UIActivityViewController wrapped as a SwiftUI sheet so the user can
+/// share the batch-summary text via Mail, Messages, Files, etc.
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 private struct FailureRow: View {

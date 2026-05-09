@@ -38,6 +38,14 @@ struct ProjectDetailView: View {
     /// Compared case-insensitively. AND semantics: a photo must carry every
     /// active filter tag to appear.
     @State private var activeTagFilters: Set<String> = []
+    /// True when the "Needs review" chip is on. Surfaces every photo
+    /// where Claude self-rated low confidence, wrote a reviewer flag, or
+    /// returned a response that failed validation. ANDed with the tag
+    /// filter and the recommended-use filter.
+    @State private var showOnlyNeedsReview: Bool = false
+    /// Recommended-use bucket(s) to keep. Empty = no use-based filtering.
+    /// ANDed with the tag filter and the needs-review toggle.
+    @State private var recommendedUseFilter: Set<String> = []
 
     @State private var showingAIInstructions = false
     @State private var showingTagFilter = false
@@ -599,7 +607,9 @@ struct ProjectDetailView: View {
         } header: {
             HStack {
                 Text("Photos · \(project.photos.count)")
-                if !activeTagFilters.isEmpty {
+                if !activeTagFilters.isEmpty
+                    || !recommendedUseFilter.isEmpty
+                    || showOnlyNeedsReview {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
                 }
@@ -608,29 +618,92 @@ struct ProjectDetailView: View {
     }
 
     private func filteredPhotos(_ project: Project) -> [Photo] {
-        guard !activeTagFilters.isEmpty else { return project.photos }
+        let tagFilterActive = !activeTagFilters.isEmpty
+        let useFilterActive = !recommendedUseFilter.isEmpty
+        if !tagFilterActive && !useFilterActive && !showOnlyNeedsReview {
+            return project.photos
+        }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
         return project.photos.filter { photo in
-            let photoLC = Set(photo.tags
-                .filter { $0.confidence >= tagConfidenceThreshold }
-                .map { $0.label.lowercased() })
-            return lcFilters.isSubset(of: photoLC)
+            if tagFilterActive {
+                let photoLC = Set(photo.tags
+                    .filter { $0.confidence >= tagConfidenceThreshold }
+                    .map { $0.label.lowercased() })
+                if !lcFilters.isSubset(of: photoLC) { return false }
+            }
+            if useFilterActive {
+                let bucket = photo.aiAnalysis?.recommendedUse.bucketKey ?? ""
+                if !recommendedUseFilter.contains(bucket) { return false }
+            }
+            if showOnlyNeedsReview {
+                if !needsReview(photo) { return false }
+            }
+            return true
         }
+    }
+
+    /// True when this photo warrants the engineer's attention before
+    /// shipping the report — Claude self-rated Low confidence, wrote a
+    /// reviewer flag, returned a response that didn't pass validation,
+    /// or the response couldn't be parsed at all.
+    private func needsReview(_ photo: Photo) -> Bool {
+        guard let a = photo.aiAnalysis else { return false }
+        if a.parseFailed { return true }
+        if !a.reviewerFlag.isEmpty { return true }
+        if !a.validationErrors.isEmpty { return true }
+        if case .low = a.confidence { return true }
+        return false
     }
 
     @ViewBuilder
     private func tagFilterBar(allTags: [String]) -> some View {
+        // Buckets and reviewer-attention counts come from the project's
+        // analysed photos; the chips below them only show when at least
+        // one photo would match.
+        let needsReviewCount = store.project(withID: projectID)
+            .map { project in project.photos.filter { needsReview($0) }.count } ?? 0
+        let bucketsInUse = bucketsInUseFor(projectID: projectID)
+
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                if !activeTagFilters.isEmpty {
+                if !activeTagFilters.isEmpty
+                    || !recommendedUseFilter.isEmpty
+                    || showOnlyNeedsReview {
                     Button {
                         activeTagFilters.removeAll()
+                        recommendedUseFilter.removeAll()
+                        showOnlyNeedsReview = false
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
+                if needsReviewCount > 0 {
+                    Button {
+                        showOnlyNeedsReview.toggle()
+                    } label: {
+                        Label("Needs review · \(needsReviewCount)",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(showOnlyNeedsReview ? .orange : .secondary)
+                }
+                ForEach(bucketsInUse, id: \.self) { bucket in
+                    let on = recommendedUseFilter.contains(bucket)
+                    Button {
+                        if on { recommendedUseFilter.remove(bucket) }
+                        else  { recommendedUseFilter.insert(bucket) }
+                    } label: {
+                        Text(bucket)
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(on ? .blue : .secondary)
                 }
                 ForEach(allTags, id: \.self) { tag in
                     let on = activeTagFilters.contains(tag)
@@ -648,6 +721,29 @@ struct ProjectDetailView: View {
             }
             .padding(.vertical, 2)
         }
+    }
+
+    /// Recommended-use buckets that actually appear on at least one photo
+    /// in the project. Sorted in canonical order so the chip bar reads
+    /// Body figure → Re-shoot recommended consistently across projects.
+    private func bucketsInUseFor(projectID: UUID) -> [String] {
+        guard let project = store.project(withID: projectID) else { return [] }
+        var seen: Set<String> = []
+        for photo in project.photos {
+            if let a = photo.aiAnalysis, !a.parseFailed {
+                seen.insert(a.recommendedUse.bucketKey)
+            }
+        }
+        let canonical: [String] = [
+            RecommendedUse.bodyFigure.displayName,
+            RecommendedUse.appendixOnly.displayName,
+            RecommendedUse.contextLocator.displayName,
+            RecommendedUse.reshootRecommended.displayName
+        ]
+        var out: [String] = canonical.filter { seen.contains($0) }
+        let extras = seen.subtracting(out).sorted()
+        out.append(contentsOf: extras)
+        return out
     }
 
     @ViewBuilder
@@ -832,13 +928,16 @@ struct ProjectDetailView: View {
         batchTagTask?.cancel()
     }
 
-    /// Decide how to surface a finished batch: clean runs get a quiet
-    /// text alert, runs with failures open the failure-summary sheet so
-    /// the user can see which photos errored and retry them.
+    /// Decide how to surface a finished batch: a completely-clean run
+    /// (no failures, no parse errors, no validation issues, no reviewer
+    /// flags, no low-confidence picks) gets a quiet text alert; anything
+    /// else opens the rich summary sheet so the user can see counts per
+    /// primary, counts per recommended use, the photos that need review,
+    /// and any failed photos to retry.
     private func presentResult(_ result: ProjectStore.BatchTagResult,
                                  candidateCount: Int,
                                  mode: ProjectStore.BatchTagMode) {
-        if result.failed == 0 {
+        if result.isCompletelyClean {
             self.batchTagSummary = "Tagged \(result.tagged) of \(candidateCount) photo\(candidateCount == 1 ? "" : "s")."
                 + (result.skipped > 0 ? " \(result.skipped) already had tags." : "")
         } else {

@@ -8,38 +8,64 @@ import Foundation
 /// The text is sent to Claude as part of the system message. Output formatting
 /// is enforced separately by `ClaudeTaggingService` so editing the guide
 /// can't accidentally break tag-array parsing.
+///
+/// The controlled vocabulary listed in `defaultText` is duplicated, by
+/// design, in `ControlledVocabulary.entries` — that file is the validator's
+/// source of truth. If you change one, change the other; the validator
+/// will surface drift as `validationErrors` rather than a silent
+/// miscategorisation.
 enum AIInstructions {
     static let defaultText: String = """
-    Review each photograph for a residential foundation / structural distress investigation.
+    You are reviewing photographs for a residential foundation and structural distress investigation. For each photo, produce a single JSON object using the schema and rules below.
 
-    Assign Primary and Secondary Tags using only the controlled vocabulary below.
+    Output format
 
-    Definitions:
-    - Primary Tag = main issue shown in the photo.
-    - Secondary Tag = specific distress, condition, or observation under the selected Primary Tag.
+    Return one JSON object per photo, with no surrounding prose:
 
-    Each photo should ideally have one Primary Tag.
-    Use two Primary Tags only if the photo clearly shows two separate relevant issues.
-    Do not use more than two Primary Tags.
-    For each Primary Tag, select only one or more Secondary Tags listed under that Primary Tag.
-    Use "None" as the Secondary Tag if the photo is contextual and does not show distress.
-    Do not invent new Primary Tags or Secondary Tags.
-    Do not assign severity.
-    Do not tag every visible object.
-    Focus only on conditions relevant to foundation performance, structural distress, \
-    drainage, prior repair, construction quality, safety, or serviceability.
-    Do not state final causation from the photo alone.
-    Use cautious language in the Summary Observation, such as "visible," "appears," \
-    "may be relevant to," "may be consistent with," or "should be correlated with."
-    Keep the Summary Observation to one sentence.
+    {
+      "photo_id": "",
+      "primary_tags": [],
+      "secondary_tags_by_primary": {},
+      "location_inferred": "",
+      "orientation_cue": "",
+      "scale_present": "",
+      "measurement_visible": null,
+      "summary_observation": "",
+      "caption_draft": "",
+      "recommended_use": "",
+      "confidence": "",
+      "confidence_note": "",
+      "likely_companion": "",
+      "reviewer_flag": ""
+    }
 
-    Output format:
+    Field definitions
 
-    Primary Tag:
-    Secondary Tag:
-    Summary Observation:
+    - photo_id: filename or identifier as provided. If none, use "".
+    - primary_tags: array of one or two Primary Tags from the controlled vocabulary. Default to one. Use two only when the photo shows two clearly distinct issues that a reader would expect to be referenced separately in a report. Never more than two. Tiebreaker when both apply: prefer the structural element over the finish (e.g., grade beam crack over masonry crack at the same location). When the main subject of the photo IS a prior repair, use Primary 18; when prior repair is incidental to a clearer element-level issue, tag the element and use a "Prior ..." Secondary under that Primary.
+    - secondary_tags_by_primary: object keyed by each Primary Tag in primary_tags. The value is an array of one or more Secondary Tags listed under that Primary in the controlled vocabulary. Use ["None"] if the photo is contextual and shows no distress under that Primary. Every Secondary Tag must appear verbatim under the chosen Primary in the vocabulary; do not invent, merge, or paraphrase tags.
+    - location_inferred: best inference from visible cues, chosen from: "Exterior – Front," "Exterior – Rear," "Exterior – Left," "Exterior – Right," "Exterior – Unknown elevation," "Interior – Living/Family," "Interior – Kitchen," "Interior – Bedroom," "Interior – Bathroom," "Interior – Hallway," "Interior – Stairs," "Interior – Other room," "Garage," "Porch/Patio," "Attic," "Crawlspace," "Site/Yard," "Aerial," "Unknown." Do not speculate about specific addresses or occupants.
+    - orientation_cue: short phrase describing what cued the location (e.g., "double oven and island visible," "front door and address numerals," "rafters and roof sheathing"). Use "Not determinable" if no cue is visible.
+    - scale_present: "Yes," "Partial," or "No." Yes if a ruler, crack comparator, level, tape, coin, or hand provides usable scale; Partial if scale is implied but not measurable; No otherwise.
+    - measurement_visible: any number visible in the photo, transcribed exactly as shown including units and sign (e.g., "−1.3 in," "1/8\\"," "0.040"). Use null if no measurement is shown.
+    - summary_observation: one sentence using cautious language. Approved phrasings include "visible," "appears," "may be relevant to," "may be consistent with," "consistent with," "should be correlated with," and "not determinable from this photo." Disallowed phrasings include "caused by," "due to," "because of," and any other language that asserts causation from the photo alone. Do not assign severity. Do not state final causation.
+    - caption_draft: one short, neutral sentence suitable as a figure caption — descriptive of what is shown, without analysis or causation.
+    - recommended_use: one of "Body figure," "Appendix only," "Context/locator," or "Re-shoot recommended." Use "Re-shoot recommended" when distress is unclear, scale is missing on a measurement-critical condition, or the photo is poor or obstructed.
+    - confidence: "High," "Medium," or "Low." Reflects confidence in the tag selection, not the severity of the condition.
+    - confidence_note: one short clause explaining any Medium or Low rating (e.g., "obstructed view of crack tip"). Use "" for High.
+    - likely_companion: "Close-up," "Overview," or "Standalone." Use "Close-up" if the photo appears to be a detail likely paired with a wider context shot; "Overview" if it appears to be a context shot for nearby close-ups; "Standalone" otherwise.
+    - reviewer_flag: short note for the engineer's attention if anything in the photo warrants direct review (e.g., "possible safety issue — stair geometry," "measurement reading conflicts with apparent crack width"). Use "" if nothing flagged.
 
-    Controlled Primary and Secondary Tags:
+    General rules
+
+    - Focus only on conditions relevant to foundation performance, structural distress, drainage, prior repair, construction quality, safety, or serviceability. Do not tag every visible object.
+    - Do not assign severity.
+    - Do not state final causation.
+    - If the photo is a measurement readout (level, tape, crack comparator, Zip Level), transcribe the visible number in measurement_visible exactly as shown.
+    - If location is not visually evident, use "Unknown" — do not guess.
+    - Before finalizing, verify every Secondary Tag appears verbatim under its chosen Primary Tag in the controlled vocabulary below. If not, replace with the closest exact match or "None."
+
+    Controlled Primary and Secondary Tags
 
     1. Drainage / Grading
     Secondary Tags:
@@ -364,48 +390,21 @@ enum AIInstructions {
     - Cannot determine condition
     """
 
-    /// Canonical primary-tag names in the order they appear in the guide.
-    /// The tag-filter view sorts primaries by this order so the picker
-    /// always reads top-to-bottom the way the inspector wrote the guide
-    /// (drainage first, "poor / unclear photo" last). Tags not in this
-    /// list — manually-typed primaries, or names from a custom guide —
-    /// fall through to alphabetical at the bottom.
-    static let primaryTags: [String] = [
-        "Drainage / Grading",
-        "Regional Ponding / Site Moisture",
-        "Foundation / Slab",
-        "Driveway / Flatwork",
-        "Masonry",
-        "Stucco",
-        "Exterior Trim / Siding",
-        "Walls",
-        "Ceilings",
-        "Flooring",
-        "Interior Trim / Cabinets / Counters",
-        "Doors / Windows",
-        "Floor Slope / Levelness",
-        "Garage / Porch Slope",
-        "Roof / Roofing",
-        "Attic / Framing",
-        "Stairs",
-        "Prior Repair / Patch",
-        "Soil / Backfill",
-        "Trees / Vegetation",
-        "General Exterior Context",
-        "General Interior Context",
-        "Poor / Unclear Photo"
-    ]
+    /// Primary-tag names in canonical guide order. Re-exported from
+    /// `ControlledVocabulary` so the prompt-listing and the validator can
+    /// never drift — the vocabulary file is the single source of truth.
+    static var primaryTags: [String] { ControlledVocabulary.primaries }
 
-    /// Lowercased lookup set used to recognise legacy "Primary / Secondary"
-    /// flat labels during Tag decode and to detect when a user-typed string
-    /// happens to match a canonical primary.
-    static let knownPrimaryTagsLowercased: Set<String> =
-        Set(primaryTags.map { $0.lowercased() })
+    /// Lowercased lookup set used by the legacy "Primary / Secondary" flat
+    /// label migration in `Tag.init(from:)` and the AI Instructions editor.
+    static var knownPrimaryTagsLowercased: Set<String> {
+        ControlledVocabulary.primariesLowercased
+    }
 
     /// 0-based rank for sorting primary tags in the filter UI. Names not
-    /// in `primaryTags` get `Int.max` so they fall to the bottom.
+    /// in the controlled vocabulary get `Int.max` so they fall to the
+    /// bottom.
     static func primaryRank(_ name: String) -> Int {
-        let lc = name.lowercased()
-        return primaryTags.firstIndex(where: { $0.lowercased() == lc }) ?? Int.max
+        ControlledVocabulary.primaryRank(name)
     }
 }

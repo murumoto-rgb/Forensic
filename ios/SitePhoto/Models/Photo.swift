@@ -18,17 +18,27 @@ struct Photo: Identifiable, Codable, Hashable {
     var lensName: String?
     var flashMode: FlashMode
     var aiDescription: String?
-    /// Severity bucket Claude assigned to the most relevant distress in the
-    /// photo. One of: None, Minor, Moderate, Significant, Severe, Cannot
-    /// Determine. Stored verbatim so the UI can show it as Claude returned
-    /// it.
+    /// Legacy severity field from the pre-schema-2 prompt. The new prompt
+    /// no longer asks for severity; this field is preserved on existing
+    /// records and is set to nil whenever a new analysis lands.
     var aiSeverity: String?
     /// One-sentence report-style observation Claude wrote about the photo
-    /// — uses cautious language ("visible", "appears", etc.).
+    /// — uses cautious language ("visible", "appears", etc.). Mirrored
+    /// from `aiAnalysis.summaryObservation` whenever a new analysis lands
+    /// so existing UI surfaces (and the PDF caption row) keep working.
     var aiObservation: String?
-    /// One-sentence follow-up recommendation Claude wrote (e.g. "Correlate
-    /// with elevation survey", "Field-measure crack width").
+    /// Legacy follow-up field from the pre-schema-2 prompt. The new prompt
+    /// uses `aiAnalysis.reviewerFlag` for the related concept; this field
+    /// is preserved on existing records and is set to nil whenever a new
+    /// analysis lands.
     var aiFollowUp: String?
+    /// Full structured analysis from the new schema-2 prompt. Optional so
+    /// pre-schema-2 manifests (and freshly-imported photos that haven't
+    /// been tagged yet) decode without complaint. Once populated it is the
+    /// authoritative source for everything beyond raw tags — caption
+    /// drafts, recommended use, confidence, reviewer flags, validation
+    /// errors, etc.
+    var aiAnalysis: AIPhotoAnalysis?
     /// User-confirmed tags (what shows up on the row, in filters, in the PDF).
     /// Each carries a confidence — `1.0` for manually-typed/confirmed tags,
     /// the originating AI score for accepted suggestions. The threshold
@@ -60,6 +70,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.aiSeverity = nil
         self.aiObservation = nil
         self.aiFollowUp = nil
+        self.aiAnalysis = nil
         self.tags = []
         self.pendingSuggestions = []
     }
@@ -88,6 +99,8 @@ struct Photo: Identifiable, Codable, Hashable {
         self.aiSeverity         = try c.decodeIfPresent(String.self,   forKey: .aiSeverity)
         self.aiObservation      = try c.decodeIfPresent(String.self,   forKey: .aiObservation)
         self.aiFollowUp         = try c.decodeIfPresent(String.self,   forKey: .aiFollowUp)
+        self.aiAnalysis         = try c.decodeIfPresent(AIPhotoAnalysis.self,
+                                                         forKey: .aiAnalysis)
         // tags has shipped in two formats — legacy `[String]` (no
         // confidence) and the current `[Tag]`. Decode whichever the
         // manifest contains, treating legacy entries as confidence 1.0
@@ -228,4 +241,319 @@ enum TagSource: String, Codable, Hashable {
     case vision
     /// Cloud Claude vision call. Forensic-aware but requires an API key.
     case claude
+}
+
+// MARK: - AIPhotoAnalysis (schema 2)
+
+/// Full structured response from the schema-2 AI Instructions prompt.
+/// Persisted on the photo so the app can render the new UI surfaces
+/// (recommended use, confidence, reviewer flag, validation errors), drive
+/// the rich batch summary, and let the user revisit the raw response
+/// when something looks wrong.
+///
+/// On a parse failure, the service still constructs an `AIPhotoAnalysis`
+/// with empty fields, `parseFailed = true`, and the raw response text in
+/// `rawResponse` — the photo is marked but not dropped.
+struct AIPhotoAnalysis: Codable, Hashable {
+    /// Filename or identifier the model echoed back. Empty when none was
+    /// supplied in the user prompt.
+    var photoID: String
+    /// One or two Primary Tags from the controlled vocabulary.
+    var primaryTags: [String]
+    /// Map of Primary Tag → array of Secondary Tags under that primary.
+    /// `["None"]` is valid and means the photo is contextual under that
+    /// primary.
+    var secondaryTagsByPrimary: [String: [String]]
+    /// Best-guess room/elevation/area from visible cues. "Unknown" when
+    /// the model couldn't tell.
+    var locationInferred: String
+    /// Short phrase explaining what cued the location (e.g. "double oven
+    /// and island visible"). "Not determinable" when no cue is visible.
+    var orientationCue: String
+    /// Yes / Partial / No / unknown — whether a usable scale is present.
+    var scalePresent: ScalePresent
+    /// Visible measurement transcribed exactly as shown (with units and
+    /// sign). Nil when the photo shows no measurement.
+    var measurementVisible: String?
+    /// One cautious-language sentence about what the photo shows.
+    var summaryObservation: String
+    /// One short, neutral sentence usable as a figure caption.
+    var captionDraft: String
+    /// Where this photo belongs in a deliverable.
+    var recommendedUse: RecommendedUse
+    /// Model's self-assessed confidence in its tag picks.
+    var confidence: Confidence
+    /// Short clause explaining a Medium / Low rating. Empty for High.
+    var confidenceNote: String
+    /// Whether the photo looks like a close-up, an overview, or
+    /// standalone.
+    var likelyCompanion: LikelyCompanion
+    /// Short note when the engineer should look at this photo directly.
+    /// Empty when nothing flagged.
+    var reviewerFlag: String
+
+    /// Validator output — human-readable messages for things like
+    /// "secondary X not in vocabulary under primary Y" or "summary
+    /// observation contains disallowed phrase 'caused by'". Empty when
+    /// the response validates clean.
+    var validationErrors: [String]
+    /// Raw response text from Claude. Always populated so a user can
+    /// revisit what the model actually said.
+    var rawResponse: String?
+    /// True when the JSON could not be decoded. Other fields will be at
+    /// their empty defaults; `rawResponse` carries the offending text.
+    var parseFailed: Bool
+
+    /// Empty value used as the "no analysis yet" placeholder when the
+    /// service needs to return *something* on a parse failure.
+    static let empty = AIPhotoAnalysis(
+        photoID: "",
+        primaryTags: [],
+        secondaryTagsByPrimary: [:],
+        locationInferred: "",
+        orientationCue: "",
+        scalePresent: .unknown(""),
+        measurementVisible: nil,
+        summaryObservation: "",
+        captionDraft: "",
+        recommendedUse: .unknown(""),
+        confidence: .unknown(""),
+        confidenceNote: "",
+        likelyCompanion: .unknown(""),
+        reviewerFlag: "",
+        validationErrors: [],
+        rawResponse: nil,
+        parseFailed: false
+    )
+
+    /// Decode every field optionally so a partial / older payload still
+    /// produces a usable struct rather than throwing.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.photoID                = (try? c.decodeIfPresent(String.self, forKey: .photoID)) ?? ""
+        self.primaryTags            = (try? c.decodeIfPresent([String].self, forKey: .primaryTags)) ?? []
+        self.secondaryTagsByPrimary = (try? c.decodeIfPresent([String: [String]].self, forKey: .secondaryTagsByPrimary)) ?? [:]
+        self.locationInferred       = (try? c.decodeIfPresent(String.self, forKey: .locationInferred)) ?? ""
+        self.orientationCue         = (try? c.decodeIfPresent(String.self, forKey: .orientationCue)) ?? ""
+        self.scalePresent           = (try? c.decodeIfPresent(ScalePresent.self, forKey: .scalePresent)) ?? .unknown("")
+        self.measurementVisible     = try? c.decodeIfPresent(String.self, forKey: .measurementVisible)
+        self.summaryObservation     = (try? c.decodeIfPresent(String.self, forKey: .summaryObservation)) ?? ""
+        self.captionDraft           = (try? c.decodeIfPresent(String.self, forKey: .captionDraft)) ?? ""
+        self.recommendedUse         = (try? c.decodeIfPresent(RecommendedUse.self, forKey: .recommendedUse)) ?? .unknown("")
+        self.confidence             = (try? c.decodeIfPresent(Confidence.self, forKey: .confidence)) ?? .unknown("")
+        self.confidenceNote         = (try? c.decodeIfPresent(String.self, forKey: .confidenceNote)) ?? ""
+        self.likelyCompanion        = (try? c.decodeIfPresent(LikelyCompanion.self, forKey: .likelyCompanion)) ?? .unknown("")
+        self.reviewerFlag           = (try? c.decodeIfPresent(String.self, forKey: .reviewerFlag)) ?? ""
+        self.validationErrors       = (try? c.decodeIfPresent([String].self, forKey: .validationErrors)) ?? []
+        self.rawResponse            = try? c.decodeIfPresent(String.self, forKey: .rawResponse)
+        self.parseFailed            = (try? c.decodeIfPresent(Bool.self, forKey: .parseFailed)) ?? false
+    }
+
+    init(photoID: String,
+         primaryTags: [String],
+         secondaryTagsByPrimary: [String: [String]],
+         locationInferred: String,
+         orientationCue: String,
+         scalePresent: ScalePresent,
+         measurementVisible: String?,
+         summaryObservation: String,
+         captionDraft: String,
+         recommendedUse: RecommendedUse,
+         confidence: Confidence,
+         confidenceNote: String,
+         likelyCompanion: LikelyCompanion,
+         reviewerFlag: String,
+         validationErrors: [String] = [],
+         rawResponse: String? = nil,
+         parseFailed: Bool = false) {
+        self.photoID = photoID
+        self.primaryTags = primaryTags
+        self.secondaryTagsByPrimary = secondaryTagsByPrimary
+        self.locationInferred = locationInferred
+        self.orientationCue = orientationCue
+        self.scalePresent = scalePresent
+        self.measurementVisible = measurementVisible
+        self.summaryObservation = summaryObservation
+        self.captionDraft = captionDraft
+        self.recommendedUse = recommendedUse
+        self.confidence = confidence
+        self.confidenceNote = confidenceNote
+        self.likelyCompanion = likelyCompanion
+        self.reviewerFlag = reviewerFlag
+        self.validationErrors = validationErrors
+        self.rawResponse = rawResponse
+        self.parseFailed = parseFailed
+    }
+}
+
+// MARK: - Constrained-string enums
+
+/// Marker so all four constrained-string enums can share a `displayName`
+/// rendering helper and the `unknown(String)` decode pattern.
+protocol ConstrainedStringEnum: Hashable, Codable {
+    /// Human-facing label. For known cases this is the canonical spelling;
+    /// for `.unknown` it's the raw value the model emitted.
+    var displayName: String { get }
+    /// True when the model's value matched a known case.
+    var isKnown: Bool { get }
+}
+
+/// Whether a usable scale reference (ruler, tape, hand, coin) is in the
+/// frame. `.unknown(String)` preserves whatever the model emitted when it
+/// doesn't match — keeps decoding non-fatal and lets the validator flag
+/// the drift.
+enum ScalePresent: ConstrainedStringEnum {
+    case yes
+    case partial
+    case no
+    case unknown(String)
+
+    var displayName: String {
+        switch self {
+        case .yes:           return "Yes"
+        case .partial:       return "Partial"
+        case .no:            return "No"
+        case .unknown(let s): return s
+        }
+    }
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "yes":     self = .yes
+        case "partial": self = .partial
+        case "no":      self = .no
+        default:        self = .unknown(raw)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(displayName)
+    }
+}
+
+/// Where the photo belongs in a deliverable. Drives a colour-coded chip
+/// in the photo editor and the per-bucket count in the batch summary.
+enum RecommendedUse: ConstrainedStringEnum {
+    case bodyFigure
+    case appendixOnly
+    case contextLocator
+    case reshootRecommended
+    case unknown(String)
+
+    var displayName: String {
+        switch self {
+        case .bodyFigure:         return "Body figure"
+        case .appendixOnly:       return "Appendix only"
+        case .contextLocator:     return "Context/locator"
+        case .reshootRecommended: return "Re-shoot recommended"
+        case .unknown(let s):     return s
+        }
+    }
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "body figure":          self = .bodyFigure
+        case "appendix only":        self = .appendixOnly
+        case "context/locator",
+             "context / locator":    self = .contextLocator
+        case "re-shoot recommended",
+             "reshoot recommended":  self = .reshootRecommended
+        default:                     self = .unknown(raw)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(displayName)
+    }
+
+    /// Stable key for use in dictionaries / count buckets — keeps unknown
+    /// values distinguishable rather than collapsing them to a single
+    /// "Unknown" cell.
+    var bucketKey: String {
+        switch self {
+        case .unknown(let s): return s.isEmpty ? "Unknown" : "Other: \(s)"
+        default:              return displayName
+        }
+    }
+}
+
+/// Model's self-assessed confidence in its tag picks (not severity).
+enum Confidence: ConstrainedStringEnum {
+    case high
+    case medium
+    case low
+    case unknown(String)
+
+    var displayName: String {
+        switch self {
+        case .high:           return "High"
+        case .medium:         return "Medium"
+        case .low:            return "Low"
+        case .unknown(let s): return s
+        }
+    }
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "high":   self = .high
+        case "medium": self = .medium
+        case "low":    self = .low
+        default:       self = .unknown(raw)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(displayName)
+    }
+}
+
+/// Whether the photo looks like a detail shot, a context shot, or a
+/// standalone frame.
+enum LikelyCompanion: ConstrainedStringEnum {
+    case closeUp
+    case overview
+    case standalone
+    case unknown(String)
+
+    var displayName: String {
+        switch self {
+        case .closeUp:        return "Close-up"
+        case .overview:       return "Overview"
+        case .standalone:     return "Standalone"
+        case .unknown(let s): return s
+        }
+    }
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "close-up", "closeup": self = .closeUp
+        case "overview":            self = .overview
+        case "standalone":          self = .standalone
+        default:                    self = .unknown(raw)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(displayName)
+    }
 }

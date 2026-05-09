@@ -41,26 +41,21 @@ enum ClaudeTaggingService {
     private static let maxImageDimension: CGFloat = 1024
 
     /// Result returned by a single Claude vision call. Tags flow into
-    /// `Photo.tags` via the existing TagSuggestion/Tag pipeline; metadata
-    /// (severity, observation, follow-up) is stored on the `Photo` for
-    /// display in the tag editor.
+    /// `Photo.tags` via the existing TagSuggestion/Tag pipeline; the full
+    /// schema-2 analysis is persisted on `Photo.aiAnalysis` and drives the
+    /// new editor / filter / batch-summary surfaces.
+    ///
+    /// On a JSON parse failure the service still returns a `Result` —
+    /// `analysis.parseFailed = true`, `analysis.rawResponse` carries the
+    /// offending text, and `suggestions` is empty. The caller persists
+    /// the failed analysis on the photo and continues the batch.
     struct Result: Sendable {
         let suggestions: [TagSuggestion]
-        let metadata: Metadata
-    }
-
-    struct Metadata: Sendable {
-        let primaryCategory: String?
-        let severity: String?
-        let observation: String?
-        let followUp: String?
-        /// Free-form per-photo confidence label ("High" / "Medium" / "Low")
-        /// — kept for backward compatibility with prompts that ask for it.
-        /// The bucket prompt doesn't populate this.
-        let confidenceLabel: String?
+        let analysis: AIPhotoAnalysis
     }
 
     static func tag(imageURL: URL,
+                    photoID: String = "",
                     instructions: String? = nil) async throws -> Result {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
@@ -85,7 +80,7 @@ enum ClaudeTaggingService {
 
         let body: [String: Any] = [
             "model":      model,
-            "max_tokens": 800,
+            "max_tokens": 1500,
             "system": [
                 [
                     "type": "text",
@@ -107,7 +102,7 @@ enum ClaudeTaggingService {
                         ],
                         [
                             "type": "text",
-                            "text": userPrompt
+                            "text": userPrompt(photoID: photoID)
                         ]
                     ]
                 ]
@@ -124,7 +119,7 @@ enum ClaudeTaggingService {
         req.timeoutInterval = 60
 
         let data = try await sendWithRetry(req)
-        return try parseResult(from: data)
+        return try parseResult(from: data, fallbackPhotoID: photoID)
     }
 
     /// Send the request, retrying on 429 (rate limit) and 5xx (transient
@@ -198,53 +193,32 @@ enum ClaudeTaggingService {
     of voice when describing what you see.
     """
 
-    /// Strict output contract appended after the user's guide. Emphasises
-    /// the "regardless of what the guide says" override so editing the
-    /// project instructions can't accidentally break parsing.
+    /// Short reinforcement appended after the user's guide. The schema-2
+    /// prompt itself specifies the JSON shape in detail; this contract just
+    /// re-emphasises "no code fences, no prose" because Claude occasionally
+    /// adds them despite the guide's instructions.
     private static let outputContract = """
-    OUTPUT FORMAT (this overrides any conflicting format instructions in \
-    the tagging guide above — the guide above describes the tagging \
-    *intent*; this section describes the literal output you must emit):
+    OUTPUT FORMAT (reinforces the guide above; do not contradict it):
 
-    Output ONLY a single JSON object. No prose, no code fences, no \
-    explanation, no leading or trailing text.
-
-    The object must have exactly these keys:
-
-      {
-        "tags": [
-          {
-            "primary":   "<primary tag name, no leading number>",
-            "secondary": ["<secondary tag name>", ...]
-          }
-        ],
-        "summary_observation": "<one cautious sentence>"
-      }
-
-    Rules:
-      - "tags" must contain 1 entry. Use 2 entries only when the photo \
-    clearly shows two separate unrelated issues. Never more than 2.
-      - Use ONLY primary tag names exactly as listed in the guide above, \
-    without the leading number prefix. Match casing and punctuation \
-    exactly (e.g. "Drainage / Grading", not "1. Drainage / Grading" \
-    or "drainage/grading").
-      - Each "secondary" array must contain at least one tag name taken \
-    verbatim from the Secondary Tags list under that primary tag. Match \
-    casing and punctuation exactly.
-      - Use "None" as the sole secondary tag when the photo is \
-    contextual and shows no specific distress.
-      - Do NOT include a "severity" key.
-      - "summary_observation" is exactly one sentence. Use cautious \
-    language ("visible", "appears", "may be consistent with", "should \
-    be correlated with"). Do not state final causation from the photo \
-    alone.
-      - Do not include any other keys.
+    Emit ONLY the single JSON object described in the guide. No prose \
+    before or after, no markdown code fences, no commentary, no \
+    explanation. Start your response with `{` and end it with `}`.
     """
 
-    private static let userPrompt = """
-    Categorize this site photo using the project's tagging guide. Return \
-    only the JSON object, nothing else.
-    """
+    /// Per-photo user message. The photo's filename (when known) is passed
+    /// in so the model can echo it back as `photo_id`, which the rest of
+    /// the pipeline uses to correlate batch-summary entries with photos.
+    private static func userPrompt(photoID: String) -> String {
+        let trimmed = photoID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idLine = trimmed.isEmpty
+            ? ""
+            : "The photo_id for this image is \"\(trimmed)\". Use that exact value in the JSON.\n\n"
+        return idLine + """
+        Analyse this site photo using the schema and rules in the system \
+        message above. Return only the JSON object — no prose, no code \
+        fences.
+        """
+    }
 
     // MARK: - Response parsing
 
@@ -256,31 +230,24 @@ enum ClaudeTaggingService {
         }
     }
 
-    /// One primary+secondary entry in the new tag format.
-    private struct ClaudeTagEntry: Decodable {
-        let primary: String
-        let secondary: [String]
-    }
-
-    /// Shape of the JSON object we ask Claude to emit per photo. All fields
-    /// optional in the decoder so a missing/extra key in Claude's output
-    /// doesn't blow up the whole response. Legacy `buckets`/`severity` fields
-    /// are kept so old-format responses (e.g. from cached prompts) don't crash.
-    private struct ClaudePayload: Decodable {
-        let tags: [ClaudeTagEntry]?
-        let summary_observation: String?
-        // Legacy fields from the old bucket format
-        let buckets: [String]?
-        let severity: String?
-    }
-
-    /// Confidence assigned to every bucket Claude emits. The bucket prompt
-    /// doesn't ask Claude to qualify its picks — it's a controlled
-    /// categorisation rather than a probabilistic finding — so we use a
+    /// Confidence assigned to every tag Claude emits. The schema doesn't
+    /// ask Claude to qualify its individual tag picks (per-tag probability)
+    /// — `aiAnalysis.confidence` covers that at the photo level. We use a
     /// single high score that comfortably clears the default 50% threshold.
     private static let bucketConfidence: Double = 0.9
 
-    private static func parseResult(from data: Data) throws -> Result {
+    /// Decode the Anthropic envelope, extract the JSON object Claude
+    /// emitted, decode it, validate it, and convert it into a `Result`.
+    /// On a parse failure the function still returns a `Result` — the
+    /// analysis is empty, `parseFailed` is true, and `rawResponse` carries
+    /// the original text — so the batch loop can persist it and continue
+    /// rather than aborting on a single bad photo.
+    ///
+    /// HTTP / network errors still throw (those are batch-control signals
+    /// that the retry loop above catches). Only schema/JSON failures
+    /// degrade to a soft `parseFailed` result.
+    private static func parseResult(from data: Data,
+                                     fallbackPhotoID: String) throws -> Result {
         let envelope: AnthropicResponse
         do {
             envelope = try JSONDecoder().decode(AnthropicResponse.self, from: data)
@@ -291,87 +258,141 @@ enum ClaudeTaggingService {
             .compactMap { $0.type == "text" ? $0.text : nil }
             .joined()
         guard !text.isEmpty else {
-            throw Error.malformedResponse("empty content")
+            return softFailure(rawResponse: "(empty content)",
+                               photoID: fallbackPhotoID,
+                               reason: "Claude returned no text content.")
         }
 
-        // Claude sometimes wraps JSON in code fences despite the system
-        // prompt asking it not to. Strip ``` fences and surrounding prose
-        // before decoding.
+        // Strip code fences first, then take the slice between the first
+        // `{` and last `}`. Tolerates models that wrap JSON in ```json …
+        // fences or add a stray "Here's the analysis:" prefix.
         let stripped = stripCodeFences(text)
         guard let braceStart = stripped.firstIndex(of: "{"),
               let braceEnd   = stripped.lastIndex(of: "}"),
               braceStart <= braceEnd else {
-            throw Error.malformedResponse("no object found in: \(stripped.prefix(160))")
+            return softFailure(rawResponse: text,
+                               photoID: fallbackPhotoID,
+                               reason: "No JSON object found in Claude's response.")
         }
         let jsonSlice = String(stripped[braceStart...braceEnd])
         guard let bytes = jsonSlice.data(using: .utf8) else {
-            throw Error.malformedResponse("non-utf8 object slice")
+            return softFailure(rawResponse: text,
+                               photoID: fallbackPhotoID,
+                               reason: "JSON slice was not valid UTF-8.")
         }
 
         let payload: ClaudePayload
         do {
             payload = try JSONDecoder().decode(ClaudePayload.self, from: bytes)
         } catch {
-            throw Error.malformedResponse("object decode: \(error)")
+            return softFailure(rawResponse: text,
+                               photoID: fallbackPhotoID,
+                               reason: "JSON decode failed: \(error.localizedDescription)")
         }
 
-        var suggestions: [TagSuggestion] = []
-        var firstPrimary: String? = nil
-
-        if let tagEntries = payload.tags, !tagEntries.isEmpty {
-            // New primary/secondary format. Emit one primary-level suggestion
-            // per category and one secondary-level suggestion per non-"None"
-            // secondary, each linked back to its primary via `parentTag` so
-            // the filter UI can group them.
-            for entry in tagEntries {
-                let primary = entry.primary.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !primary.isEmpty else { continue }
-                if firstPrimary == nil { firstPrimary = primary }
-
-                suggestions.append(TagSuggestion(
-                    label: primary,
-                    confidence: bucketConfidence,
-                    source: .claude,
-                    parentTag: nil
-                ))
-
-                let nonNoneSecondary = entry.secondary
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty && $0.lowercased() != "none" }
-
-                for sec in nonNoneSecondary {
-                    suggestions.append(TagSuggestion(
-                        label: sec,
-                        confidence: bucketConfidence,
-                        source: .claude,
-                        parentTag: primary
-                    ))
-                }
-            }
-        } else {
-            // Legacy fallback: old bucket-array format. These had no
-            // hierarchy, so they decode as primary-level suggestions.
-            for raw in payload.buckets ?? [] {
-                let bucket = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !bucket.isEmpty else { continue }
-                suggestions.append(TagSuggestion(
-                    label: bucket,
-                    confidence: bucketConfidence,
-                    source: .claude,
-                    parentTag: nil
-                ))
-            }
-        }
-
-        let metadata = Metadata(
-            primaryCategory: firstPrimary,
-            severity:        payload.severity?.trimmingCharacters(in: .whitespacesAndNewlines),
-            observation:     payload.summary_observation?.trimmingCharacters(in: .whitespacesAndNewlines),
-            followUp:        nil,
-            confidenceLabel: nil
+        // Build the analysis. `parseFailed = false` here — even if the
+        // validator finds issues, the JSON itself parsed cleanly.
+        let analysis = AIPhotoAnalysis(
+            photoID: payload.resolvedPhotoID(fallback: fallbackPhotoID),
+            primaryTags: payload.primary_tags ?? [],
+            secondaryTagsByPrimary: payload.secondary_tags_by_primary ?? [:],
+            locationInferred: payload.location_inferred?.trimmed ?? "",
+            orientationCue: payload.orientation_cue?.trimmed ?? "",
+            scalePresent: payload.scale_present ?? .unknown(""),
+            measurementVisible: payload.measurement_visible?.trimmed.nonEmpty,
+            summaryObservation: payload.summary_observation?.trimmed ?? "",
+            captionDraft: payload.caption_draft?.trimmed ?? "",
+            recommendedUse: payload.recommended_use ?? .unknown(""),
+            confidence: payload.confidence ?? .unknown(""),
+            confidenceNote: payload.confidence_note?.trimmed ?? "",
+            likelyCompanion: payload.likely_companion ?? .unknown(""),
+            reviewerFlag: payload.reviewer_flag?.trimmed ?? "",
+            validationErrors: [],   // filled by validator below
+            rawResponse: text,
+            parseFailed: false
         )
 
-        return Result(suggestions: suggestions, metadata: metadata)
+        var validated = analysis
+        validated.validationErrors = AIResponseValidator.validate(validated)
+
+        return Result(suggestions: suggestions(from: validated),
+                      analysis: validated)
+    }
+
+    /// Build the soft-failure result returned when JSON decoding fails.
+    /// Empty analysis with `parseFailed = true` and the raw response
+    /// captured so the user can revisit it later.
+    private static func softFailure(rawResponse: String,
+                                     photoID: String,
+                                     reason: String) -> Result {
+        var failed = AIPhotoAnalysis.empty
+        failed.photoID = photoID
+        failed.rawResponse = rawResponse
+        failed.parseFailed = true
+        failed.validationErrors = [reason]
+        #if DEBUG
+        print("Claude parse failure for \(photoID): \(reason)")
+        #endif
+        return Result(suggestions: [], analysis: failed)
+    }
+
+    /// Convert the validated analysis into the existing TagSuggestion
+    /// pipeline so the rest of the app's tag UI works unchanged. Each
+    /// primary becomes a primary-level suggestion (parentTag = nil), each
+    /// non-"None" secondary becomes a secondary-level suggestion linked
+    /// back to its primary via parentTag.
+    private static func suggestions(from a: AIPhotoAnalysis) -> [TagSuggestion] {
+        var out: [TagSuggestion] = []
+        for primary in a.primaryTags {
+            let pTrim = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pTrim.isEmpty else { continue }
+            out.append(TagSuggestion(
+                label: pTrim,
+                confidence: bucketConfidence,
+                source: .claude,
+                parentTag: nil
+            ))
+            let key = a.secondaryTagsByPrimary.keys.first {
+                $0.lowercased() == pTrim.lowercased()
+            }
+            for sec in a.secondaryTagsByPrimary[key ?? ""] ?? [] {
+                let sTrim = sec.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !sTrim.isEmpty, sTrim.lowercased() != "none" else { continue }
+                out.append(TagSuggestion(
+                    label: sTrim,
+                    confidence: bucketConfidence,
+                    source: .claude,
+                    parentTag: pTrim
+                ))
+            }
+        }
+        return out
+    }
+
+    /// Shape of the JSON object the schema-2 prompt asks Claude to emit.
+    /// Every field optional so a missing key in the response doesn't crash
+    /// decoding — the validator surfaces missing-required-field issues
+    /// after-the-fact.
+    private struct ClaudePayload: Decodable {
+        let photo_id: String?
+        let primary_tags: [String]?
+        let secondary_tags_by_primary: [String: [String]]?
+        let location_inferred: String?
+        let orientation_cue: String?
+        let scale_present: ScalePresent?
+        let measurement_visible: String?
+        let summary_observation: String?
+        let caption_draft: String?
+        let recommended_use: RecommendedUse?
+        let confidence: Confidence?
+        let confidence_note: String?
+        let likely_companion: LikelyCompanion?
+        let reviewer_flag: String?
+
+        func resolvedPhotoID(fallback: String) -> String {
+            let echoed = photo_id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return echoed.isEmpty ? fallback : echoed
+        }
     }
 
     private static func stripCodeFences(_ s: String) -> String {
@@ -452,4 +473,17 @@ enum ClaudeTaggingService {
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage()
     }
+}
+
+private extension String {
+    /// Whitespace-trimmed copy. Used when normalising every string field
+    /// pulled out of the Claude payload before it lands in the analysis
+    /// struct.
+    var trimmed: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    /// Returns nil for empty strings, the receiver otherwise. Used so an
+    /// optional chain like `payload.measurement_visible?.trimmed.nonEmpty`
+    /// resolves to nil for both missing-and blank-string responses.
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

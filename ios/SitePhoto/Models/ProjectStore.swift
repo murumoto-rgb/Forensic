@@ -1070,25 +1070,23 @@ final class ProjectStore {
         return save(p)
     }
 
-    /// Apply the per-photo metadata Claude returns alongside its tags
-    /// (severity, observation, follow-up). Empty/whitespace-only strings are
-    /// stored as `nil` so the editor can show "—" placeholders.
+    /// Persist the schema-2 analysis returned by Claude. Mirrors
+    /// `summary_observation` into the legacy `aiObservation` field so any
+    /// remaining UI / export code that hasn't migrated to `aiAnalysis`
+    /// yet keeps showing something useful, and clears the legacy
+    /// `aiSeverity` / `aiFollowUp` fields since the new schema doesn't
+    /// produce them.
     @discardableResult
-    func setPhotoAIMetadata(_ project: Project,
+    func setPhotoAIAnalysis(_ project: Project,
                              photoID: UUID,
-                             severity: String?,
-                             observation: String?,
-                             followUp: String?) -> Project {
+                             analysis: AIPhotoAnalysis) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        func clean(_ s: String?) -> String? {
-            guard let trimmed = s?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !trimmed.isEmpty else { return nil }
-            return trimmed
-        }
-        p.photos[idx].aiSeverity    = clean(severity)
-        p.photos[idx].aiObservation = clean(observation)
-        p.photos[idx].aiFollowUp    = clean(followUp)
+        p.photos[idx].aiAnalysis = analysis
+        let obs = analysis.summaryObservation.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.photos[idx].aiObservation = obs.isEmpty ? nil : obs
+        p.photos[idx].aiSeverity = nil
+        p.photos[idx].aiFollowUp = nil
         return save(p)
     }
 
@@ -1112,6 +1110,7 @@ final class ProjectStore {
             p.photos[idx].aiSeverity = nil
             p.photos[idx].aiObservation = nil
             p.photos[idx].aiFollowUp = nil
+            p.photos[idx].aiAnalysis = nil
         }
         return save(p)
     }
@@ -1332,18 +1331,71 @@ final class ProjectStore {
         }
     }
 
-    /// Outcome of a batch tagging run. Replaces the older `(Int, Int, Int)`
-    /// tuple so the UI can list the actual failed photos and offer a retry.
+    /// Lightweight per-photo reference used in the batch summary's
+    /// "needs review" lists (low confidence, reviewer flag, validation
+    /// errors, parse fail). Carrying both the photo ID and the user-
+    /// visible sequence number lets the summary sheet render rows
+    /// without a second project lookup, and lets the user tap through
+    /// to the editor.
+    struct BatchPhotoRef: Sendable, Hashable, Identifiable {
+        let id: UUID
+        let photoID: UUID
+        let sequenceNumber: Int
+        /// Optional context line for the summary list (e.g. the reviewer
+        /// flag text, or the first validation error).
+        let detail: String?
+
+        init(photoID: UUID, sequenceNumber: Int, detail: String? = nil) {
+            self.id = photoID
+            self.photoID = photoID
+            self.sequenceNumber = sequenceNumber
+            self.detail = detail
+        }
+    }
+
+    /// Outcome of a batch tagging run. Carries the rich post-batch
+    /// summary the user sees in `BatchTagSummarySheet` — counts per
+    /// primary, counts per recommended use, and "needs review" lists for
+    /// the photos that warrant a second look before the user moves on.
     struct BatchTagResult: Sendable {
         /// Number of photos that got at least one new tag from Claude.
         let tagged: Int
         /// Number of photos skipped because they already had tags
         /// (`skipAlreadyTagged == true`).
         let skipped: Int
-        /// Per-photo failures with reason. `failed` is `failures.count`.
+        /// Per-photo network/HTTP failures with reason. `failed` is
+        /// `failures.count`. Photos whose JSON couldn't be decoded show
+        /// up in `parseFailed` instead.
         let failures: [BatchTagFailure]
 
+        /// Photo count by Primary Tag, in canonical guide order. Drives
+        /// the per-primary breakdown in the summary sheet.
+        let countsByPrimary: [(primary: String, count: Int)]
+        /// Photo count by `recommendedUse.bucketKey`. Order: known cases
+        /// first (Body figure → Re-shoot recommended), then any unknowns.
+        let countsByRecommendedUse: [(bucket: String, count: Int)]
+        /// Photos where Claude self-rated Low confidence.
+        let lowConfidence: [BatchPhotoRef]
+        /// Photos where Claude wrote a non-empty `reviewer_flag`.
+        let reviewerFlagged: [BatchPhotoRef]
+        /// Photos whose JSON parsed but failed validation.
+        let validationIssues: [BatchPhotoRef]
+        /// Photos whose JSON couldn't be decoded at all. Their raw
+        /// response is on `Photo.aiAnalysis.rawResponse`.
+        let parseFailed: [BatchPhotoRef]
+
         var failed: Int { failures.count }
+
+        /// True when nothing in the run needs the engineer's attention —
+        /// no failures, no parse errors, no validation issues, no reviewer
+        /// flags, no low-confidence picks.
+        var isCompletelyClean: Bool {
+            failures.isEmpty
+                && parseFailed.isEmpty
+                && validationIssues.isEmpty
+                && reviewerFlagged.isEmpty
+                && lowConfidence.isEmpty
+        }
     }
 
     /// Run Claude vision tagging across the project's photos.
@@ -1376,7 +1428,12 @@ final class ProjectStore {
             throw ClaudeTaggingService.Error.missingAPIKey
         }
         guard let project = self.project(withID: projectID) else {
-            return BatchTagResult(tagged: 0, skipped: 0, failures: [])
+            return BatchTagResult(
+                tagged: 0, skipped: 0, failures: [],
+                countsByPrimary: [], countsByRecommendedUse: [],
+                lowConfidence: [], reviewerFlagged: [],
+                validationIssues: [], parseFailed: []
+            )
         }
 
         let candidates: [Photo]
@@ -1409,16 +1466,29 @@ final class ProjectStore {
             let photoID: UUID
             let sequenceNumber: Int
             let url: URL
+            /// Image filename, passed to Claude as `photo_id` so the
+            /// model can echo it back in its JSON.
+            let filename: String
         }
         let work: [WorkItem] = candidates.map { p in
             WorkItem(photoID: p.id,
                       sequenceNumber: p.sequenceNumber,
-                      url: self.imageURL(for: p, in: project))
+                      url: self.imageURL(for: p, in: project),
+                      filename: p.imageFilename)
         }
 
         var tagged = 0
         var failures: [BatchTagFailure] = []
         var completed = 0
+
+        // Rich-summary accumulators. Filled as each successful response
+        // lands; assembled into `BatchTagResult` when the run finishes.
+        var primaryCounts: [String: Int] = [:]
+        var recommendedUseCounts: [String: Int] = [:]
+        var lowConfidence: [BatchPhotoRef] = []
+        var reviewerFlagged: [BatchPhotoRef] = []
+        var validationIssues: [BatchPhotoRef] = []
+        var parseFailedRefs: [BatchPhotoRef] = []
 
         try await withThrowingTaskGroup(of: PhotoTagResult.self) { group in
             var iterator = work.makeIterator()
@@ -1432,12 +1502,14 @@ final class ProjectStore {
                 let url = item.url
                 let pid = item.photoID
                 let seq = item.sequenceNumber
+                let fname = item.filename
                 let inst = instructions
                 group.addTask {
                     await Self.ensureDownloadedStatic(at: url)
                     do {
                         let r = try await ClaudeTaggingService.tag(
                             imageURL: url,
+                            photoID: fname,
                             instructions: inst
                         )
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
@@ -1497,16 +1569,53 @@ final class ProjectStore {
                             // promises.
                             p = self.setTags(p, photoID: result.photoID, tags: [])
                         }
-                        // Always persist metadata, even on photos with no
-                        // tags returned — the observation/follow-up may be
-                        // useful (e.g. "no_visible_distress").
-                        _ = self.setPhotoAIMetadata(
+                        // Persist the full analysis (or the parse-failure
+                        // record), even on photos with no tags returned —
+                        // the rest of the schema (caption, recommended use,
+                        // reviewer flag, raw response) is still useful.
+                        _ = self.setPhotoAIAnalysis(
                             p, photoID: result.photoID,
-                            severity:    r.metadata.severity,
-                            observation: r.metadata.observation,
-                            followUp:    r.metadata.followUp
+                            analysis: r.analysis
                         )
                     }
+                    // Accumulate into the rich-summary buckets.
+                    let a = r.analysis
+                    let ref = BatchPhotoRef(photoID: result.photoID,
+                                            sequenceNumber: result.sequenceNumber)
+                    if a.parseFailed {
+                        parseFailedRefs.append(BatchPhotoRef(
+                            photoID: result.photoID,
+                            sequenceNumber: result.sequenceNumber,
+                            detail: a.validationErrors.first
+                        ))
+                    } else {
+                        for primary in a.primaryTags {
+                            primaryCounts[primary, default: 0] += 1
+                        }
+                        recommendedUseCounts[a.recommendedUse.bucketKey, default: 0] += 1
+                        if case .low = a.confidence {
+                            lowConfidence.append(BatchPhotoRef(
+                                photoID: result.photoID,
+                                sequenceNumber: result.sequenceNumber,
+                                detail: a.confidenceNote.isEmpty ? nil : a.confidenceNote
+                            ))
+                        }
+                        if !a.reviewerFlag.isEmpty {
+                            reviewerFlagged.append(BatchPhotoRef(
+                                photoID: result.photoID,
+                                sequenceNumber: result.sequenceNumber,
+                                detail: a.reviewerFlag
+                            ))
+                        }
+                        if !a.validationErrors.isEmpty {
+                            validationIssues.append(BatchPhotoRef(
+                                photoID: result.photoID,
+                                sequenceNumber: result.sequenceNumber,
+                                detail: a.validationErrors.first
+                            ))
+                        }
+                    }
+                    _ = ref
                 case .otherFailure(let msg):
                     failures.append(BatchTagFailure(
                         photoID: result.photoID,
@@ -1524,7 +1633,48 @@ final class ProjectStore {
         }
 
         onProgress(total, total, nil)
-        return BatchTagResult(tagged: tagged, skipped: skippedCount, failures: failures)
+
+        // Order primary counts by canonical guide rank so the summary
+        // breakdown reads top-to-bottom the way the inspector wrote the
+        // guide. Unknown primaries (typos, custom guides) fall to the
+        // bottom alphabetically.
+        let primaryRows = primaryCounts.map { (primary: $0.key, count: $0.value) }
+            .sorted { lhs, rhs in
+                let lr = AIInstructions.primaryRank(lhs.primary)
+                let rr = AIInstructions.primaryRank(rhs.primary)
+                if lr != rr { return lr < rr }
+                return lhs.primary.lowercased() < rhs.primary.lowercased()
+            }
+
+        // Order recommended-use buckets in the canonical sequence, then
+        // any unknown buckets alphabetically.
+        let useOrder: [String] = [
+            RecommendedUse.bodyFigure.displayName,
+            RecommendedUse.appendixOnly.displayName,
+            RecommendedUse.contextLocator.displayName,
+            RecommendedUse.reshootRecommended.displayName
+        ]
+        let useRank: [String: Int] = Dictionary(uniqueKeysWithValues:
+            useOrder.enumerated().map { ($0.element, $0.offset) })
+        let useRows = recommendedUseCounts.map { (bucket: $0.key, count: $0.value) }
+            .sorted { lhs, rhs in
+                let lr = useRank[lhs.bucket] ?? Int.max
+                let rr = useRank[rhs.bucket] ?? Int.max
+                if lr != rr { return lr < rr }
+                return lhs.bucket.lowercased() < rhs.bucket.lowercased()
+            }
+
+        return BatchTagResult(
+            tagged: tagged,
+            skipped: skippedCount,
+            failures: failures,
+            countsByPrimary: primaryRows,
+            countsByRecommendedUse: useRows,
+            lowConfidence: lowConfidence.sorted { $0.sequenceNumber < $1.sequenceNumber },
+            reviewerFlagged: reviewerFlagged.sorted { $0.sequenceNumber < $1.sequenceNumber },
+            validationIssues: validationIssues.sorted { $0.sequenceNumber < $1.sequenceNumber },
+            parseFailed: parseFailedRefs.sorted { $0.sequenceNumber < $1.sequenceNumber }
+        )
     }
 
     /// Per-photo result emitted by the batch task group. Aggregating the

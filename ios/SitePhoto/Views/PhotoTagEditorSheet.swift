@@ -104,10 +104,117 @@ struct PhotoTagEditorSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    // MARK: - AI metadata (severity / observation / follow-up)
+    // MARK: - AI metadata (schema-2 analysis + legacy fallback)
 
+    /// Renders the schema-2 `AIPhotoAnalysis` when available — recommended
+    /// use, confidence (with note), summary observation, caption draft,
+    /// visible measurement, reviewer flag, validation errors. Falls back
+    /// to the legacy single-string aiObservation/aiSeverity/aiFollowUp
+    /// display for photos that haven't been re-tagged with the new prompt
+    /// yet, so historical records keep showing something.
     @ViewBuilder
     private var aiMetadataSection: some View {
+        if let analysis = photo?.aiAnalysis {
+            analysisSection(analysis)
+        } else {
+            legacyMetadataSection
+        }
+    }
+
+    @ViewBuilder
+    private func analysisSection(_ a: AIPhotoAnalysis) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("AI Findings", systemImage: "sparkles")
+                    .font(.headline)
+                Spacer()
+                recommendedUseChip(a.recommendedUse)
+                confidenceChip(a.confidence)
+            }
+            if shouldShowConfidenceNote(a) {
+                Text(a.confidenceNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !a.summaryObservation.isEmpty {
+                metadataRow(label: "Summary Observation",
+                            value: a.summaryObservation)
+            }
+            if !a.captionDraft.isEmpty {
+                metadataRow(label: "Caption Draft",
+                            value: "\u{201C}\(a.captionDraft)\u{201D}",
+                            italic: true)
+            }
+            if let m = a.measurementVisible, !m.isEmpty {
+                HStack(spacing: 6) {
+                    Text("Measurement")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(m)
+                        .font(.callout.monospaced().bold())
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.12), in: Capsule())
+                        .foregroundStyle(Color.blue)
+                }
+            }
+            if !a.reviewerFlag.isEmpty {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reviewer Flag")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text(a.reviewerFlag)
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            if !a.validationErrors.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Validation Issues", systemImage: "xmark.octagon.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                    ForEach(a.validationErrors, id: \.self) { msg in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\u{2022}").foregroundStyle(.red)
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(Color.red.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 8))
+            }
+            if a.parseFailed, let raw = a.rawResponse, !raw.isEmpty {
+                DisclosureGroup("Raw Response (parse failed)") {
+                    ScrollView(.vertical) {
+                        Text(raw)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 180)
+                }
+                .font(.caption.weight(.semibold))
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Legacy display path for photos tagged before schema-2. Shows
+    /// whatever the old prompt produced (severity / observation /
+    /// follow-up) so historical records stay readable.
+    @ViewBuilder
+    private var legacyMetadataSection: some View {
         let severity    = photo?.aiSeverity.nilIfBlank
         let observation = photo?.aiObservation.nilIfBlank
         let followUp    = photo?.aiFollowUp.nilIfBlank
@@ -121,9 +228,9 @@ struct PhotoTagEditorSheet: View {
                         Text(severity)
                             .font(.caption.bold())
                             .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(severityColor(severity).opacity(0.18),
+                            .background(Color.secondary.opacity(0.18),
                                         in: Capsule())
-                            .foregroundStyle(severityColor(severity))
+                            .foregroundStyle(.secondary)
                     }
                 }
                 if let observation {
@@ -140,29 +247,67 @@ struct PhotoTagEditorSheet: View {
     }
 
     @ViewBuilder
-    private func metadataRow(label: String, value: String) -> some View {
+    private func metadataRow(label: String, value: String, italic: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.callout)
+                .font(italic ? .callout.italic() : .callout)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// Map Claude's severity buckets to a colour. "None"/"Cannot Determine"
-    /// stay neutral; the others escalate green→red.
-    private func severityColor(_ s: String) -> Color {
-        switch s.lowercased() {
-        case "minor":              return .yellow
-        case "moderate":           return .orange
-        case "significant":        return .red
-        case "severe":             return .red
-        case "none":               return .green
-        case "cannot determine":   return .secondary
-        default:                   return .secondary
+    /// Colour-coded chip for the recommended-use bucket. Body figure =
+    /// green (use it), Re-shoot = red (don't use it as-is), Appendix =
+    /// neutral, Context/locator = blue.
+    @ViewBuilder
+    private func recommendedUseChip(_ use: RecommendedUse) -> some View {
+        let (bg, fg): (Color, Color) = {
+            switch use {
+            case .bodyFigure:         return (.green, .green)
+            case .appendixOnly:       return (.gray, .secondary)
+            case .contextLocator:     return (.blue, .blue)
+            case .reshootRecommended: return (.red, .red)
+            case .unknown:            return (.gray, .secondary)
+            }
+        }()
+        Text(use.displayName.isEmpty ? "—" : use.displayName)
+            .font(.caption.bold())
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(bg.opacity(0.18), in: Capsule())
+            .foregroundStyle(fg)
+    }
+
+    /// True when the confidence-note row should render: there is a note,
+    /// AND the confidence isn't High (the prompt says High should leave
+    /// the note empty, but we belt-and-suspenders here).
+    private func shouldShowConfidenceNote(_ a: AIPhotoAnalysis) -> Bool {
+        guard !a.confidenceNote.isEmpty else { return false }
+        if case .high = a.confidence { return false }
+        return true
+    }
+
+    /// Colour-coded chip for the model's self-reported confidence. High =
+    /// green, Medium = orange, Low = red. Hidden when no confidence was
+    /// reported (e.g. parse failure with empty enum).
+    @ViewBuilder
+    private func confidenceChip(_ c: Confidence) -> some View {
+        let (label, fg): (String, Color) = {
+            switch c {
+            case .high:           return ("High",   .green)
+            case .medium:         return ("Medium", .orange)
+            case .low:            return ("Low",    .red)
+            case .unknown(let s): return (s.isEmpty ? "" : s, .secondary)
+            }
+        }()
+        if !label.isEmpty {
+            Text(label)
+                .font(.caption.bold())
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(fg.opacity(0.18), in: Capsule())
+                .foregroundStyle(fg)
         }
     }
 
@@ -548,11 +693,13 @@ struct PhotoTagEditorSheet: View {
         do {
             let r = try await ClaudeTaggingService.tag(
                 imageURL: url,
+                photoID: photo.imageFilename,
                 instructions: project.effectiveAIInstructions
             )
-            // Merge with existing pending suggestions (e.g. Vision tags)
-            // rather than overwriting. Also persist the metadata Claude
-            // returned alongside the tags.
+            // Merge with existing pending suggestions rather than
+            // overwriting. Also persist the full structured analysis so
+            // the new metadata surface (recommended use, confidence,
+            // reviewer flag, validation errors) reflects this run.
             let existing = photo.pendingSuggestions
             var p = project
             p = store.setPendingSuggestions(
@@ -560,12 +707,15 @@ struct PhotoTagEditorSheet: View {
                 photoID: photoID,
                 suggestions: existing + r.suggestions
             )
-            _ = store.setPhotoAIMetadata(
+            _ = store.setPhotoAIAnalysis(
                 p, photoID: photoID,
-                severity:    r.metadata.severity,
-                observation: r.metadata.observation,
-                followUp:    r.metadata.followUp
+                analysis: r.analysis
             )
+            // Surface a parse failure inline — it didn't throw, but the
+            // user shouldn't think the call succeeded silently.
+            if r.analysis.parseFailed {
+                aiError = "Claude returned an unparseable response — saved for review on the photo."
+            }
         } catch let err as ClaudeTaggingService.Error {
             aiError = err.errorDescription ?? "Failed."
         } catch {

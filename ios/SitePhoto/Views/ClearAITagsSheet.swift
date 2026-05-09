@@ -17,7 +17,8 @@ struct ClearAITagsSheet: View {
     private var photos: [Photo] { project?.photos ?? [] }
 
     /// Photos that actually have something to clear — AI tags, metadata,
-    /// or pending suggestions.
+    /// pending suggestions, or a stored schema-2 analysis (which carries
+    /// the caption draft, recommended use, etc., and the raw response).
     private func aiResidueCount(for photo: Photo) -> Int {
         let aiTags = photo.tags.filter { $0.confidence < 1.0 }.count
         let pending = photo.pendingSuggestions.count
@@ -25,7 +26,8 @@ struct ClearAITagsSheet: View {
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .count
-        return aiTags + pending + metadata
+        let analysis = photo.aiAnalysis == nil ? 0 : 1
+        return aiTags + pending + metadata + analysis
     }
 
     private var photosWithResidue: [Photo] {
@@ -193,6 +195,9 @@ private struct ClearAITagsRow: View {
         }
         if photo.aiObservation?.isEmpty == false {
             parts.append("has summary")
+        }
+        if photo.aiAnalysis != nil {
+            parts.append("AI analysis")
         }
         return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
