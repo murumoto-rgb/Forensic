@@ -52,6 +52,7 @@ struct PhotoTagEditorSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     photoPreview
+                    aiMetadataSection
                     confirmedTagsSection
                     inputSection
                     suggestionsSection
@@ -101,6 +102,68 @@ struct PhotoTagEditorSheet: View {
         }
         .frame(height: 240)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - AI metadata (severity / observation / follow-up)
+
+    @ViewBuilder
+    private var aiMetadataSection: some View {
+        let severity    = photo?.aiSeverity?.nilIfBlank
+        let observation = photo?.aiObservation?.nilIfBlank
+        let followUp    = photo?.aiFollowUp?.nilIfBlank
+        if severity != nil || observation != nil || followUp != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("AI Findings", systemImage: "sparkles")
+                        .font(.headline)
+                    Spacer()
+                    if let severity {
+                        Text(severity)
+                            .font(.caption.bold())
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(severityColor(severity).opacity(0.18),
+                                        in: Capsule())
+                            .foregroundStyle(severityColor(severity))
+                    }
+                }
+                if let observation {
+                    metadataRow(label: "Observation", value: observation)
+                }
+                if let followUp {
+                    metadataRow(label: "Follow-up", value: followUp)
+                }
+            }
+            .padding(12)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    @ViewBuilder
+    private func metadataRow(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Map Claude's severity buckets to a colour. "None"/"Cannot Determine"
+    /// stay neutral; the others escalate green→red.
+    private func severityColor(_ s: String) -> Color {
+        switch s.lowercased() {
+        case "minor":              return .yellow
+        case "moderate":           return .orange
+        case "significant":        return .red
+        case "severe":             return .red
+        case "none":               return .green
+        case "cannot determine":   return .secondary
+        default:                   return .secondary
+        }
     }
 
     // MARK: - Confirmed tags
@@ -323,17 +386,25 @@ struct PhotoTagEditorSheet: View {
         await store.ensureDownloaded(url)
 
         do {
-            let suggestions = try await ClaudeTaggingService.tag(
+            let r = try await ClaudeTaggingService.tag(
                 imageURL: url,
                 instructions: project.effectiveAIInstructions
             )
             // Merge with existing pending suggestions (e.g. Vision tags)
-            // rather than overwriting.
+            // rather than overwriting. Also persist the metadata Claude
+            // returned alongside the tags.
             let existing = photo.pendingSuggestions
-            _ = store.setPendingSuggestions(
-                project,
+            var p = project
+            p = store.setPendingSuggestions(
+                p,
                 photoID: photoID,
-                suggestions: existing + suggestions
+                suggestions: existing + r.suggestions
+            )
+            _ = store.setPhotoAIMetadata(
+                p, photoID: photoID,
+                severity:    r.metadata.severity,
+                observation: r.metadata.observation,
+                followUp:    r.metadata.followUp
             )
         } catch let err as ClaudeTaggingService.Error {
             aiError = err.errorDescription ?? "Failed."
@@ -463,6 +534,19 @@ struct FlowLayout: Layout {
                        proposal: ProposedViewSize(s))
             x += s.width + spacing
             rowHeight = max(rowHeight, s.height)
+        }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    /// Treat blank/whitespace strings as `nil` — keeps the `aiMetadataSection`
+    /// from rendering empty rows when Claude returns "" for a field.
+    var nilIfBlank: String? {
+        switch self {
+        case .none: return nil
+        case .some(let s):
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
     }
 }

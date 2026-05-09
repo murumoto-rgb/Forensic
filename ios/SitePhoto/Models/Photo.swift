@@ -18,6 +18,17 @@ struct Photo: Identifiable, Codable, Hashable {
     var lensName: String?
     var flashMode: FlashMode
     var aiDescription: String?
+    /// Severity bucket Claude assigned to the most relevant distress in the
+    /// photo. One of: None, Minor, Moderate, Significant, Severe, Cannot
+    /// Determine. Stored verbatim so the UI can show it as Claude returned
+    /// it.
+    var aiSeverity: String?
+    /// One-sentence report-style observation Claude wrote about the photo
+    /// — uses cautious language ("visible", "appears", etc.).
+    var aiObservation: String?
+    /// One-sentence follow-up recommendation Claude wrote (e.g. "Correlate
+    /// with elevation survey", "Field-measure crack width").
+    var aiFollowUp: String?
     /// User-confirmed tags (what shows up on the row, in filters, in the PDF).
     /// Each carries a confidence — `1.0` for manually-typed/confirmed tags,
     /// the originating AI score for accepted suggestions. The threshold
@@ -46,6 +57,9 @@ struct Photo: Identifiable, Codable, Hashable {
         self.lensName = nil
         self.flashMode = .auto
         self.aiDescription = nil
+        self.aiSeverity = nil
+        self.aiObservation = nil
+        self.aiFollowUp = nil
         self.tags = []
         self.pendingSuggestions = []
     }
@@ -71,6 +85,9 @@ struct Photo: Identifiable, Codable, Hashable {
         self.lensName           = try c.decodeIfPresent(String.self,   forKey: .lensName)
         self.flashMode          = try c.decode(FlashMode.self,         forKey: .flashMode)
         self.aiDescription      = try c.decodeIfPresent(String.self,   forKey: .aiDescription)
+        self.aiSeverity         = try c.decodeIfPresent(String.self,   forKey: .aiSeverity)
+        self.aiObservation      = try c.decodeIfPresent(String.self,   forKey: .aiObservation)
+        self.aiFollowUp         = try c.decodeIfPresent(String.self,   forKey: .aiFollowUp)
         // tags has shipped in two formats — legacy `[String]` (no
         // confidence) and the current `[Tag]`. Decode whichever the
         // manifest contains, treating legacy entries as confidence 1.0

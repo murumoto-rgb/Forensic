@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
 
@@ -47,6 +48,7 @@ struct ProjectDetailView: View {
     @State private var batchTagProgressSeq: Int?
     @State private var batchTagError: String?
     @State private var batchTagSummary: String?
+    @State private var batchBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
@@ -736,9 +738,31 @@ struct ProjectDetailView: View {
         batchTagProgressTotal = prompt.candidateCount
         batchTagProgressSeq = nil
 
+        // (A) Keep the screen alive while the batch runs so iOS doesn't
+        // suspend us when the auto-lock timer fires. Reset on completion.
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        // (B) Ask iOS for ~30s of background grace if the user briefly
+        // backgrounds the app — long enough for the in-flight requests to
+        // finish and persist their manifests before suspension. The user
+        // can resume the batch by re-tapping "Auto-tag untagged" since
+        // already-tagged photos are skipped automatically.
+        batchBackgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "AI Tagging"
+        ) {
+            // Expiration handler — iOS is about to suspend us. Cancel the
+            // task cleanly so the in-flight Claude calls bail out.
+            batchTagTask?.cancel()
+            endBatchBackgroundTask()
+        }
+
         let pid = projectID
         let skip = prompt.skipAlreadyTagged
         batchTagTask = Task { @MainActor in
+            defer {
+                UIApplication.shared.isIdleTimerDisabled = false
+                endBatchBackgroundTask()
+            }
             do {
                 let result = try await store.batchClaudeTagging(
                     projectID: pid,
@@ -753,13 +777,20 @@ struct ProjectDetailView: View {
                     + (result.failed > 0 ? " \(result.failed) failed." : "")
                     + (result.skipped > 0 ? " \(result.skipped) already had tags." : "")
             } catch is CancellationError {
-                self.batchTagSummary = "Cancelled at \(self.batchTagProgressCurrent) of \(self.batchTagProgressTotal)."
+                self.batchTagSummary = "Cancelled at \(self.batchTagProgressCurrent) of \(self.batchTagProgressTotal). Re-run \"Auto-tag untagged\" to resume — already-tagged photos will be skipped."
             } catch let err as ClaudeTaggingService.Error {
                 self.batchTagError = err.errorDescription ?? "Failed."
             } catch {
                 self.batchTagError = error.localizedDescription
             }
             self.batchTagTask = nil
+        }
+    }
+
+    private func endBatchBackgroundTask() {
+        if batchBackgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(batchBackgroundTaskID)
+            batchBackgroundTaskID = .invalid
         }
     }
 

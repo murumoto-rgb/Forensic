@@ -1020,6 +1020,28 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Apply the per-photo metadata Claude returns alongside its tags
+    /// (severity, observation, follow-up). Empty/whitespace-only strings are
+    /// stored as `nil` so the editor can show "—" placeholders.
+    @discardableResult
+    func setPhotoAIMetadata(_ project: Project,
+                             photoID: UUID,
+                             severity: String?,
+                             observation: String?,
+                             followUp: String?) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        func clean(_ s: String?) -> String? {
+            guard let trimmed = s?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty else { return nil }
+            return trimmed
+        }
+        p.photos[idx].aiSeverity    = clean(severity)
+        p.photos[idx].aiObservation = clean(observation)
+        p.photos[idx].aiFollowUp    = clean(followUp)
+        return save(p)
+    }
+
     /// Drop a single AI suggestion without confirming it.
     @discardableResult
     func dismissSuggestion(_ project: Project,
@@ -1183,12 +1205,12 @@ final class ProjectStore {
                 group.addTask {
                     await Self.ensureDownloadedStatic(at: url)
                     do {
-                        let s = try await ClaudeTaggingService.tag(
+                        let r = try await ClaudeTaggingService.tag(
                             imageURL: url,
                             instructions: inst
                         )
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
-                                              outcome: .success(s))
+                                              outcome: .success(r))
                     } catch ClaudeTaggingService.Error.missingAPIKey {
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
                                               outcome: .authFailure)
@@ -1216,14 +1238,25 @@ final class ProjectStore {
                 case .authFailure:
                     group.cancelAll()
                     throw ClaudeTaggingService.Error.missingAPIKey
-                case .success(let suggestions):
-                    if !suggestions.isEmpty,
-                       let proj = self.project(withID: projectID) {
-                        let additions = suggestions.map {
-                            Tag(label: $0.label, confidence: $0.confidence)
+                case .success(let r):
+                    if let proj = self.project(withID: projectID) {
+                        var p = proj
+                        if !r.suggestions.isEmpty {
+                            let additions = r.suggestions.map {
+                                Tag(label: $0.label, confidence: $0.confidence)
+                            }
+                            p = self.mergeTags(p, photoID: result.photoID, additions: additions)
+                            tagged += 1
                         }
-                        _ = self.mergeTags(proj, photoID: result.photoID, additions: additions)
-                        tagged += 1
+                        // Always persist metadata, even on photos with no
+                        // tags returned — the observation/follow-up may be
+                        // useful (e.g. "no_visible_distress").
+                        _ = self.setPhotoAIMetadata(
+                            p, photoID: result.photoID,
+                            severity:    r.metadata.severity,
+                            observation: r.metadata.observation,
+                            followUp:    r.metadata.followUp
+                        )
                     }
                 case .otherFailure(let msg):
                     failed += 1
@@ -1249,7 +1282,7 @@ final class ProjectStore {
         let outcome: Outcome
 
         enum Outcome: Sendable {
-            case success([TagSuggestion])
+            case success(ClaudeTaggingService.Result)
             case authFailure
             case otherFailure(String)
         }

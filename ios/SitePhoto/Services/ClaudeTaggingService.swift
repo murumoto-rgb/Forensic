@@ -39,8 +39,39 @@ enum ClaudeTaggingService {
     /// $0.005 range while preserving enough detail for damage recognition.
     private static let maxImageDimension: CGFloat = 1024
 
+    /// Result returned by a single Claude vision call. Tags flow into
+    /// `Photo.tags` via the existing TagSuggestion/Tag pipeline; metadata
+    /// (severity, observation, follow-up) is stored on the `Photo` for
+    /// display in the tag editor.
+    struct Result: Sendable {
+        let suggestions: [TagSuggestion]
+        let metadata: Metadata
+    }
+
+    struct Metadata: Sendable {
+        let primaryCategory: String?
+        let severity: String?
+        let observation: String?
+        let followUp: String?
+        /// "High" / "Medium" / "Low" — the per-photo confidence Claude
+        /// reported. Maps to a per-tag numeric score via `Self.score(for:)`.
+        let confidenceLabel: String?
+    }
+
+    /// Map Claude's High/Medium/Low to the numeric per-tag score we store
+    /// on each Tag. The default threshold is 0.50 so Low gets filtered;
+    /// Medium and High pass.
+    static func score(for label: String?) -> Double {
+        switch label?.lowercased() {
+        case "high":   return 0.92
+        case "medium": return 0.68
+        case "low":    return 0.40
+        default:       return 0.70
+        }
+    }
+
     static func tag(imageURL: URL,
-                    instructions: String? = nil) async throws -> [TagSuggestion] {
+                    instructions: String? = nil) async throws -> Result {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
         }
@@ -103,7 +134,7 @@ enum ClaudeTaggingService {
         req.timeoutInterval = 60
 
         let data = try await sendWithRetry(req)
-        return try parseSuggestions(from: data)
+        return try parseResult(from: data)
     }
 
     /// Send the request, retrying on 429 (rate limit) and 5xx (transient
@@ -179,38 +210,45 @@ enum ClaudeTaggingService {
 
     /// Strict output contract appended after the user's guide. Emphasises
     /// the "regardless of what the guide says" override so editing the
-    /// project instructions can't accidentally break tag-array parsing.
+    /// project instructions can't accidentally break parsing.
     private static let outputContract = """
     OUTPUT FORMAT (this overrides any conflicting format instructions in \
-    the tagging guide above):
+    the tagging guide above — the guide above describes the tagging \
+    *intent*; this section describes the literal output you must emit):
 
-    Output ONLY a JSON array. No prose, no code fences, no explanation, no \
-    leading or trailing text.
+    Output ONLY a single JSON object. No prose, no code fences, no \
+    explanation, no leading or trailing text.
 
-    Each array element must be an object with exactly these two keys:
+    The object must have exactly these keys:
 
-      {"label": "<tag>", "confidence": <0.0–1.0>}
+      {
+        "primary_category":     "<one Primary Category from the guide>",
+        "condition_tags":       ["<tag>", ...],   // 0–3 entries from Condition Tags
+        "relevance_tags":       ["<tag>", ...],   // 0–2 entries from Relevance Tags
+        "severity":             "<None|Minor|Moderate|Significant|Severe|Cannot Determine>",
+        "confidence":           "<High|Medium|Low>",
+        "observation":          "<one cautious report-style sentence>",
+        "recommended_follow_up": "<one concise recommendation>"
+      }
 
-    Tag rules:
-      - Draw vocabulary from the families and categories in the guide \
-    above. Use the exact tag identifiers it lists (e.g. \
-    `interior_sheetrock_crack`, `crack_wider_at_bottom`) — these are the \
-    canonical labels for this project.
-      - When the guide doesn't have an exact tag for what you see, you may \
-    introduce a concise compound tag in the same style (lowercase, \
-    underscores between words, e.g. `crack_on_concrete_foundation`, \
-    `water_damage_on_drywall_ceiling`). Always include the substrate or \
-    location when describing damage so a reviewer can tell `crack on \
-    concrete` apart from `crack on sheetrock`.
-      - Limit to roughly 12 of the most relevant tags per photo. Don't \
-    invent damage that isn't clearly visible.
-      - Confidence reflects how clearly the feature is visible in the \
-    photo, not how serious it is.
+    Rules:
+      - Use ONLY tags from the controlled lists in the guide above. Do not \
+    invent new tags. Match casing exactly (lowercase with underscores for \
+    condition / relevance tags; the natural casing shown for primary \
+    categories, e.g. "Foundation / Slab").
+      - Limit `condition_tags` to the 3 most relevant. Limit \
+    `relevance_tags` to 2.
+      - Per-photo `confidence` reflects how clearly the most-relevant \
+    distress is visible: High = unambiguous, Medium = probable, Low = \
+    tentative or photo-quality limited.
+      - Use cautious language in `observation` and `recommended_follow_up` \
+    — phrases like "visible", "appears", "may be consistent with", \
+    "should be correlated with".
     """
 
     private static let userPrompt = """
     Tag this site photo using the project's tagging guide. Return only the \
-    JSON array, nothing else.
+    JSON object, nothing else.
     """
 
     // MARK: - Response parsing
@@ -223,12 +261,20 @@ enum ClaudeTaggingService {
         }
     }
 
-    private struct LabelEntry: Decodable {
-        let label: String
-        let confidence: Double
+    /// Shape of the JSON object we ask Claude to emit per photo. All fields
+    /// optional in the decoder so a missing/extra key in Claude's output
+    /// doesn't blow up the whole response.
+    private struct ClaudePayload: Decodable {
+        let primary_category: String?
+        let condition_tags: [String]?
+        let relevance_tags: [String]?
+        let severity: String?
+        let confidence: String?
+        let observation: String?
+        let recommended_follow_up: String?
     }
 
-    private static func parseSuggestions(from data: Data) throws -> [TagSuggestion] {
+    private static func parseResult(from data: Data) throws -> Result {
         let envelope: AnthropicResponse
         do {
             envelope = try JSONDecoder().decode(AnthropicResponse.self, from: data)
@@ -246,31 +292,60 @@ enum ClaudeTaggingService {
         // prompt asking it not to. Strip ``` fences and surrounding prose
         // before decoding.
         let stripped = stripCodeFences(text)
-        guard let bracketStart = stripped.firstIndex(of: "["),
-              let bracketEnd   = stripped.lastIndex(of: "]"),
-              bracketStart <= bracketEnd else {
-            throw Error.malformedResponse("no array found in: \(stripped.prefix(120))")
+        guard let braceStart = stripped.firstIndex(of: "{"),
+              let braceEnd   = stripped.lastIndex(of: "}"),
+              braceStart <= braceEnd else {
+            throw Error.malformedResponse("no object found in: \(stripped.prefix(160))")
         }
-        let jsonSlice = String(stripped[bracketStart...bracketEnd])
+        let jsonSlice = String(stripped[braceStart...braceEnd])
         guard let bytes = jsonSlice.data(using: .utf8) else {
-            throw Error.malformedResponse("non-utf8 array slice")
-        }
-        let entries: [LabelEntry]
-        do {
-            entries = try JSONDecoder().decode([LabelEntry].self, from: bytes)
-        } catch {
-            throw Error.malformedResponse("array decode: \(error)")
+            throw Error.malformedResponse("non-utf8 object slice")
         }
 
-        return entries
-            .map { e in
-                TagSuggestion(
-                    label: e.label.trimmingCharacters(in: .whitespacesAndNewlines),
-                    confidence: max(0, min(1, e.confidence)),
-                    source: .claude
-                )
-            }
-            .filter { !$0.label.isEmpty }
+        let payload: ClaudePayload
+        do {
+            payload = try JSONDecoder().decode(ClaudePayload.self, from: bytes)
+        } catch {
+            throw Error.malformedResponse("object decode: \(error)")
+        }
+
+        // Per-tag confidence comes from the per-photo confidence label.
+        // The primary category tag gets a fixed-high score so it always
+        // passes any reasonable threshold — it's the bucket the photo
+        // belongs to, not a probabilistic finding.
+        let perTag = score(for: payload.confidence)
+
+        var suggestions: [TagSuggestion] = []
+        if let primary = payload.primary_category?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !primary.isEmpty {
+            suggestions.append(TagSuggestion(label: primary,
+                                             confidence: 0.95,
+                                             source: .claude))
+        }
+        for raw in payload.condition_tags ?? [] {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { continue }
+            suggestions.append(TagSuggestion(label: t,
+                                             confidence: perTag,
+                                             source: .claude))
+        }
+        for raw in payload.relevance_tags ?? [] {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { continue }
+            suggestions.append(TagSuggestion(label: t,
+                                             confidence: perTag,
+                                             source: .claude))
+        }
+
+        let metadata = Metadata(
+            primaryCategory: payload.primary_category?.trimmingCharacters(in: .whitespacesAndNewlines),
+            severity:        payload.severity?.trimmingCharacters(in: .whitespacesAndNewlines),
+            observation:     payload.observation?.trimmingCharacters(in: .whitespacesAndNewlines),
+            followUp:        payload.recommended_follow_up?.trimmingCharacters(in: .whitespacesAndNewlines),
+            confidenceLabel: payload.confidence?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        return Result(suggestions: suggestions, metadata: metadata)
     }
 
     private static func stripCodeFences(_ s: String) -> String {
