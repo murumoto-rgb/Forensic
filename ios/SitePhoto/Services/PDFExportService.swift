@@ -211,7 +211,9 @@ struct PDFExportService {
         let cellW = contentW / CGFloat(cols)
         let cellH = (pageRect.height - 2 * margin - headerH) / CGFloat(rows)
         let pad: CGFloat = 4
-        let captionH: CGFloat = 20
+        // 28pt caption area gives one line for seq + date and a second line
+        // for tags. Photos without tags simply leave the second line blank.
+        let captionH: CGFloat = 28
 
         let dateFmt = DateFormatter(); dateFmt.dateStyle = .short; dateFmt.timeStyle = .medium
 
@@ -240,6 +242,42 @@ struct PDFExportService {
             drawText(dateFmt.string(from: item.photo.timestamp),
                      at: CGPoint(x: cx + pad + 30, y: captionY + 1),
                      font: .systemFont(ofSize: 7.5), color: UIColor(white: 0.35, alpha: 1))
+
+            if !item.photo.tags.isEmpty {
+                let tagsLine = item.photo.tags.joined(separator: " · ")
+                drawTruncatedText(
+                    tagsLine,
+                    at: CGPoint(x: cx + pad, y: captionY + 12),
+                    maxWidth: cellW - 2 * pad,
+                    font: .systemFont(ofSize: 7),
+                    color: UIColor(red: 0.42, green: 0.20, blue: 0.55, alpha: 1)
+                )
+            }
+        }
+    }
+
+    /// Draw a single line of text, truncating with an ellipsis when it
+    /// doesn't fit `maxWidth`. UIKit's `drawText` doesn't truncate by
+    /// default, so we measure and shorten manually.
+    private func drawTruncatedText(_ text: String, at p: CGPoint,
+                                    maxWidth: CGFloat,
+                                    font: UIFont, color: UIColor) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        var s = text
+        var size = (s as NSString).size(withAttributes: attrs)
+        if size.width <= maxWidth {
+            (s as NSString).draw(at: p, withAttributes: attrs)
+            return
+        }
+        let ellipsis = "…"
+        while !s.isEmpty {
+            s.removeLast()
+            let trial = s + ellipsis
+            size = (trial as NSString).size(withAttributes: attrs)
+            if size.width <= maxWidth {
+                (trial as NSString).draw(at: p, withAttributes: attrs)
+                return
+            }
         }
     }
 

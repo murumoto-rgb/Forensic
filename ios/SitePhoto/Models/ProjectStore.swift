@@ -667,7 +667,9 @@ final class ProjectStore {
         }
 
         p.photos.append(photo)
-        return save(p)
+        let saved = save(p)
+        scheduleVisionAutoTagging(projectID: saved.id, photoID: photoID)
+        return saved
     }
 
     func imageURL(for photo: Photo, in project: Project) -> URL {
@@ -715,7 +717,9 @@ final class ProjectStore {
         photo.flashMode = .off
 
         p.photos.append(photo)
-        return save(p)
+        let saved = save(p)
+        scheduleVisionAutoTagging(projectID: saved.id, photoID: photoID)
+        return saved
     }
 
     /// Pull DateTimeOriginal (or TIFF DateTime) out of an image's metadata.
@@ -858,6 +862,176 @@ final class ProjectStore {
         }
 
         return save(p)
+    }
+
+    // MARK: - Tags
+
+    /// Add a tag to a photo. Trims whitespace, dedupes case-insensitively
+    /// against the photo's existing tags. The first-typed casing wins for
+    /// display ("Water Damage" stays "Water Damage" even if the next entry
+    /// is "water damage").
+    @discardableResult
+    func addTag(_ project: Project, photoID: UUID, tag rawTag: String) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let trimmed = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return p }
+        let lc = trimmed.lowercased()
+        if p.photos[idx].tags.contains(where: { $0.lowercased() == lc }) { return p }
+        p.photos[idx].tags.append(trimmed)
+        return save(p)
+    }
+
+    /// Remove a tag from a photo. Case-insensitive match.
+    @discardableResult
+    func removeTag(_ project: Project, photoID: UUID, tag: String) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let lc = tag.lowercased()
+        p.photos[idx].tags.removeAll { $0.lowercased() == lc }
+        return save(p)
+    }
+
+    /// Replace the full tag list for a photo. Trims + dedupes.
+    @discardableResult
+    func setTags(_ project: Project, photoID: UUID, tags: [String]) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        var seen: Set<String> = []
+        var out: [String] = []
+        for t in tags {
+            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let lc = trimmed.lowercased()
+            if seen.insert(lc).inserted {
+                out.append(trimmed)
+            }
+        }
+        p.photos[idx].tags = out
+        return save(p)
+    }
+
+    /// Replace the photo's pending AI suggestions, dropping any candidates
+    /// already present in the confirmed tags.
+    @discardableResult
+    func setPendingSuggestions(_ project: Project,
+                                photoID: UUID,
+                                suggestions: [TagSuggestion]) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let confirmed = Set(p.photos[idx].tags.map { $0.lowercased() })
+        // Keep only one suggestion per (label,source); rank by confidence so the
+        // top-confidence one wins. Different sources can suggest the same label
+        // — that's fine, both are kept (different `id`s).
+        var bySrcLabel: [String: TagSuggestion] = [:]
+        for s in suggestions {
+            let key = "\(s.source.rawValue):\(s.label.lowercased())"
+            if confirmed.contains(s.label.lowercased()) { continue }
+            if let existing = bySrcLabel[key], existing.confidence >= s.confidence { continue }
+            bySrcLabel[key] = s
+        }
+        p.photos[idx].pendingSuggestions = bySrcLabel.values
+            .sorted { $0.confidence > $1.confidence }
+        return save(p)
+    }
+
+    /// Promote a single AI suggestion into a confirmed tag.
+    @discardableResult
+    func confirmSuggestion(_ project: Project,
+                            photoID: UUID,
+                            suggestion: TagSuggestion) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let lc = suggestion.label.lowercased()
+        if !p.photos[idx].tags.contains(where: { $0.lowercased() == lc }) {
+            p.photos[idx].tags.append(suggestion.label)
+        }
+        // Drop every pending suggestion for the same label, regardless of
+        // source — once confirmed, neither vision nor claude needs to keep
+        // pestering the user.
+        p.photos[idx].pendingSuggestions.removeAll { $0.label.lowercased() == lc }
+        return save(p)
+    }
+
+    /// Drop a single AI suggestion without confirming it.
+    @discardableResult
+    func dismissSuggestion(_ project: Project,
+                            photoID: UUID,
+                            suggestion: TagSuggestion) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].pendingSuggestions.removeAll { $0.id == suggestion.id }
+        return save(p)
+    }
+
+    /// Tags currently in use across the given project. Sorted by frequency
+    /// (most-used first) for typeahead.
+    func tagsUsed(in project: Project) -> [String] {
+        rankTags(in: project.photos)
+    }
+
+    /// Tags currently in use across every project the user has — used to
+    /// surface previously-typed tags on a fresh project. Sorted by frequency.
+    func tagsUsedGlobally() -> [String] {
+        let all = activeProjects.flatMap { $0.photos } + deletedProjects.flatMap { $0.photos }
+        return rankTags(in: all)
+    }
+
+    private func rankTags(in photos: [Photo]) -> [String] {
+        // Count case-insensitively, but remember the most-common display
+        // casing for each lowercase key.
+        var counts: [String: Int] = [:]
+        var displays: [String: [String: Int]] = [:]
+        for photo in photos {
+            for t in photo.tags {
+                let key = t.lowercased()
+                counts[key, default: 0] += 1
+                displays[key, default: [:]][t, default: 0] += 1
+            }
+        }
+        return counts
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return lhs.key < rhs.key
+            }
+            .map { (key, _) in
+                let perCasing = displays[key] ?? [:]
+                return perCasing.max { $0.value < $1.value }?.key ?? key
+            }
+    }
+
+    // MARK: - Vision auto-tagging hook
+
+    /// Kick off an off-main on-device classification for the given photo.
+    /// Fire-and-forget — when the Vision request finishes, any extracted
+    /// forensic-relevant labels land in the photo's `pendingSuggestions`.
+    /// Does nothing on failure (e.g. corrupt image, request error) — the
+    /// user can still tap "Suggest with AI" later.
+    func scheduleVisionAutoTagging(projectID: UUID, photoID: UUID) {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let urlOpt: URL? = await MainActor.run {
+                guard let p = self.project(withID: projectID),
+                      let photo = p.photos.first(where: { $0.id == photoID })
+                else { return nil }
+                return self.imageURL(for: photo, in: p)
+            }
+            guard let url = urlOpt else { return }
+            // iCloud-backed photos have to materialise on disk before Vision
+            // can read them. The freshly-saved file in addPhoto/importPhoto
+            // is already local so this is a no-op there, but doing it
+            // unconditionally makes the helper safe to call against any
+            // photoID later on.
+            await self.ensureDownloaded(url)
+            let suggestions = VisionTaggingService.tag(imageURL: url) ?? []
+            guard !suggestions.isEmpty else { return }
+            await MainActor.run {
+                guard let current = self.project(withID: projectID) else { return }
+                _ = self.setPendingSuggestions(
+                    current, photoID: photoID, suggestions: suggestions
+                )
+            }
+        }
     }
 
     /// Strip the location from an existing photo (turns it back into "NO LOC").

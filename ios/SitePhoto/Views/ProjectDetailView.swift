@@ -30,6 +30,11 @@ struct ProjectDetailView: View {
     @State private var pendingPhotoDelete: Photo?
     @State private var showingAddressEditor = false
     @State private var addressUpdating = false
+    @State private var taggingPhoto: PhotoTarget?
+    /// Tags currently active as filters on the photo list. Empty = no filter.
+    /// Compared case-insensitively. AND semantics: a photo must carry every
+    /// active filter tag to appear.
+    @State private var activeTagFilters: Set<String> = []
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
@@ -97,6 +102,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(item: $relocatingPhoto) { target in
                     RelocateSheet(projectID: projectID, photoID: target.id)
+                        .environment(store)
+                }
+                .sheet(item: $taggingPhoto) { target in
+                    PhotoTagEditorSheet(projectID: projectID, photoID: target.id)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingAddressEditor) {
@@ -489,16 +498,35 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func photosSection(_ project: Project) -> some View {
-        Section("Photos · \(project.photos.count)") {
+        let projectTags = store.tagsUsed(in: project)
+        let visiblePhotos = filteredPhotos(project)
+        Section {
+            if !projectTags.isEmpty {
+                tagFilterBar(allTags: projectTags)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear)
+            }
             if project.photos.isEmpty {
                 Text("No photos yet.")
                     .foregroundStyle(.secondary)
                     .font(.callout)
+            } else if visiblePhotos.isEmpty {
+                Text("No photos match the selected tag filter.")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
             } else {
-                ForEach(project.photos) { photo in
-                    PhotoRow(photo: photo, project: project, store: store) {
-                        relocatingPhoto = PhotoTarget(id: photo.id)
-                    }
+                ForEach(visiblePhotos) { photo in
+                    PhotoRow(
+                        photo: photo,
+                        project: project,
+                        store: store,
+                        onLocate: {
+                            relocatingPhoto = PhotoTarget(id: photo.id)
+                        },
+                        onTag: {
+                            taggingPhoto = PhotoTarget(id: photo.id)
+                        }
+                    )
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
                             pendingPhotoDelete = photo
@@ -508,6 +536,55 @@ struct ProjectDetailView: View {
                     }
                 }
             }
+        } header: {
+            HStack {
+                Text("Photos · \(project.photos.count)")
+                if !activeTagFilters.isEmpty {
+                    Text("· \(visiblePhotos.count) shown")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func filteredPhotos(_ project: Project) -> [Photo] {
+        guard !activeTagFilters.isEmpty else { return project.photos }
+        let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
+        return project.photos.filter { photo in
+            let photoLC = Set(photo.tags.map { $0.lowercased() })
+            return lcFilters.isSubset(of: photoLC)
+        }
+    }
+
+    @ViewBuilder
+    private func tagFilterBar(allTags: [String]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if !activeTagFilters.isEmpty {
+                    Button {
+                        activeTagFilters.removeAll()
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                ForEach(allTags, id: \.self) { tag in
+                    let on = activeTagFilters.contains(tag)
+                    Button {
+                        if on { activeTagFilters.remove(tag) }
+                        else  { activeTagFilters.insert(tag) }
+                    } label: {
+                        Text(tag)
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(on ? .accentColor : .secondary)
+                }
+            }
+            .padding(.vertical, 2)
         }
     }
 
@@ -530,14 +607,20 @@ private struct PhotoRow: View {
     let project: Project
     let store: ProjectStore
     var onLocate: (() -> Void)? = nil
+    var onTag: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
-            thumbnail
-                .frame(width: 96, height: 72)
-                .clipped()
-                .background(Color.secondary.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Button {
+                onTag?()
+            } label: {
+                thumbnail
+                    .frame(width: 96, height: 72)
+                    .clipped()
+                    .background(Color.secondary.opacity(0.2))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -550,6 +633,9 @@ private struct PhotoRow: View {
                     } else {
                         badge(text: "LOCATED", color: .green)
                     }
+                    if !photo.pendingSuggestions.isEmpty {
+                        badge(text: "AI \(photo.pendingSuggestions.count)", color: .purple)
+                    }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
@@ -557,23 +643,59 @@ private struct PhotoRow: View {
                 Text(metaLine)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
+                if !photo.tags.isEmpty {
+                    tagsRow
+                }
             }
             Spacer()
-            if let onLocate, project.floorPlan != nil {
-                let isUnlocated = photo.positionSource == .none
-                Button {
-                    onLocate()
-                } label: {
-                    Image(systemName: isUnlocated
-                          ? "location"
-                          : "arrow.up.and.down.and.arrow.left.and.right")
+            VStack(spacing: 6) {
+                if let onTag {
+                    Button {
+                        onTag()
+                    } label: {
+                        Image(systemName: photo.tags.isEmpty ? "tag" : "tag.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.purple)
+                    .accessibilityLabel("Edit Tags")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(.blue)
-                .accessibilityLabel(isUnlocated ? "Add Location" : "Change Location")
+                if let onLocate, project.floorPlan != nil {
+                    let isUnlocated = photo.positionSource == .none
+                    Button {
+                        onLocate()
+                    } label: {
+                        Image(systemName: isUnlocated
+                              ? "location"
+                              : "arrow.up.and.down.and.arrow.left.and.right")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.blue)
+                    .accessibilityLabel(isUnlocated ? "Add Location" : "Change Location")
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var tagsRow: some View {
+        // ScrollView keeps long tag lists from forcing the row to grow tall
+        // or breaking the cell layout. Two-line wrap would be nicer but adds
+        // a layout pass per row — the horizontal scroll is fine for now.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(photo.tags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.15), in: Capsule())
+                        .foregroundStyle(.purple)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

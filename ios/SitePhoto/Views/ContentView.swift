@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showingNew = false
     @State private var pendingDelete: Project?
     @State private var pendingPermanentDelete: Project?
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -63,6 +64,13 @@ struct ContentView: View {
             }
             .navigationTitle("Projects")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingNew = true
@@ -79,6 +87,9 @@ struct ContentView: View {
                     showingNew = false
                     path.append(newProject)
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsSheet()
             }
             .alert(
                 "Move to Deleted Projects?",
