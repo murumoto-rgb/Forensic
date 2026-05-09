@@ -164,17 +164,23 @@ struct ClearAITagsSheet: View {
     @ViewBuilder
     private func tagGroupRow(_ group: TagGroup) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            FlowLayout(spacing: 6) {
+            HStack(spacing: 8) {
                 tagChip(label: group.primary,
                          selector: .init(label: group.primary),
                          isPrimary: true,
                          count: group.primaryCount)
-                ForEach(group.secondaries, id: \.label) { sec in
-                    tagChip(label: sec.label,
-                             selector: .init(parent: group.primary, label: sec.label),
-                             isPrimary: false,
-                             count: sec.count)
+                Spacer(minLength: 0)
+            }
+            if !group.secondaries.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(group.secondaries, id: \.label) { sec in
+                        tagChip(label: sec.label,
+                                 selector: .init(parent: group.primary, label: sec.label),
+                                 isPrimary: false,
+                                 count: sec.count)
+                    }
                 }
+                .padding(.leading, 12)
             }
         }
     }
