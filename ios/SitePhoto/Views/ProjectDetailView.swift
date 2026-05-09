@@ -45,13 +45,6 @@ struct ProjectDetailView: View {
     @State private var batchTagError: String?
     @State private var batchTagSummary: String?
 
-    private struct BatchTagPrompt: Identifiable {
-        let id = UUID()
-        let candidateCount: Int
-        let skippedCount: Int
-        let skipAlreadyTagged: Bool
-    }
-
     private struct PhotoTarget: Identifiable {
         let id: UUID
     }
@@ -178,63 +171,21 @@ struct ProjectDetailView: View {
                 } message: { photo in
                     Text("Photo #\(photo.sequenceNumber) will be deleted and the remaining photos renumbered. This cannot be undone.")
                 }
-                .alert(
-                    "Run AI tagging on \(batchTagConfirm?.candidateCount ?? 0) photo\(batchTagConfirm?.candidateCount == 1 ? "" : "s")?",
-                    isPresented: Binding(
-                        get: { batchTagConfirm != nil },
-                        set: { if !$0 { batchTagConfirm = nil } }
-                    ),
-                    presenting: batchTagConfirm
-                ) { prompt in
-                    Button("Run · ~\(estimatedCostString(for: prompt.candidateCount))") {
+                .modifier(BatchTagModifiers(
+                    confirm: $batchTagConfirm,
+                    summary: $batchTagSummary,
+                    error: $batchTagError,
+                    isRunning: batchTagTask != nil,
+                    progressCurrent: batchTagProgressCurrent,
+                    progressTotal: batchTagProgressTotal,
+                    progressSeq: batchTagProgressSeq,
+                    costFor: estimatedCostString,
+                    onConfirm: { prompt in
                         startBatchTagging(prompt)
                         batchTagConfirm = nil
-                    }
-                    Button("Cancel", role: .cancel) {
-                        batchTagConfirm = nil
-                    }
-                } message: { prompt in
-                    let costStr = estimatedCostString(for: prompt.candidateCount)
-                    if prompt.skipAlreadyTagged && prompt.skippedCount > 0 {
-                        Text("Each photo is sent to Claude vision and every returned tag is auto-accepted. \(prompt.skippedCount) photo\(prompt.skippedCount == 1 ? "" : "s") with existing tags will be skipped. Estimated cost: ~\(costStr).")
-                    } else {
-                        Text("Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(costStr).")
-                    }
-                }
-                .alert(
-                    "AI tagging done",
-                    isPresented: Binding(
-                        get: { batchTagSummary != nil },
-                        set: { if !$0 { batchTagSummary = nil } }
-                    ),
-                    presenting: batchTagSummary
-                ) { _ in
-                    Button("OK") { batchTagSummary = nil }
-                } message: { summary in
-                    Text(summary)
-                }
-                .alert(
-                    "AI tagging failed",
-                    isPresented: Binding(
-                        get: { batchTagError != nil },
-                        set: { if !$0 { batchTagError = nil } }
-                    ),
-                    presenting: batchTagError
-                ) { _ in
-                    Button("OK") { batchTagError = nil }
-                } message: { msg in
-                    Text(msg)
-                }
-                .overlay {
-                    if batchTagTask != nil {
-                        BatchTagProgressOverlay(
-                            current: batchTagProgressCurrent,
-                            total: batchTagProgressTotal,
-                            photoSeq: batchTagProgressSeq,
-                            onCancel: cancelBatchTagging
-                        )
-                    }
-                }
+                    },
+                    onCancel: cancelBatchTagging
+                ))
             } else {
                 ContentUnavailableView(
                     "Project not found",
@@ -800,6 +751,91 @@ struct ProjectDetailView: View {
         batchTagTask?.cancel()
     }
 
+}
+
+fileprivate struct BatchTagPrompt: Identifiable {
+    let id = UUID()
+    let candidateCount: Int
+    let skippedCount: Int
+    let skipAlreadyTagged: Bool
+}
+
+/// Bundles the four batch-tagging-related view modifiers (3 alerts + 1
+/// overlay) into a single `ViewModifier`. Keeps `ProjectDetailView.body`
+/// short enough for the SwiftUI type checker to handle without timing out.
+fileprivate struct BatchTagModifiers: ViewModifier {
+    @Binding var confirm: BatchTagPrompt?
+    @Binding var summary: String?
+    @Binding var error: String?
+    let isRunning: Bool
+    let progressCurrent: Int
+    let progressTotal: Int
+    let progressSeq: Int?
+    let costFor: (Int) -> String
+    let onConfirm: (BatchTagPrompt) -> Void
+    let onCancel: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert(confirmTitle, isPresented: confirmIsPresented, presenting: confirm) { prompt in
+                Button("Run · ~\(costFor(prompt.candidateCount))") {
+                    onConfirm(prompt)
+                }
+                Button("Cancel", role: .cancel) { confirm = nil }
+            } message: { prompt in
+                Text(confirmMessage(for: prompt))
+            }
+            .alert("AI tagging done",
+                   isPresented: summaryIsPresented,
+                   presenting: summary) { _ in
+                Button("OK") { summary = nil }
+            } message: { s in
+                Text(s)
+            }
+            .alert("AI tagging failed",
+                   isPresented: errorIsPresented,
+                   presenting: error) { _ in
+                Button("OK") { error = nil }
+            } message: { msg in
+                Text(msg)
+            }
+            .overlay {
+                if isRunning {
+                    BatchTagProgressOverlay(
+                        current: progressCurrent,
+                        total: progressTotal,
+                        photoSeq: progressSeq,
+                        onCancel: onCancel
+                    )
+                }
+            }
+    }
+
+    private var confirmIsPresented: Binding<Bool> {
+        Binding(get: { confirm != nil },
+                set: { if !$0 { confirm = nil } })
+    }
+    private var summaryIsPresented: Binding<Bool> {
+        Binding(get: { summary != nil },
+                set: { if !$0 { summary = nil } })
+    }
+    private var errorIsPresented: Binding<Bool> {
+        Binding(get: { error != nil },
+                set: { if !$0 { error = nil } })
+    }
+
+    private var confirmTitle: String {
+        let n = confirm?.candidateCount ?? 0
+        return "Run AI tagging on \(n) photo\(n == 1 ? "" : "s")?"
+    }
+
+    private func confirmMessage(for prompt: BatchTagPrompt) -> String {
+        let cost = costFor(prompt.candidateCount)
+        if prompt.skipAlreadyTagged && prompt.skippedCount > 0 {
+            return "Each photo is sent to Claude vision and every returned tag is auto-accepted. \(prompt.skippedCount) photo\(prompt.skippedCount == 1 ? "" : "s") with existing tags will be skipped. Estimated cost: ~\(cost)."
+        }
+        return "Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost)."
+    }
 }
 
 private struct BatchTagProgressOverlay: View {
