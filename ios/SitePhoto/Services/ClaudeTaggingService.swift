@@ -212,26 +212,33 @@ enum ClaudeTaggingService {
     The object must have exactly these keys:
 
       {
-        "buckets":             ["<exact bucket name>", ...],   // 1–2 entries
-        "severity":            "<None|Minor|Moderate|Significant|Severe|Cannot Determine>",
+        "tags": [
+          {
+            "primary":   "<primary tag name, no leading number>",
+            "secondary": ["<secondary tag name>", ...]
+          }
+        ],
         "summary_observation": "<one cautious sentence>"
       }
 
     Rules:
-      - Use ONLY bucket names exactly as listed in the guide above. Do \
-    not paraphrase, abbreviate, or invent new buckets. Match casing and \
-    punctuation (e.g. "Foundation or slab crack", not "foundation crack").
-      - Use no more than 2 buckets per photo unless the photo clearly \
-    shows multiple unrelated conditions.
-      - `severity` is one of the six allowed values, spelled exactly.
-      - `summary_observation` is exactly one sentence describing what \
-    the photo shows and why it may be relevant to a foundation \
-    investigation. Use cautious language ("visible", "appears", "may \
-    be consistent with", "should be correlated with"). Do not state \
-    final causation from the photo alone.
-      - Do not include any other keys. No `confidence`, \
-    `recommended_follow_up`, or any other field — those are not part \
-    of this contract.
+      - "tags" must contain 1 entry. Use 2 entries only when the photo \
+    clearly shows two separate unrelated issues. Never more than 2.
+      - Use ONLY primary tag names exactly as listed in the guide above, \
+    without the leading number prefix. Match casing and punctuation \
+    exactly (e.g. "Drainage / Grading", not "1. Drainage / Grading" \
+    or "drainage/grading").
+      - Each "secondary" array must contain at least one tag name taken \
+    verbatim from the Secondary Tags list under that primary tag. Match \
+    casing and punctuation exactly.
+      - Use "None" as the sole secondary tag when the photo is \
+    contextual and shows no specific distress.
+      - Do NOT include a "severity" key.
+      - "summary_observation" is exactly one sentence. Use cautious \
+    language ("visible", "appears", "may be consistent with", "should \
+    be correlated with"). Do not state final causation from the photo \
+    alone.
+      - Do not include any other keys.
     """
 
     private static let userPrompt = """
@@ -249,13 +256,22 @@ enum ClaudeTaggingService {
         }
     }
 
+    /// One primary+secondary entry in the new tag format.
+    private struct ClaudeTagEntry: Decodable {
+        let primary: String
+        let secondary: [String]
+    }
+
     /// Shape of the JSON object we ask Claude to emit per photo. All fields
     /// optional in the decoder so a missing/extra key in Claude's output
-    /// doesn't blow up the whole response.
+    /// doesn't blow up the whole response. Legacy `buckets`/`severity` fields
+    /// are kept so old-format responses (e.g. from cached prompts) don't crash.
     private struct ClaudePayload: Decodable {
+        let tags: [ClaudeTagEntry]?
+        let summary_observation: String?
+        // Legacy fields from the old bucket format
         let buckets: [String]?
         let severity: String?
-        let summary_observation: String?
     }
 
     /// Confidence assigned to every bucket Claude emits. The bucket prompt
@@ -300,18 +316,50 @@ enum ClaudeTaggingService {
         }
 
         var suggestions: [TagSuggestion] = []
-        for raw in payload.buckets ?? [] {
-            let bucket = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !bucket.isEmpty else { continue }
-            suggestions.append(TagSuggestion(
-                label: bucket,
-                confidence: bucketConfidence,
-                source: .claude
-            ))
+        var firstPrimary: String? = nil
+
+        if let tagEntries = payload.tags, !tagEntries.isEmpty {
+            // New primary/secondary format
+            for entry in tagEntries {
+                let primary = entry.primary.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !primary.isEmpty else { continue }
+                if firstPrimary == nil { firstPrimary = primary }
+
+                let nonNoneSecondary = entry.secondary
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && $0.lowercased() != "none" }
+
+                if nonNoneSecondary.isEmpty {
+                    suggestions.append(TagSuggestion(
+                        label: primary,
+                        confidence: bucketConfidence,
+                        source: .claude
+                    ))
+                } else {
+                    for sec in nonNoneSecondary {
+                        suggestions.append(TagSuggestion(
+                            label: "\(primary) / \(sec)",
+                            confidence: bucketConfidence,
+                            source: .claude
+                        ))
+                    }
+                }
+            }
+        } else {
+            // Legacy fallback: old bucket-array format
+            for raw in payload.buckets ?? [] {
+                let bucket = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !bucket.isEmpty else { continue }
+                suggestions.append(TagSuggestion(
+                    label: bucket,
+                    confidence: bucketConfidence,
+                    source: .claude
+                ))
+            }
         }
 
         let metadata = Metadata(
-            primaryCategory: nil,
+            primaryCategory: firstPrimary,
             severity:        payload.severity?.trimmingCharacters(in: .whitespacesAndNewlines),
             observation:     payload.summary_observation?.trimmingCharacters(in: .whitespacesAndNewlines),
             followUp:        nil,

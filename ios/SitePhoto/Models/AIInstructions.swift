@@ -10,96 +10,357 @@ import Foundation
 /// can't accidentally break tag-array parsing.
 enum AIInstructions {
     static let defaultText: String = """
-    Review each photo and assign it to one or more of the following \
-    observation buckets. Do not create new buckets. Do not use detailed \
-    tags. Select only the most important bucket or buckets needed to \
-    categorize the photo.
+    Review each photograph for a residential foundation / structural distress investigation.
 
-    Use no more than 2 buckets per photo unless the photo clearly shows \
-    multiple unrelated conditions.
+    Assign Primary and Secondary Tags using only the controlled vocabulary below.
 
-    Observation Buckets:
+    Definitions:
+    - Primary Tag = main issue shown in the photo.
+    - Secondary Tag = specific distress, condition, or observation under the selected Primary Tag.
 
-    1. Drainage / grading issue
-    2. Regional ponding / site moisture context
-    3. Foundation or slab crack / concrete distress
-    4. Driveway / flatwork movement
-    5. Masonry cracking or separation
-    6. Stucco cracking or separation
-    7. Exterior trim / siding separation
-    8. Interior wall or ceiling cracking
-    9. Interior trim / flooring / cabinet separation
-    10. Wall framing / wall attachment distress
-    11. Door or window operation issue
-    12. Floor slope / unevenness
-    13. Garage / porch reverse slope
-    14. Roof / attic framing issue
-    15. Stair geometry / stair safety issue
-    16. Prior repair / patch / recurring distress
-    17. Soil erosion / backfill issue
-    18. Tree / vegetation / site moisture context
-    19. General exterior context
-    20. General interior context
-    21. No visible distress
-    22. Poor / unclear photo
+    Each photo should ideally have one Primary Tag.
+    Use two Primary Tags only if the photo clearly shows two separate relevant issues.
+    Do not use more than two Primary Tags.
+    For each Primary Tag, select only one or more Secondary Tags listed under that Primary Tag.
+    Use "None" as the Secondary Tag if the photo is contextual and does not show distress.
+    Do not invent new Primary Tags or Secondary Tags.
+    Do not assign severity.
+    Do not tag every visible object.
+    Focus only on conditions relevant to foundation performance, structural distress, \
+    drainage, prior repair, construction quality, safety, or serviceability.
+    Do not state final causation from the photo alone.
+    Use cautious language in the Summary Observation, such as "visible," "appears," \
+    "may be relevant to," "may be consistent with," or "should be correlated with."
+    Keep the Summary Observation to one sentence.
 
-    For each photo, output only:
+    Output format:
 
-    Observation Bucket(s):
-    Severity:
+    Primary Tag:
+    Secondary Tag:
     Summary Observation:
 
-    Severity must be one of:
-    None / Minor / Moderate / Significant / Severe / Cannot Determine
+    Controlled Primary and Secondary Tags:
 
-    Summary Observation:
-    Provide one concise sentence describing what the photo shows and why \
-    it may be relevant to a foundation investigation. Use cautious, \
-    observation-based language. Do not state final causation from the \
-    photo alone.
+    1. Drainage / Grading
+    Secondary Tags:
+    - None
+    - Adequate drainage
+    - Marginal drainage
+    - Flat drainage
+    - Negative drainage toward foundation
+    - Inadequate soil-to-finished-floor clearance
+    - Downspout discharging near foundation
+    - Downspout extension present
+    - Missing or limited gutters/downspouts
+    - Local ponding near foundation
+    - Drainage swale / drainage channel
+    - Area drain / surface drain
+    - Landscape bed affecting drainage
 
-    Rules:
-    - Do not invent additional categories.
-    - Do not tag every visible object.
-    - Focus only on conditions relevant to foundation performance, \
-    structural distress, drainage, prior repair, construction quality, \
-    safety, or serviceability.
-    - Use "Masonry cracking or separation" for brick, stone, mortar \
-    joints, masonry veneer, masonry corners, masonry expansion joints, \
-    masonry-to-trim gaps, and masonry-to-wall/floor separations such as \
-    fireplace masonry separation.
-    - Use "Stucco cracking or separation" only for stucco cladding, \
-    stucco cracks, stucco panel distress, stucco separation, or stucco \
-    repair/patch conditions.
-    - Use "Regional ponding / site moisture context" for drone views, \
-    aerial views, recurring ponding, broad area drainage patterns, or \
-    standing water affecting multiple lots.
-    - Use "Drainage / grading issue" for localized grading, downspouts, \
-    surface slope, poor clearance between soil and finished floor, or \
-    water accumulation immediately near the foundation.
-    - Use "Foundation or slab crack / concrete distress" for visible \
-    foundation cracks, grade beam cracks, slab cracks, concrete spalls, \
-    broken concrete, or anchor-related concrete damage.
-    - Use "Wall framing / wall attachment distress" for loose walls, \
-    wall bottoms separating from the floor, distorted wall framing, or \
-    apparent wall-to-foundation attachment issues.
-    - Use "Garage / porch reverse slope" when a garage slab, porch, or \
-    exterior slab appears to drain toward the house or interior.
-    - Use "Stair geometry / stair safety issue" for stair riser height, \
-    stair uniformity, tread/riser irregularity, or visible stair \
-    movement/distortion.
-    - If the photo is mostly contextual, use General Exterior Context or \
-    General Interior Context.
-    - If distress is not clearly visible, use No Visible Distress.
-    - If the photo quality or angle prevents reliable review, use Poor / \
-    Unclear Photo.
-    - Use cautious categorization. Do not state or imply final causation \
-    from the photo alone.
-    - Use no more than 2 observation buckets per photo unless clearly \
-    necessary.
-    - Keep the Summary Observation to one sentence.
-    - In the Summary Observation, use phrases such as "visible," \
-    "appears," "may be relevant to," "may be consistent with," or \
-    "should be correlated with."
+    2. Regional Ponding / Site Moisture
+    Secondary Tags:
+    - None
+    - Standing water
+    - Recurring ponding
+    - Broad area drainage condition
+    - Ponding at adjacent properties
+    - Ponding near rear property line
+    - Historical aerial ponding evidence
+    - Soil discoloration from prior ponding
+    - Frequently ponded soil context
+    - Site moisture context
+
+    3. Foundation / Slab
+    Secondary Tags:
+    - None
+    - Grade beam crack
+    - Slab crack
+    - Garage slab crack
+    - Porch slab crack
+    - Patio slab crack
+    - Interior slab crack
+    - Crack wider at top
+    - Crack wider at bottom
+    - Vertical-to-diagonal crack
+    - Diagonal / irregular crack
+    - Concrete spall
+    - Broken grade beam corner
+    - Displaced concrete
+    - Parge coat raveling
+    - Foundation-to-veneer interface distress
+    - Anchor-related concrete damage
+    - Exposed foundation distress
+
+    4. Driveway / Flatwork
+    Secondary Tags:
+    - None
+    - Driveway crack
+    - Walkway crack
+    - Flatwork crack
+    - Panel separation
+    - Separation from foundation
+    - Elevation offset
+    - Drop in driveway elevation
+    - Flatwork settlement
+    - Flatwork heave
+    - Step / trip hazard
+    - Patio / porch flatwork movement
+
+    5. Masonry
+    Secondary Tags:
+    - None
+    - Brick crack
+    - Stone crack
+    - Mortar joint crack
+    - Stair-step crack
+    - Vertical crack
+    - Diagonal crack
+    - Masonry separation
+    - Masonry-to-trim separation
+    - Masonry-to-siding separation
+    - Masonry-to-wall separation
+    - Masonry-to-floor separation
+    - Fireplace masonry separation
+    - Expansion joint wide / stretched
+    - Expansion joint compressed
+    - Expansion joint torn / failed
+    - Sealant missing at masonry
+    - Sealant cracked at masonry
+    - Sealant stretched at masonry
+    - Prior masonry repair
+
+    6. Stucco
+    Secondary Tags:
+    - None
+    - Stucco crack
+    - Vertical stucco crack
+    - Diagonal stucco crack
+    - Stucco separation
+    - Stucco panel distress
+    - Stucco patch / prior repair
+    - Stucco shrinkage-type cracking
+    - Stucco-to-trim separation
+    - Stucco-to-foundation separation
+
+    7. Exterior Trim / Siding
+    Secondary Tags:
+    - None
+    - Exterior trim crack
+    - Exterior trim separation
+    - Exterior trim misalignment
+    - Siding separation
+    - Siding joint separation
+    - Siding distortion
+    - Cement board siding separation
+    - Gap at cladding transition
+    - Window trim separation
+    - Door trim separation
+    - Prior exterior finish repair
+
+    8. Walls
+    Secondary Tags:
+    - None
+    - Wall sheetrock crack
+    - Corner crack
+    - Door / window corner crack
+    - Wall separation
+    - Bottom of wall separated from floor
+    - Loose / unattached wall
+    - Wall can be moved by hand
+    - Out-of-plumb wall
+    - Distorted wall framing
+    - Wall framing movement
+    - Previous wall repair
+
+    9. Ceilings
+    Secondary Tags:
+    - None
+    - Ceiling sheetrock crack
+    - Ceiling separation
+    - Ceiling buckling
+    - Ceiling pulled from joists
+    - Ceiling detached from framing
+    - Ceiling distress near stairs
+    - Previous ceiling repair
+
+    10. Flooring
+    Secondary Tags:
+    - None
+    - Floor tile crack
+    - Tile crack aligned with slab crack
+    - Bathroom tile distress
+    - Flooring joint separation
+    - Second-floor flooring separation
+    - Rippled vinyl flooring
+    - Uneven flooring
+    - Floor finish separation
+    - Floor finish distress
+    - Previous flooring repair
+
+    11. Interior Trim / Cabinets / Counters
+    Secondary Tags:
+    - None
+    - Baseboard separation
+    - Baseboard distortion
+    - Interior trim separation
+    - Door frame separation
+    - Cabinet separation from wall
+    - Countertop slope
+    - Counter / cabinet misalignment
+    - Windowsill separation
+    - Previous trim repair
+
+    12. Doors / Windows
+    Secondary Tags:
+    - None
+    - Door out of plumb
+    - Door racked
+    - Door does not latch
+    - Door self-opens / self-closes
+    - Door frame misalignment
+    - Window out of plumb
+    - Window frame separation
+    - Window difficult to operate
+    - Window / door functional issue
+
+    13. Floor Slope / Levelness
+    Secondary Tags:
+    - None
+    - Visible floor slope
+    - Measured floor slope
+    - Significant floor slope
+    - Uneven floor
+    - Overall tilt indicator
+    - Localized deflection indicator
+    - Counter slope
+    - Level reading shown
+
+    14. Garage / Porch Slope
+    Secondary Tags:
+    - None
+    - Garage reverse slope
+    - Garage drains toward interior
+    - Porch reverse slope
+    - Porch flat / inadequate slope
+    - Patio inadequate slope
+    - Exterior slab drains toward house
+    - Potential water accumulation at house
+
+    15. Roof / Roofing
+    Secondary Tags:
+    - None
+    - Roof overview
+    - Roof drainage feature
+    - Gutter present
+    - Downspout present
+    - Limited gutter coverage
+    - Roof runoff discharge location
+    - Roof covering context
+
+    16. Attic / Framing
+    Secondary Tags:
+    - None
+    - Rafter twisted / warped
+    - Missing opposing rafter
+    - Rafter-to-ridge separation
+    - Rafter-to-valley separation
+    - Framing connection gap
+    - Loose framing connection
+    - Exposed fasteners
+    - Inadequate rafter support
+    - Purlin support issue
+    - Purlin brace supported on joist
+    - LVL / transfer beam support issue
+    - Improper framing fit-up
+    - Scrap lumber used for fit-up
+    - OSB scab patch
+    - Sheathing gap
+    - Rodent-sized opening
+    - Spray foam limits visibility
+    - Ceiling pulled from framing
+
+    17. Stairs
+    Secondary Tags:
+    - None
+    - Excessive riser height
+    - Non-uniform riser heights
+    - Stair geometry issue
+    - Stair safety issue
+    - Stair movement / distortion
+    - Stair finish distress
+
+    18. Prior Repair / Patch
+    Secondary Tags:
+    - None
+    - Prior foundation repair
+    - Prior concrete patch
+    - Prior slab breakout
+    - Prior masonry repair
+    - Prior drywall repair
+    - Prior cosmetic repair
+    - Crack through prior repair
+    - Recurrent distress
+    - Patch visible
+    - Texture / paint mismatch
+    - Repair excavation not fully backfilled
+
+    19. Soil / Backfill
+    Secondary Tags:
+    - None
+    - Soil erosion
+    - Soil void
+    - Incomplete backfill
+    - Exposed excavation area
+    - Soil against foundation
+    - Concrete curb against foundation
+    - Low clearance to soil
+    - Backfill settlement
+    - Soil moisture indicator
+
+    20. Trees / Vegetation
+    Secondary Tags:
+    - None
+    - Mature tree near foundation
+    - Removed tree area
+    - Prior tree location
+    - Tree root zone near foundation
+    - Vegetation near foundation
+    - Flower bed near foundation
+    - Landscape border near foundation
+    - Vegetation / moisture context
+
+    21. General Exterior Context
+    Secondary Tags:
+    - None
+    - Front exterior overview
+    - Rear exterior overview
+    - Left side exterior overview
+    - Right side exterior overview
+    - Aerial / drone overview
+    - Site context
+    - Neighborhood context
+    - Exterior orientation photo
+    - No visible distress
+
+    22. General Interior Context
+    Secondary Tags:
+    - None
+    - Room overview
+    - Hallway overview
+    - Interior orientation photo
+    - General finish context
+    - No visible distress
+
+    23. Poor / Unclear Photo
+    Secondary Tags:
+    - None
+    - Poor lighting
+    - Blurry photo
+    - Too close / no context
+    - No scale
+    - Obstructed view
+    - Location unclear
+    - Distress unclear
+    - Cannot determine condition
     """
 }
