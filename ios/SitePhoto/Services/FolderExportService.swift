@@ -1,0 +1,178 @@
+import Foundation
+
+/// Build a directory tree under the app's storage root with one folder per
+/// user-defined bucket, photos copied byte-for-byte (so EXIF and timestamps
+/// are preserved), and a `captions.txt` per folder summarising each photo.
+/// Photos with no bucket land in a final `99 Unbucketed` folder.
+///
+/// The service writes into the app's iCloud Documents container when iCloud
+/// is available (so the user can grab the tree from Files → iCloud Drive →
+/// SitePhoto → Exports), and falls back to local Documents otherwise (Files
+/// → On My iPhone → SitePhoto → Exports).
+@MainActor
+struct FolderExportService {
+    let project: Project
+    let store: ProjectStore
+
+    /// Build the tree and return the root folder URL on success, or nil on
+    /// failure. `progress` is invoked on the main actor with human-readable
+    /// status updates the runner view can display.
+    func export(progress: @escaping (String) -> Void) async -> URL? {
+        let fileManager = FileManager.default
+        let exportRoot = store.rootURL.appending(
+            path: "Exports", directoryHint: .isDirectory
+        )
+        do {
+            try fileManager.createDirectory(
+                at: exportRoot, withIntermediateDirectories: true
+            )
+        } catch {
+            return nil
+        }
+
+        let stamp = stampString()
+        let safeProject = sanitize(project.name)
+        let dirName = "\(safeProject)_\(stamp)"
+        let projectDir = exportRoot.appending(
+            path: dirName, directoryHint: .isDirectory
+        )
+        // If a clash somehow happens, append "(1)" / "(2)" until a free
+        // slot is found instead of overwriting an earlier export.
+        var finalDir = projectDir
+        var counter = 1
+        while fileManager.fileExists(atPath: finalDir.path()) {
+            finalDir = exportRoot.appending(
+                path: "\(dirName) (\(counter))", directoryHint: .isDirectory
+            )
+            counter += 1
+        }
+        do {
+            try fileManager.createDirectory(
+                at: finalDir, withIntermediateDirectories: true
+            )
+        } catch {
+            return nil
+        }
+
+        // Bucket sort order drives folder prefix numbering. Photos with no
+        // bucketID get folded into a sentinel "99 Unbucketed" folder at
+        // the end so the engineer can see what slipped through.
+        let sortedBuckets = project.buckets.sorted { $0.sortOrder < $1.sortOrder }
+        let photosFolder = store.photosFolder(for: project)
+
+        for (index, bucket) in sortedBuckets.enumerated() {
+            let prefix = String(format: "%02d", index + 1)
+            let folderName = sanitize("\(prefix) \(bucket.name)")
+            let folderURL = finalDir.appending(
+                path: folderName, directoryHint: .isDirectory
+            )
+            try? fileManager.createDirectory(
+                at: folderURL, withIntermediateDirectories: true
+            )
+            let photos = project.photos
+                .filter { $0.bucketID == bucket.id }
+                .sorted { $0.sequenceNumber < $1.sequenceNumber }
+            progress("Writing \(folderName) (\(photos.count) photo\(photos.count == 1 ? "" : "s"))…")
+            await copyPhotos(photos,
+                              from: photosFolder,
+                              to: folderURL,
+                              fileManager: fileManager)
+            writeCaptions(for: photos, to: folderURL)
+        }
+
+        let unbucketed = project.photos
+            .filter { $0.bucketID == nil }
+            .sorted { $0.sequenceNumber < $1.sequenceNumber }
+        if !unbucketed.isEmpty {
+            let folderURL = finalDir.appending(
+                path: "99 Unbucketed", directoryHint: .isDirectory
+            )
+            try? fileManager.createDirectory(
+                at: folderURL, withIntermediateDirectories: true
+            )
+            progress("Writing 99 Unbucketed (\(unbucketed.count) photo\(unbucketed.count == 1 ? "" : "s"))…")
+            await copyPhotos(unbucketed,
+                              from: photosFolder,
+                              to: folderURL,
+                              fileManager: fileManager)
+            writeCaptions(for: unbucketed, to: folderURL)
+        }
+
+        return finalDir
+    }
+
+    private func copyPhotos(_ photos: [Photo],
+                             from photosFolder: URL,
+                             to destination: URL,
+                             fileManager: FileManager) async {
+        for photo in photos {
+            let src = photosFolder.appending(path: photo.imageFilename)
+            guard fileManager.fileExists(atPath: src.path()) else { continue }
+            // Reuse the source filename — already sequence-prefixed by
+            // ProjectStore.makePhotoFilename, so engineers can sort
+            // alphabetically and get sequence order.
+            let dst = destination.appending(path: photo.imageFilename)
+            try? fileManager.copyItem(at: src, to: dst)
+        }
+    }
+
+    private func writeCaptions(for photos: [Photo], to folder: URL) {
+        var lines: [String] = []
+        lines.append("Project: \(project.name)")
+        if let address = project.projectAddress, !address.isEmpty {
+            lines.append("Address: \(address)")
+        }
+        lines.append("")
+        for photo in photos {
+            lines.append("--- Photo #\(photo.sequenceNumber) ---")
+            lines.append("File: \(photo.imageFilename)")
+            lines.append("Captured: \(photo.timestamp.formatted(date: .abbreviated, time: .standard))")
+            if let analysis = photo.aiAnalysis, !analysis.parseFailed {
+                if !analysis.locationInferred.isEmpty {
+                    lines.append("Location: \(analysis.locationInferred)")
+                }
+                if !analysis.captionDraft.isEmpty {
+                    lines.append("Caption: \(analysis.captionDraft)")
+                }
+                if !analysis.summaryObservation.isEmpty {
+                    lines.append("Observation: \(analysis.summaryObservation)")
+                }
+            }
+            let confirmedTags = photo.tags
+                .filter { $0.confidence >= 0.5 }
+                .map { tag -> String in
+                    if let parent = tag.parentTag {
+                        return "\(parent) / \(tag.label)"
+                    }
+                    return tag.label
+                }
+            if !confirmedTags.isEmpty {
+                lines.append("Tags: \(confirmedTags.joined(separator: ", "))")
+            }
+            lines.append("")
+        }
+        let text = lines.joined(separator: "\n")
+        let url = folder.appending(path: "captions.txt")
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func stampString() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmm"
+        fmt.timeZone = TimeZone.current
+        return fmt.string(from: Date())
+    }
+
+    /// Strip characters that would break filesystem semantics on iOS / macOS
+    /// (`/ \ : * ? " < > |`) and trim runs of whitespace down to single
+    /// spaces. Result is bounded to 60 characters so deeply-nested exports
+    /// don't trip the 1024-char total path limit.
+    private func sanitize(_ raw: String) -> String {
+        let cleaned = raw
+            .replacingOccurrences(of: "[/\\\\:*?\"<>|]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        let bounded = String(cleaned.prefix(60))
+        return bounded.isEmpty ? "Folder" : bounded
+    }
+}

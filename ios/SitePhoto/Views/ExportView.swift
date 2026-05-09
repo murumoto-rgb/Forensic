@@ -1,56 +1,62 @@
 import SwiftUI
 
+/// Top-level export chooser. The actual heavy lifting happens in the two
+/// pushed runner views (`PDFExportRunner`, `FolderExportRunner`) so each
+/// can manage its own progress + share affordances without contaminating
+/// the chooser's state.
 struct ExportView: View {
     let projectID: UUID
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @State private var status = "Preparing…"
-    @State private var exportURL: URL?
-    @State private var failed = false
+    private var project: Project? { store.project(withID: projectID) }
+    private var photos: [Photo] { project?.photos ?? [] }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
-                if let url = exportURL {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 64))
-                        .foregroundStyle(.green)
-                    Text("PDF ready")
-                        .font(.headline)
-                    ShareLink(
-                        item: url,
-                        subject: Text(projectName),
-                        message: Text("SitePhoto project export")
-                    ) {
-                        Label("Share / Save PDF", systemImage: "square.and.arrow.up")
-                            .font(.headline)
+            List {
+                Section("Export options") {
+                    NavigationLink {
+                        PDFExportRunner(projectID: projectID)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("PDF report")
+                                Text("Cover page, floor plan with bubbles, and a 2×3 contact sheet of every photo.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "doc.richtext")
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                } else if failed {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 64))
-                        .foregroundStyle(.orange)
-                    Text("Export failed")
-                        .font(.headline)
-                    Text(status)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                } else {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text(status)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                    .disabled(photos.isEmpty)
+
+                    NavigationLink {
+                        FolderExportRunner(projectID: projectID)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Folder by Bucket")
+                                Text("One subfolder per bucket, photos copied in full resolution with EXIF preserved, plus a captions.txt per folder.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "folder")
+                        }
+                    }
+                    .disabled(photos.isEmpty)
                 }
-                Spacer()
+                if photos.isEmpty {
+                    Section {
+                        Text("Add photos to this project before exporting.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            .navigationTitle("Export PDF")
+            .navigationTitle("Export")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -58,6 +64,61 @@ struct ExportView: View {
                 }
             }
         }
+    }
+}
+
+/// Builds + offers the existing PDF report. Same flow as before — kept as
+/// its own view so the export chooser stays small.
+private struct PDFExportRunner: View {
+    let projectID: UUID
+    @Environment(ProjectStore.self) private var store
+
+    @State private var status = "Preparing…"
+    @State private var exportURL: URL?
+    @State private var failed = false
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            if let url = exportURL {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.green)
+                Text("PDF ready")
+                    .font(.headline)
+                ShareLink(
+                    item: url,
+                    subject: Text(projectName),
+                    message: Text("SitePhoto project export")
+                ) {
+                    Label("Share / Save PDF", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.orange)
+                Text("Export failed")
+                    .font(.headline)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            Spacer()
+        }
+        .navigationTitle("PDF Report")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await runExport() }
     }
 
@@ -82,5 +143,120 @@ struct ExportView: View {
             failed = true
             status = "Could not build the PDF. Check that photos are accessible."
         }
+    }
+}
+
+/// Builds the per-bucket folder tree and surfaces a ShareLink + a hint
+/// pointing the user at the Files-app location (so they can rename, move,
+/// or upload elsewhere via Files later).
+private struct FolderExportRunner: View {
+    let projectID: UUID
+    @Environment(ProjectStore.self) private var store
+
+    @State private var status = "Preparing…"
+    @State private var folderURL: URL?
+    @State private var failed = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            if let url = folderURL {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.green)
+                Text("Folder ready")
+                    .font(.headline)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Saved to:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(displayPath(for: url))
+                        .font(.caption.monospaced())
+                        .multilineTextAlignment(.leading)
+                        .padding(8)
+                        .background(Color.secondary.opacity(0.1),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                    Text("Find it in the Files app under \(filesAppLocationHint()).")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal)
+                ShareLink(
+                    item: url,
+                    subject: Text(projectName),
+                    message: Text("SitePhoto folder export")
+                ) {
+                    Label("Share / Move Folder", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.orange)
+                Text("Export failed")
+                    .font(.headline)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            Spacer()
+        }
+        .navigationTitle("Folder by Bucket")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await runExport() }
+    }
+
+    private var projectName: String {
+        store.project(withID: projectID)?.name ?? "Export"
+    }
+
+    private func runExport() async {
+        guard let proj = store.project(withID: projectID) else {
+            failed = true; status = "Project not found."; return
+        }
+        guard !proj.photos.isEmpty else {
+            failed = true; status = "No photos to export."; return
+        }
+        let service = FolderExportService(project: proj, store: store)
+        let url = await service.export { msg in
+            Task { @MainActor in status = msg }
+        }
+        if let url {
+            folderURL = url
+        } else {
+            failed = true
+            status = "Could not build the folder export. Check that the photo files are accessible."
+        }
+    }
+
+    /// Trim the saved-to path so the user sees something readable rather
+    /// than the full sandbox URL. We show the trailing two path components
+    /// — the `Exports/` folder plus the dated export name.
+    private func displayPath(for url: URL) -> String {
+        let comps = url.pathComponents
+        let tail = comps.suffix(3).joined(separator: "/")
+        return "…/\(tail)"
+    }
+
+    /// Whether the export landed in iCloud or the local container affects
+    /// where the user looks for it in Files. We sniff that by checking
+    /// whether the storage root is under the iCloud ubiquity container.
+    private func filesAppLocationHint() -> String {
+        let path = store.rootURL.path()
+        if path.contains("Mobile Documents") || path.contains("CloudDocs") {
+            return "iCloud Drive → SitePhoto → Exports"
+        }
+        return "On My iPhone → SitePhoto → Exports"
     }
 }
