@@ -1034,6 +1034,79 @@ final class ProjectStore {
         }
     }
 
+    // MARK: - Batch Claude tagging
+
+    /// Run Claude vision tagging across every photo in the project, then
+    /// auto-confirm whatever Claude returns. Designed for the "tag all
+    /// photos at once" project-detail button, where the user has already
+    /// agreed to the cost.
+    ///
+    /// `skipAlreadyTagged` — when true (default), photos that already have
+    /// at least one confirmed tag are left alone. Lets the user add manual
+    /// tags first, then top up with AI for the rest.
+    ///
+    /// `onProgress` is called on the main actor before each photo and once
+    /// more on completion. `current` is 1-based; `current == total` and a
+    /// non-empty `summary` indicate the run finished.
+    ///
+    /// Throws `ClaudeTaggingService.Error.missingAPIKey` immediately if no
+    /// key is on file. Per-photo errors (network blips, parse failures) are
+    /// swallowed so a single bad photo doesn't kill the rest of the batch —
+    /// the result tuple reports how many photos got at least one tag and
+    /// how many failed.
+    @MainActor
+    @discardableResult
+    func batchClaudeTagging(
+        projectID: UUID,
+        skipAlreadyTagged: Bool = true,
+        onProgress: @escaping @MainActor (_ current: Int, _ total: Int, _ photoSeq: Int?) -> Void
+    ) async throws -> (tagged: Int, failed: Int, skipped: Int) {
+        guard KeychainStore.loadAnthropicKey()?.isEmpty == false else {
+            throw ClaudeTaggingService.Error.missingAPIKey
+        }
+        guard let project = self.project(withID: projectID) else {
+            return (0, 0, 0)
+        }
+
+        let candidates = project.photos.filter { photo in
+            skipAlreadyTagged ? photo.tags.isEmpty : true
+        }
+        let skipped = project.photos.count - candidates.count
+        let total = candidates.count
+
+        var tagged = 0
+        var failed = 0
+        for (i, photo) in candidates.enumerated() {
+            try Task.checkCancellation()
+            onProgress(i + 1, total, photo.sequenceNumber)
+
+            guard let proj = self.project(withID: projectID) else { break }
+            let url = self.imageURL(for: photo, in: proj)
+            await self.ensureDownloaded(url)
+
+            do {
+                let suggestions = try await ClaudeTaggingService.tag(imageURL: url)
+                if !suggestions.isEmpty {
+                    let merged = proj.photos.first(where: { $0.id == photo.id })?.tags ?? []
+                    let newTags = merged + suggestions.map { $0.label }
+                    _ = self.setTags(proj, photoID: photo.id, tags: newTags)
+                    tagged += 1
+                }
+            } catch ClaudeTaggingService.Error.missingAPIKey {
+                // Auth-class failure: stop the batch so the user can fix
+                // their key in Settings instead of burning network calls.
+                throw ClaudeTaggingService.Error.missingAPIKey
+            } catch {
+                failed += 1
+                #if DEBUG
+                print("Claude batch failed for #\(photo.sequenceNumber): \(error)")
+                #endif
+            }
+        }
+        onProgress(total, total, nil)
+        return (tagged: tagged, failed: failed, skipped: skipped)
+    }
+
     /// Strip the location from an existing photo (turns it back into "NO LOC").
     @discardableResult
     func clearPhotoLocation(_ project: Project, photoID: UUID) -> Project {
