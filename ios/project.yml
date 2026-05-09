@@ -35,8 +35,7 @@ targets:
         CFBundleDisplayName: SitePhoto
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
-        UILaunchScreen:
-          UIBackgroundColor: "FFFFFF"
+        UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."
