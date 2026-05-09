@@ -42,7 +42,7 @@ enum AIInstructions {
     Field definitions
 
     - photo_id: filename or identifier as provided. If none, use "".
-    - primary_tags: array of one or two Primary Tags from the controlled vocabulary. Default to one. Use two only when the photo shows two clearly distinct issues that a reader would expect to be referenced separately in a report. Never more than two. Tiebreaker when both apply: prefer the structural element over the finish (e.g., grade beam crack over masonry crack at the same location). When the main subject of the photo IS a prior repair, use Primary 18; when prior repair is incidental to a clearer element-level issue, tag the element and use a "Prior ..." Secondary under that Primary.
+    - primary_tags: array of one or two Primary Tags from the controlled vocabulary. Default to one. Use two only when the photo shows two clearly distinct issues that a reader would expect to be referenced separately in a report. Never more than two. Tiebreaker when both apply: prefer the structural element over the finish (e.g., grade beam crack over masonry crack at the same location). When the main subject of the photo IS a prior repair, use the Prior Repair / Patch primary; when prior repair is incidental to a clearer element-level issue, tag the element and use a "Prior ..." Secondary under that Primary.
     - secondary_tags_by_primary: object keyed by each Primary Tag in primary_tags. The value is an array of one or more Secondary Tags listed under that Primary in the controlled vocabulary. Use ["None"] if the photo is contextual and shows no distress under that Primary. Every Secondary Tag must appear verbatim under the chosen Primary in the vocabulary; do not invent, merge, or paraphrase tags.
     - location_inferred: best inference from visible cues, chosen from: "Exterior – Front," "Exterior – Rear," "Exterior – Left," "Exterior – Right," "Exterior – Unknown elevation," "Interior – Living/Family," "Interior – Kitchen," "Interior – Bedroom," "Interior – Bathroom," "Interior – Hallway," "Interior – Stairs," "Interior – Other room," "Garage," "Porch/Patio," "Attic," "Crawlspace," "Site/Yard," "Aerial," "Unknown." Do not speculate about specific addresses or occupants.
     - orientation_cue: short phrase describing what cued the location (e.g., "double oven and island visible," "front door and address numerals," "rafters and roof sheathing"). Use "Not determinable" if no cue is visible.
@@ -64,10 +64,11 @@ enum AIInstructions {
     - If the photo is a measurement readout (level, tape, crack comparator, Zip Level), transcribe the visible number in measurement_visible exactly as shown.
     - If location is not visually evident, use "Unknown" — do not guess.
     - Before finalizing, verify every Secondary Tag appears verbatim under its chosen Primary Tag in the controlled vocabulary below. If not, replace with the closest exact match or "None."
+    - Use the exact Primary Tag names as listed below. Do not prefix them with numbers, dashes, or any other characters in your JSON output.
 
     Controlled Primary and Secondary Tags
 
-    1. Drainage / Grading
+    Drainage / Grading
     Secondary Tags:
     - None
     - Adequate drainage
@@ -83,7 +84,7 @@ enum AIInstructions {
     - Area drain / surface drain
     - Landscape bed affecting drainage
 
-    2. Regional Ponding / Site Moisture
+    Regional Ponding / Site Moisture
     Secondary Tags:
     - None
     - Standing water
@@ -96,7 +97,7 @@ enum AIInstructions {
     - Frequently ponded soil context
     - Site moisture context
 
-    3. Foundation / Slab
+    Foundation / Slab
     Secondary Tags:
     - None
     - Grade beam crack
@@ -117,7 +118,7 @@ enum AIInstructions {
     - Anchor-related concrete damage
     - Exposed foundation distress
 
-    4. Driveway / Flatwork
+    Driveway / Flatwork
     Secondary Tags:
     - None
     - Driveway crack
@@ -132,7 +133,7 @@ enum AIInstructions {
     - Step / trip hazard
     - Patio / porch flatwork movement
 
-    5. Masonry
+    Masonry
     Secondary Tags:
     - None
     - Brick crack
@@ -155,7 +156,7 @@ enum AIInstructions {
     - Sealant stretched at masonry
     - Prior masonry repair
 
-    6. Stucco
+    Stucco
     Secondary Tags:
     - None
     - Stucco crack
@@ -168,7 +169,7 @@ enum AIInstructions {
     - Stucco-to-trim separation
     - Stucco-to-foundation separation
 
-    7. Exterior Trim / Siding
+    Exterior Trim / Siding
     Secondary Tags:
     - None
     - Exterior trim crack
@@ -183,7 +184,7 @@ enum AIInstructions {
     - Door trim separation
     - Prior exterior finish repair
 
-    8. Walls
+    Walls
     Secondary Tags:
     - None
     - Wall sheetrock crack
@@ -198,7 +199,7 @@ enum AIInstructions {
     - Wall framing movement
     - Previous wall repair
 
-    9. Ceilings
+    Ceilings
     Secondary Tags:
     - None
     - Ceiling sheetrock crack
@@ -209,7 +210,7 @@ enum AIInstructions {
     - Ceiling distress near stairs
     - Previous ceiling repair
 
-    10. Flooring
+    Flooring
     Secondary Tags:
     - None
     - Floor tile crack
@@ -223,7 +224,7 @@ enum AIInstructions {
     - Floor finish distress
     - Previous flooring repair
 
-    11. Interior Trim / Cabinets / Counters
+    Interior Trim / Cabinets / Counters
     Secondary Tags:
     - None
     - Baseboard separation
@@ -236,7 +237,7 @@ enum AIInstructions {
     - Windowsill separation
     - Previous trim repair
 
-    12. Doors / Windows
+    Doors / Windows
     Secondary Tags:
     - None
     - Door out of plumb
@@ -249,7 +250,7 @@ enum AIInstructions {
     - Window difficult to operate
     - Window / door functional issue
 
-    13. Floor Slope / Levelness
+    Floor Slope / Levelness
     Secondary Tags:
     - None
     - Visible floor slope
@@ -261,7 +262,7 @@ enum AIInstructions {
     - Counter slope
     - Level reading shown
 
-    14. Garage / Porch Slope
+    Garage / Porch Slope
     Secondary Tags:
     - None
     - Garage reverse slope
@@ -272,7 +273,7 @@ enum AIInstructions {
     - Exterior slab drains toward house
     - Potential water accumulation at house
 
-    15. Roof / Roofing
+    Roof / Roofing
     Secondary Tags:
     - None
     - Roof overview
@@ -283,7 +284,7 @@ enum AIInstructions {
     - Roof runoff discharge location
     - Roof covering context
 
-    16. Attic / Framing
+    Attic / Framing
     Secondary Tags:
     - None
     - Rafter twisted / warped
@@ -305,7 +306,7 @@ enum AIInstructions {
     - Spray foam limits visibility
     - Ceiling pulled from framing
 
-    17. Stairs
+    Stairs
     Secondary Tags:
     - None
     - Excessive riser height
@@ -315,7 +316,7 @@ enum AIInstructions {
     - Stair movement / distortion
     - Stair finish distress
 
-    18. Prior Repair / Patch
+    Prior Repair / Patch
     Secondary Tags:
     - None
     - Prior foundation repair
@@ -330,7 +331,7 @@ enum AIInstructions {
     - Texture / paint mismatch
     - Repair excavation not fully backfilled
 
-    19. Soil / Backfill
+    Soil / Backfill
     Secondary Tags:
     - None
     - Soil erosion
@@ -343,7 +344,7 @@ enum AIInstructions {
     - Backfill settlement
     - Soil moisture indicator
 
-    20. Trees / Vegetation
+    Trees / Vegetation
     Secondary Tags:
     - None
     - Mature tree near foundation
@@ -355,7 +356,7 @@ enum AIInstructions {
     - Landscape border near foundation
     - Vegetation / moisture context
 
-    21. General Exterior Context
+    General Exterior Context
     Secondary Tags:
     - None
     - Front exterior overview
@@ -368,7 +369,7 @@ enum AIInstructions {
     - Exterior orientation photo
     - No visible distress
 
-    22. General Interior Context
+    General Interior Context
     Secondary Tags:
     - None
     - Room overview
@@ -377,7 +378,7 @@ enum AIInstructions {
     - General finish context
     - No visible distress
 
-    23. Poor / Unclear Photo
+    Poor / Unclear Photo
     Secondary Tags:
     - None
     - Poor lighting

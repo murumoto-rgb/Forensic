@@ -344,7 +344,9 @@ enum ClaudeTaggingService {
     private static func suggestions(from a: AIPhotoAnalysis) -> [TagSuggestion] {
         var out: [TagSuggestion] = []
         for primary in a.primaryTags {
-            let pTrim = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pTrim = stripLeadingNumber(
+                primary.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             guard !pTrim.isEmpty else { continue }
             out.append(TagSuggestion(
                 label: pTrim,
@@ -352,8 +354,14 @@ enum ClaudeTaggingService {
                 source: .claude,
                 parentTag: nil
             ))
+            // Match the secondary lookup against both the original key Claude
+            // returned and the normalised primary, so a numbered key like
+            // "1. Drainage / Grading" still finds its secondaries even after
+            // the suggestion's parentTag has been cleaned up.
             let key = a.secondaryTagsByPrimary.keys.first {
-                $0.lowercased() == pTrim.lowercased()
+                let normalised = stripLeadingNumber($0).lowercased()
+                return $0.lowercased() == pTrim.lowercased()
+                    || normalised == pTrim.lowercased()
             }
             for sec in a.secondaryTagsByPrimary[key ?? ""] ?? [] {
                 let sTrim = sec.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -367,6 +375,21 @@ enum ClaudeTaggingService {
             }
         }
         return out
+    }
+
+    /// Strip a leading "N. " (one or more digits + period + optional spaces)
+    /// from a primary tag name. The forensic guide used to list primaries
+    /// with numbers, and Claude sometimes echoed those numbers back into
+    /// `primary_tags` — the result was duplicate tags differing only by the
+    /// "N. " prefix. Defensive: even though the prompt no longer numbers
+    /// primaries, this guarantees that a future model variant that slips one
+    /// in won't recreate the bug.
+    private static func stripLeadingNumber(_ s: String) -> String {
+        guard let match = s.range(
+            of: #"^\d+\.\s*"#,
+            options: .regularExpression
+        ) else { return s }
+        return String(s[match.upperBound...])
     }
 
     /// Shape of the JSON object the schema-2 prompt asks Claude to emit.
