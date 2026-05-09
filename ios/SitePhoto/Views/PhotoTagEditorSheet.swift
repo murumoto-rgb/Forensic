@@ -321,7 +321,10 @@ struct PhotoTagEditorSheet: View {
         await store.ensureDownloaded(url)
 
         do {
-            let suggestions = try await ClaudeTaggingService.tag(imageURL: url)
+            let suggestions = try await ClaudeTaggingService.tag(
+                imageURL: url,
+                instructions: project.effectiveAIInstructions
+            )
             // Merge with existing pending suggestions (e.g. Vision tags)
             // rather than overwriting.
             let existing = photo.pendingSuggestions

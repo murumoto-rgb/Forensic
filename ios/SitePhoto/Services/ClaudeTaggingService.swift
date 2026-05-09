@@ -39,7 +39,8 @@ enum ClaudeTaggingService {
     /// $0.005 range while preserving enough detail for damage recognition.
     private static let maxImageDimension: CGFloat = 1024
 
-    static func tag(imageURL: URL) async throws -> [TagSuggestion] {
+    static func tag(imageURL: URL,
+                    instructions: String? = nil) async throws -> [TagSuggestion] {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
         }
@@ -50,10 +51,27 @@ enum ClaudeTaggingService {
         }
         let base64 = jpegData.base64EncodedString()
 
+        // Build the system message as a content-blocks array so we can attach
+        // `cache_control` to the (long, stable) instructions block. With
+        // ephemeral caching enabled, every photo after the first in a 5-min
+        // window pays only ~10% of the prompt-token cost — a big win when
+        // batch-tagging dozens of photos with the long forensic guide.
+        let guide = (instructions?.trimmingCharacters(in: .whitespacesAndNewlines))
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? AIInstructions.defaultText
+
+        let cachedSystemText = systemPreamble + "\n\n" + guide + "\n\n" + outputContract
+
         let body: [String: Any] = [
             "model":      model,
-            "max_tokens": 600,
-            "system":     systemPrompt,
+            "max_tokens": 800,
+            "system": [
+                [
+                    "type": "text",
+                    "text": cachedSystemText,
+                    "cache_control": ["type": "ephemeral"]
+                ]
+            ],
             "messages": [
                 [
                     "role": "user",
@@ -82,7 +100,7 @@ enum ClaudeTaggingService {
         req.setValue(apiVersion,    forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.httpBody = payload
-        req.timeoutInterval = 30
+        req.timeoutInterval = 60
 
         let data: Data
         let response: URLResponse
@@ -105,45 +123,49 @@ enum ClaudeTaggingService {
 
     // MARK: - Prompt
 
-    private static let systemPrompt = """
-    You tag forensic site-documentation photographs. The photographer is an \
-    inspector capturing damage, conditions, building components, or scene \
-    overviews for a report.
+    /// Short framing prepended to the user's tagging guide. Sets the role
+    /// without prescribing vocabulary — the project guide does that.
+    private static let systemPreamble = """
+    You are an AI assistant tagging forensic site-investigation \
+    photographs. The user has supplied a project-specific tagging guide \
+    below. Read it carefully and use its vocabulary, categories, and tone \
+    of voice when describing what you see.
+    """
 
-    Look at the image and identify every relevant forensic tag. Draw from \
-    these categories — but you may also use other concise forensic terms \
-    when none of these fit:
+    /// Strict output contract appended after the user's guide. Emphasises
+    /// the "regardless of what the guide says" override so editing the
+    /// project instructions can't accidentally break tag-array parsing.
+    private static let outputContract = """
+    OUTPUT FORMAT (this overrides any conflicting format instructions in \
+    the tagging guide above):
 
-    Damage type: water damage, mold, fire damage, smoke damage, structural \
-    crack, settlement crack, rot, leak, impact damage, vandalism, missing \
-    component, deterioration
+    Output ONLY a JSON array. No prose, no code fences, no explanation, no \
+    leading or trailing text.
 
-    Material: drywall, concrete, brick, wood, hardwood floor, tile, carpet, \
-    vinyl, metal, glass, asphalt, plaster, stone, shingle, siding, \
-    insulation
-
-    Room or area: kitchen, bathroom, bedroom, living room, dining room, \
-    basement, attic, garage, hallway, stairs, exterior, roof, closet, \
-    laundry room, yard, deck
-
-    Building system or component: HVAC, plumbing, electrical, foundation, \
-    framing, flooring, ceiling, wall, window, door, fireplace, water \
-    heater, appliance, gutter, fence
-
-    Severity (only when damage is clearly visible): minor, moderate, severe
-
-    Output ONLY a JSON array with no surrounding prose, code fences, or \
-    explanation. Each element must be an object with exactly two keys:
+    Each array element must be an object with exactly these two keys:
 
       {"label": "<tag>", "confidence": <0.0–1.0>}
 
-    Use lower-case labels with spaces (not underscores). Limit to the 8 \
-    most relevant tags. Do not invent damage if the photo only shows an \
-    overview.
+    Tag rules:
+      - Draw vocabulary from the families and categories in the guide \
+    above. Use the exact tag identifiers it lists (e.g. \
+    `interior_sheetrock_crack`, `crack_wider_at_bottom`) — these are the \
+    canonical labels for this project.
+      - When the guide doesn't have an exact tag for what you see, you may \
+    introduce a concise compound tag in the same style (lowercase, \
+    underscores between words, e.g. `crack_on_concrete_foundation`, \
+    `water_damage_on_drywall_ceiling`). Always include the substrate or \
+    location when describing damage so a reviewer can tell `crack on \
+    concrete` apart from `crack on sheetrock`.
+      - Limit to roughly 12 of the most relevant tags per photo. Don't \
+    invent damage that isn't clearly visible.
+      - Confidence reflects how clearly the feature is visible in the \
+    photo, not how serious it is.
     """
 
     private static let userPrompt = """
-    Tag this forensic site photo. Return only the JSON array.
+    Tag this site photo using the project's tagging guide. Return only the \
+    JSON array, nothing else.
     """
 
     // MARK: - Response parsing

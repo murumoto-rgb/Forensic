@@ -36,6 +36,7 @@ struct ProjectDetailView: View {
     /// active filter tag to appear.
     @State private var activeTagFilters: Set<String> = []
 
+    @State private var showingAIInstructions = false
     @State private var batchTagConfirm: BatchTagPrompt?
     @State private var batchTagTask: Task<Void, Never>?
     @State private var batchTagProgressCurrent: Int = 0
@@ -122,6 +123,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(item: $taggingPhoto) { target in
                     PhotoTagEditorSheet(projectID: projectID, photoID: target.id)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingAIInstructions) {
+                    AIInstructionsSheet(projectID: projectID)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingAddressEditor) {
@@ -682,6 +687,24 @@ struct ProjectDetailView: View {
 
         Section {
             Button {
+                showingAIInstructions = true
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI Instructions")
+                        Text(project.hasCustomAIInstructions
+                             ? "Customised for this project"
+                             : "Using bundled forensic-engineering default")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: project.hasCustomAIInstructions
+                          ? "doc.text.fill" : "doc.text")
+                }
+            }
+
+            Button {
                 batchTagConfirm = BatchTagPrompt(
                     candidateCount: untaggedCount,
                     skippedCount: taggedCount,
@@ -723,12 +746,16 @@ struct ProjectDetailView: View {
         } header: {
             Text("AI Tagging")
         } footer: {
-            Text("Sends each photo to Claude (~$0.005 each, billed to your Anthropic account) and auto-accepts every returned tag. Cancel any time.")
+            Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time.")
         }
     }
 
+    /// Per-photo cost is ~$0.01 with the long forensic prompt + prompt
+    /// caching enabled. The first photo in a 5-min window pays a write
+    /// premium; subsequent photos in the same batch pay only ~10% of the
+    /// cached portion. Across a full batch the average lands near 1¢.
     private func estimatedCostString(for count: Int) -> String {
-        let cents = Double(count) * 0.5  // ~$0.005/photo, expressed as cents
+        let cents = Double(count) * 1.0
         if cents < 100 {
             return String(format: "%.0f¢", cents)
         }

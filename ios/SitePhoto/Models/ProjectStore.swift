@@ -864,6 +864,21 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - AI instructions
+
+    /// Set or clear the project's custom AI tagging guide. Pass `nil` (or
+    /// the empty string) to revert to `AIInstructions.defaultText`.
+    @discardableResult
+    func setAIInstructions(_ project: Project, _ text: String?) -> Project {
+        var p = project
+        if let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+            p.aiInstructions = t
+        } else {
+            p.aiInstructions = nil
+        }
+        return save(p)
+    }
+
     // MARK: - Tags
 
     /// Add a tag to a photo. Trims whitespace, dedupes case-insensitively
@@ -1085,7 +1100,10 @@ final class ProjectStore {
             await self.ensureDownloaded(url)
 
             do {
-                let suggestions = try await ClaudeTaggingService.tag(imageURL: url)
+                let suggestions = try await ClaudeTaggingService.tag(
+                    imageURL: url,
+                    instructions: proj.effectiveAIInstructions
+                )
                 if !suggestions.isEmpty {
                     let merged = proj.photos.first(where: { $0.id == photo.id })?.tags ?? []
                     let newTags = merged + suggestions.map { $0.label }
