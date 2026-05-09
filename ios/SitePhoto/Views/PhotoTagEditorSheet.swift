@@ -127,7 +127,7 @@ struct PhotoTagEditorSheet: View {
                     }
                 }
                 if let observation {
-                    metadataRow(label: "Observation", value: observation)
+                    metadataRow(label: "Summary Observation", value: observation)
                 }
                 if let followUp {
                     metadataRow(label: "Follow-up", value: followUp)

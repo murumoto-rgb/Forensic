@@ -42,9 +42,16 @@ enum AIInstructions {
 
     Observation Bucket(s):
     Severity:
+    Summary Observation:
 
     Severity must be one of:
     None / Minor / Moderate / Significant / Severe / Cannot Determine
+
+    Summary Observation:
+    Provide one concise sentence describing what the photo shows and why \
+    it may be relevant to a foundation investigation. Use cautious, \
+    observation-based language. Do not state final causation from the \
+    photo alone.
 
     Rules:
     - Do not invent additional categories.
@@ -60,5 +67,9 @@ enum AIInstructions {
     from the photo alone.
     - Use no more than 2 observation buckets per photo unless clearly \
     necessary.
+    - Keep the Summary Observation to one sentence.
+    - In the Summary Observation, use phrases such as "visible," \
+    "appears," "may be relevant to," "may be consistent with," or \
+    "should be correlated with."
     """
 }

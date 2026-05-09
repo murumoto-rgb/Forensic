@@ -211,8 +211,9 @@ enum ClaudeTaggingService {
     The object must have exactly these keys:
 
       {
-        "buckets":  ["<exact bucket name>", ...],   // 1–2 entries
-        "severity": "<None|Minor|Moderate|Significant|Severe|Cannot Determine>"
+        "buckets":             ["<exact bucket name>", ...],   // 1–2 entries
+        "severity":            "<None|Minor|Moderate|Significant|Severe|Cannot Determine>",
+        "summary_observation": "<one cautious sentence>"
       }
 
     Rules:
@@ -222,9 +223,14 @@ enum ClaudeTaggingService {
       - Use no more than 2 buckets per photo unless the photo clearly \
     shows multiple unrelated conditions.
       - `severity` is one of the six allowed values, spelled exactly.
-      - Do not include any other keys. No `confidence`, `observation`, \
-    `recommended_follow_up`, or any other field — those are not part of \
-    this contract.
+      - `summary_observation` is exactly one sentence describing what \
+    the photo shows and why it may be relevant to a foundation \
+    investigation. Use cautious language ("visible", "appears", "may \
+    be consistent with", "should be correlated with"). Do not state \
+    final causation from the photo alone.
+      - Do not include any other keys. No `confidence`, \
+    `recommended_follow_up`, or any other field — those are not part \
+    of this contract.
     """
 
     private static let userPrompt = """
@@ -248,6 +254,7 @@ enum ClaudeTaggingService {
     private struct ClaudePayload: Decodable {
         let buckets: [String]?
         let severity: String?
+        let summary_observation: String?
     }
 
     /// Confidence assigned to every bucket Claude emits. The bucket prompt
@@ -305,7 +312,7 @@ enum ClaudeTaggingService {
         let metadata = Metadata(
             primaryCategory: nil,
             severity:        payload.severity?.trimmingCharacters(in: .whitespacesAndNewlines),
-            observation:     nil,
+            observation:     payload.summary_observation?.trimmingCharacters(in: .whitespacesAndNewlines),
             followUp:        nil,
             confidenceLabel: nil
         )
