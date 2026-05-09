@@ -165,19 +165,13 @@ struct ClearAITagsSheet: View {
     private func tagGroupRow(_ group: TagGroup) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                tagChip(label: group.primary,
-                         selector: .init(label: group.primary),
-                         isPrimary: true,
-                         count: group.primaryCount)
+                primaryChip(for: group)
                 Spacer(minLength: 0)
             }
             if !group.secondaries.isEmpty {
                 FlowLayout(spacing: 6) {
                     ForEach(group.secondaries, id: \.label) { sec in
-                        tagChip(label: sec.label,
-                                 selector: .init(parent: group.primary, label: sec.label),
-                                 isPrimary: false,
-                                 count: sec.count)
+                        secondaryChip(for: group, secondary: sec)
                     }
                 }
                 .padding(.leading, 12)
@@ -185,11 +179,55 @@ struct ClearAITagsSheet: View {
         }
     }
 
+    /// Larger, accent-coloured chip for a primary tag. Tapping it cascades
+    /// to every secondary under the same primary — selecting the primary
+    /// auto-checks all its secondary chips, and deselecting clears them
+    /// — so the visible chip state always reflects "the whole bucket is
+    /// queued for clearing." Tapping a secondary chip independently does
+    /// NOT touch the primary; that one-way cascade matches what the user
+    /// asked for.
     @ViewBuilder
-    private func tagChip(label: String,
-                         selector: ProjectStore.TagSelector,
-                         isPrimary: Bool,
-                         count: Int) -> some View {
+    private func primaryChip(for group: TagGroup) -> some View {
+        let selector = ProjectStore.TagSelector(label: group.primary)
+        let on = tagSelectors.contains(selector)
+        Button {
+            let secondarySelectors = group.secondaries.map {
+                ProjectStore.TagSelector(parent: group.primary, label: $0.label)
+            }
+            if on {
+                tagSelectors.remove(selector)
+                for s in secondarySelectors { tagSelectors.remove(s) }
+            } else {
+                tagSelectors.insert(selector)
+                for s in secondarySelectors { tagSelectors.insert(s) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline)
+                Text(group.primary)
+                    .font(.callout.weight(.semibold))
+                Text("\(group.primaryCount)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(on ? Color.white.opacity(0.85) : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                on ? Color.accentColor : Color.accentColor.opacity(0.15),
+                in: Capsule()
+            )
+            .foregroundStyle(on ? Color.white : Color.accentColor)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Smaller, purple chip for a secondary tag. Tapping toggles only
+    /// this exact (parent, label) selector — never touches the primary.
+    @ViewBuilder
+    private func secondaryChip(for group: TagGroup,
+                                secondary sec: TagGroup.SecondaryEntry) -> some View {
+        let selector = ProjectStore.TagSelector(parent: group.primary, label: sec.label)
         let on = tagSelectors.contains(selector)
         Button {
             if on { tagSelectors.remove(selector) } else { tagSelectors.insert(selector) }
@@ -197,19 +235,19 @@ struct ClearAITagsSheet: View {
             HStack(spacing: 4) {
                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                     .font(.caption2)
-                Text(label)
-                    .font(isPrimary ? .caption.bold() : .caption)
-                Text("\(count)")
+                Text(sec.label)
+                    .font(.caption)
+                Text("\(sec.count)")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(on ? Color.white.opacity(0.85) : .secondary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(
-                (on ? Color.purple.opacity(0.2) : Color.secondary.opacity(0.1)),
+                on ? Color.purple : Color.purple.opacity(0.15),
                 in: Capsule()
             )
-            .foregroundStyle(on ? Color.purple : Color.primary)
+            .foregroundStyle(on ? Color.white : Color.purple)
         }
         .buttonStyle(.plain)
     }
