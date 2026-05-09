@@ -10,8 +10,9 @@ struct SettingsSheet: View {
     @State private var saved: Bool = false
 
     /// Concurrency cap for the AI batch-tagging task group. Tier 1 Anthropic
-    /// accounts comfortably handle 5; higher tiers can go higher.
-    @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 5
+    /// accounts have a 30k input-tokens/min cap, which 3 in flight stays
+    /// under on sustained batches; higher tiers can go higher.
+    @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 3
 
     /// Minimum confidence required for a tag to render on the photo row,
     /// in the filter bar, in the tag-filter screen, and in the PDF. Tags
@@ -68,7 +69,7 @@ struct SettingsSheet: View {
                 } header: {
                     Text("AI Batch Tagging Speed")
                 } footer: {
-                    Text("Number of photos processed in parallel during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts). Bump higher if you have a Tier 2+ account or run into idle CPU; the app retries with backoff on rate-limit responses.")
+                    Text("Number of photos processed in parallel during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 3 (safe for Tier 1 accounts, which cap at 30,000 input tokens / minute). Bump higher if you have a Tier 2+ account; the app retries with backoff on rate-limit responses.")
                 }
 
                 Section {

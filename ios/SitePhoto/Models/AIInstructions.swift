@@ -363,4 +363,49 @@ enum AIInstructions {
     - Distress unclear
     - Cannot determine condition
     """
+
+    /// Canonical primary-tag names in the order they appear in the guide.
+    /// The tag-filter view sorts primaries by this order so the picker
+    /// always reads top-to-bottom the way the inspector wrote the guide
+    /// (drainage first, "poor / unclear photo" last). Tags not in this
+    /// list — manually-typed primaries, or names from a custom guide —
+    /// fall through to alphabetical at the bottom.
+    static let primaryTags: [String] = [
+        "Drainage / Grading",
+        "Regional Ponding / Site Moisture",
+        "Foundation / Slab",
+        "Driveway / Flatwork",
+        "Masonry",
+        "Stucco",
+        "Exterior Trim / Siding",
+        "Walls",
+        "Ceilings",
+        "Flooring",
+        "Interior Trim / Cabinets / Counters",
+        "Doors / Windows",
+        "Floor Slope / Levelness",
+        "Garage / Porch Slope",
+        "Roof / Roofing",
+        "Attic / Framing",
+        "Stairs",
+        "Prior Repair / Patch",
+        "Soil / Backfill",
+        "Trees / Vegetation",
+        "General Exterior Context",
+        "General Interior Context",
+        "Poor / Unclear Photo"
+    ]
+
+    /// Lowercased lookup set used to recognise legacy "Primary / Secondary"
+    /// flat labels during Tag decode and to detect when a user-typed string
+    /// happens to match a canonical primary.
+    static let knownPrimaryTagsLowercased: Set<String> =
+        Set(primaryTags.map { $0.lowercased() })
+
+    /// 0-based rank for sorting primary tags in the filter UI. Names not
+    /// in `primaryTags` get `Int.max` so they fall to the bottom.
+    static func primaryRank(_ name: String) -> Int {
+        let lc = name.lowercased()
+        return primaryTags.firstIndex(where: { $0.lowercased() == lc }) ?? Int.max
+    }
 }

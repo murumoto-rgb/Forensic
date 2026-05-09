@@ -109,13 +109,70 @@ struct Photo: Identifiable, Codable, Hashable {
 /// manually-added tags and the originating AI score (0.0–1.0) for
 /// accepted suggestions. A threshold slider in Settings filters which
 /// tags actually render.
+///
+/// `parentTag` encodes the primary→secondary hierarchy from the AI guide.
+/// `nil` means the tag is a primary tag (e.g. "Masonry"); a non-nil value
+/// means this is a secondary tag whose parent primary is named there
+/// (e.g. label = "Brick crack", parentTag = "Masonry"). Manually-typed
+/// tags default to nil and are treated as primary-level entries by the
+/// filter view.
 struct Tag: Codable, Hashable {
     var label: String
     var confidence: Double
+    var parentTag: String?
 
-    init(label: String, confidence: Double = 1.0) {
+    init(label: String, confidence: Double = 1.0, parentTag: String? = nil) {
         self.label = label
         self.confidence = max(0, min(1, confidence))
+        self.parentTag = parentTag?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+    }
+
+    /// Tolerate manifests written before `parentTag` existed, and migrate
+    /// flattened "Primary / Secondary" labels (the brief format we shipped
+    /// between the bucket rewrite and the hierarchy rewrite) into separate
+    /// label + parentTag values so they participate in the new filter UI.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let rawLabel = try c.decode(String.self, forKey: .label)
+        let conf     = try c.decode(Double.self, forKey: .confidence)
+        let parent   = try c.decodeIfPresent(String.self, forKey: .parentTag)
+        if parent == nil, let split = Tag.splitFlattenedLabel(rawLabel) {
+            self.label = split.secondary
+            self.parentTag = split.primary
+        } else {
+            self.label = rawLabel
+            self.parentTag = parent?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+        }
+        self.confidence = max(0, min(1, conf))
+    }
+
+    /// Split "Primary / Secondary" → ("Primary", "Secondary") if the input
+    /// looks like exactly that shape. Returns nil for plain primary-only
+    /// labels and for labels that contain " / " for unrelated reasons
+    /// (e.g. category names like "Drainage / Grading" that *are* primary
+    /// tags themselves).
+    private static func splitFlattenedLabel(_ raw: String) -> (primary: String, secondary: String)? {
+        let parts = raw.components(separatedBy: " / ")
+        guard parts.count == 2 else { return nil }
+        let primary = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let secondary = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !primary.isEmpty, !secondary.isEmpty else { return nil }
+        // Only split when the left side matches a known primary tag from the
+        // AI guide — otherwise we'd accidentally chop "Drainage / Grading".
+        guard AIInstructions.knownPrimaryTagsLowercased.contains(primary.lowercased()) else {
+            return nil
+        }
+        return (primary, secondary)
+    }
+}
+
+private extension String {
+    /// Returns nil if the trimmed string is empty; otherwise returns the
+    /// trimmed string. Used to coalesce optional/empty-string parentTag
+    /// values into a clean nil.
+    var nonEmpty: String? {
+        let t = trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
     }
 }
 
@@ -136,8 +193,34 @@ struct TagSuggestion: Codable, Hashable, Identifiable {
     var label: String
     var confidence: Double
     var source: TagSource
+    /// Primary tag this suggestion lives under, mirroring `Tag.parentTag`.
+    /// Nil for primary-level suggestions; non-nil means `label` is the
+    /// secondary tag and `parentTag` is its primary category.
+    var parentTag: String?
 
-    var id: String { "\(source.rawValue):\(label.lowercased())" }
+    var id: String {
+        let parentPart = parentTag?.lowercased() ?? ""
+        return "\(source.rawValue):\(parentPart)|\(label.lowercased())"
+    }
+
+    init(label: String,
+         confidence: Double,
+         source: TagSource,
+         parentTag: String? = nil) {
+        self.label = label
+        self.confidence = confidence
+        self.source = source
+        self.parentTag = parentTag?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+    }
+
+    /// Tolerate cached suggestions written before `parentTag` existed.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.label      = try c.decode(String.self, forKey: .label)
+        self.confidence = try c.decode(Double.self, forKey: .confidence)
+        self.source     = try c.decode(TagSource.self, forKey: .source)
+        self.parentTag  = try c.decodeIfPresent(String.self, forKey: .parentTag)
+    }
 }
 
 enum TagSource: String, Codable, Hashable {

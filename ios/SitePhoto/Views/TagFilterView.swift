@@ -1,9 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// Tag-driven photo browser. Pick one or more tags, choose AND or OR
-/// semantics, see every photo in the project that matches. Tap a
-/// thumbnail to open its tag editor (and from there, edit/relocate/etc).
+/// Tag-driven photo browser. Tags live in a primary→secondary hierarchy
+/// (see `AIInstructions`); the filter UI shows one collapsible section per
+/// primary, with the primary chip filtering "anything under this category"
+/// and each secondary chip filtering for that exact tag. Selection works
+/// at either level and across categories — AND requires every selected
+/// criterion to match, OR requires at least one.
 struct TagFilterView: View {
     let projectID: UUID
 
@@ -12,15 +15,27 @@ struct TagFilterView: View {
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
 
-    @State private var selectedTags: Set<String> = []   // lowercase keys
-    @State private var matchMode: MatchMode = .all      // AND default
+    @State private var selected: Set<Criterion> = []
+    @State private var matchMode: MatchMode = .all
     @State private var taggingPhoto: PhotoTarget?
+    /// Primary tag names whose secondary chip strip is collapsed. We store
+    /// the *collapsed* set rather than the expanded set so the default
+    /// (everything expanded) needs no per-primary bookkeeping.
+    @State private var collapsedPrimaries: Set<String> = []
 
     enum MatchMode: String, CaseIterable, Identifiable {
-        case all   // AND — photo must have every selected tag
-        case any   // OR  — photo must have at least one
+        case all   // AND — photo must match every selected criterion
+        case any   // OR  — photo must match at least one
         var id: String { rawValue }
         var label: String { self == .all ? "All (AND)" : "Any (OR)" }
+    }
+
+    /// One tappable filter chip. `.primary` matches photos that carry the
+    /// primary tag itself OR any secondary under that primary. `.secondary`
+    /// matches only photos with that exact (parent, label) coordinate.
+    enum Criterion: Hashable {
+        case primary(String)
+        case secondary(parent: String, label: String)
     }
 
     private struct PhotoTarget: Identifiable {
@@ -29,30 +44,46 @@ struct TagFilterView: View {
 
     private var project: Project? { store.project(withID: projectID) }
 
-    /// Tags surfaced in the chip bar — only those that actually meet the
-    /// confidence threshold on at least one photo, sorted by frequency.
-    private var availableTags: [String] {
+    /// Hierarchical tag groups (primaries with their secondaries) with
+    /// counts, sorted in canonical guide order. Drives the filter chip
+    /// layout and the empty state.
+    private var groups: [ProjectStore.TagGroup] {
         guard let project else { return [] }
-        return store.tagsUsed(in: project, minConfidence: tagConfidenceThreshold)
+        return store.tagsUsedHierarchically(in: project,
+                                             minConfidence: tagConfidenceThreshold)
     }
 
-    /// Set of selected tags lowercased — used to test photo membership.
-    private var selectedLC: Set<String> {
-        Set(selectedTags.map { $0.lowercased() })
-    }
-
-    /// Filtered photo list based on the current tag selection + mode.
+    /// Filtered photo list based on the current criterion selection + mode.
     private var matches: [Photo] {
         guard let project else { return [] }
-        guard !selectedTags.isEmpty else { return [] }
-        let sel = selectedLC
+        guard !selected.isEmpty else { return [] }
+        let crits = Array(selected)
         return project.photos.filter { photo in
-            let photoLC = Set(photo.tags
-                .filter { $0.confidence >= tagConfidenceThreshold }
-                .map { $0.label.lowercased() })
             switch matchMode {
-            case .all: return sel.isSubset(of: photoLC)
-            case .any: return !sel.isDisjoint(with: photoLC)
+            case .all: return crits.allSatisfy { photoMatches(photo, $0) }
+            case .any: return crits.contains { photoMatches(photo, $0) }
+            }
+        }
+    }
+
+    /// True when `photo` satisfies `criterion` at the user's confidence
+    /// threshold. Tags below the threshold are ignored so the results match
+    /// what the user actually sees on the photo rows.
+    private func photoMatches(_ photo: Photo, _ criterion: Criterion) -> Bool {
+        let visible = photo.tags.filter { $0.confidence >= tagConfidenceThreshold }
+        switch criterion {
+        case .primary(let name):
+            let lc = name.lowercased()
+            return visible.contains { tag in
+                (tag.parentTag == nil && tag.label.lowercased() == lc) ||
+                (tag.parentTag?.lowercased() == lc)
+            }
+        case .secondary(let parent, let label):
+            let pLC = parent.lowercased()
+            let lLC = label.lowercased()
+            return visible.contains { tag in
+                tag.parentTag?.lowercased() == pLC &&
+                tag.label.lowercased() == lLC
             }
         }
     }
@@ -62,7 +93,7 @@ struct TagFilterView: View {
             VStack(spacing: 0) {
                 modeHeader
                 Divider()
-                tagChipBar
+                tagPickerArea
                 Divider()
                 resultsArea
             }
@@ -73,8 +104,8 @@ struct TagFilterView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if !selectedTags.isEmpty {
-                        Button("Clear") { selectedTags.removeAll() }
+                    if !selected.isEmpty {
+                        Button("Clear") { selected.removeAll() }
                     }
                 }
             }
@@ -95,8 +126,8 @@ struct TagFilterView: View {
             }
             .pickerStyle(.segmented)
             Text(matchMode == .all
-                 ? "Photos must carry every selected tag."
-                 : "Photos with any of the selected tags.")
+                 ? "Photos must match every selected tag."
+                 : "Photos that match any of the selected tags.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -104,8 +135,8 @@ struct TagFilterView: View {
     }
 
     @ViewBuilder
-    private var tagChipBar: some View {
-        if availableTags.isEmpty {
+    private var tagPickerArea: some View {
+        if groups.isEmpty {
             ContentUnavailableView(
                 "No tags above threshold",
                 systemImage: "tag.slash",
@@ -114,37 +145,103 @@ struct TagFilterView: View {
             .frame(maxHeight: .infinity)
         } else {
             ScrollView {
-                FlowLayout(spacing: 6) {
-                    ForEach(availableTags, id: \.self) { tag in
-                        let on = selectedTags.contains(tag)
-                        Button {
-                            if on { selectedTags.remove(tag) }
-                            else  { selectedTags.insert(tag) }
-                        } label: {
-                            Text(tag)
-                                .font(.callout)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(on ? Color.accentColor : Color.accentColor.opacity(0.15),
-                                            in: Capsule())
-                                .foregroundStyle(on ? .white : Color.accentColor)
-                        }
-                        .buttonStyle(.plain)
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(groups, id: \.primary) { group in
+                        primarySection(group)
                     }
                 }
                 .padding(12)
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: 320)
         }
     }
 
     @ViewBuilder
+    private func primarySection(_ group: ProjectStore.TagGroup) -> some View {
+        let crit = Criterion.primary(group.primary)
+        let isSelected = selected.contains(crit)
+        let isCollapsed = collapsedPrimaries.contains(group.primary.lowercased())
+        let totalCount = group.primaryCount + group.secondaries.reduce(0) { $0 + $1.count }
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    toggle(crit)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(group.primary)
+                            .font(.callout.weight(.semibold))
+                        Text("\(totalCount)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(isSelected ? .white.opacity(0.85) : .secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(isSelected ? Color.accentColor : Color.accentColor.opacity(0.15),
+                                in: Capsule())
+                    .foregroundStyle(isSelected ? .white : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+
+                if !group.secondaries.isEmpty {
+                    Button {
+                        let key = group.primary.lowercased()
+                        if isCollapsed { collapsedPrimaries.remove(key) }
+                        else           { collapsedPrimaries.insert(key) }
+                    } label: {
+                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isCollapsed ? "Expand secondaries" : "Collapse secondaries")
+                }
+                Spacer()
+            }
+
+            if !isCollapsed && !group.secondaries.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(group.secondaries, id: \.label) { sec in
+                        let scrit = Criterion.secondary(parent: group.primary, label: sec.label)
+                        let secSelected = selected.contains(scrit)
+                        Button {
+                            toggle(scrit)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(sec.label)
+                                    .font(.caption)
+                                Text("\(sec.count)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(secSelected ? .white.opacity(0.85) : .secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(secSelected ? Color.accentColor.opacity(0.85)
+                                                    : Color.accentColor.opacity(0.10),
+                                        in: Capsule())
+                            .foregroundStyle(secSelected ? .white : Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+    }
+
+    private func toggle(_ criterion: Criterion) {
+        if selected.contains(criterion) { selected.remove(criterion) }
+        else                            { selected.insert(criterion) }
+    }
+
+    @ViewBuilder
     private var resultsArea: some View {
-        if selectedTags.isEmpty {
+        if selected.isEmpty {
             ContentUnavailableView(
                 "Pick a tag to begin",
                 systemImage: "tag",
-                description: Text("Select one or more tags above to see matching photos.")
+                description: Text("Tap a primary category to filter every photo under it, or pick a specific secondary tag.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if matches.isEmpty {
@@ -203,17 +300,25 @@ private struct PhotoTile: View {
                     .padding(4)
             }
             // Bottom strip: up to two tag labels so you can see *why* the
-            // photo matched without opening it.
+            // photo matched without opening it. Secondaries render with a
+            // tiny "Primary →" prefix so the hierarchy is legible.
             let visibleTags = photo.tags
                 .filter { $0.confidence >= tagConfidenceThreshold }
                 .prefix(2)
             if !visibleTags.isEmpty {
-                Text(visibleTags.map { $0.label }.joined(separator: " · "))
+                Text(visibleTags.map(displayTag).joined(separator: " · "))
                     .font(.caption2)
                     .foregroundStyle(.purple)
                     .lineLimit(1)
             }
         }
+    }
+
+    private func displayTag(_ t: Tag) -> String {
+        if let parent = t.parentTag, !parent.isEmpty {
+            return "\(parent) › \(t.label)"
+        }
+        return t.label
     }
 
     @ViewBuilder

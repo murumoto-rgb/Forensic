@@ -1069,8 +1069,28 @@ private struct PhotoRow: View {
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
 
+    /// Tags above the visibility threshold, sorted to read top-to-bottom
+    /// the same way they appear in the AI guide: primaries in canonical
+    /// order, secondaries grouped under their primary. The chip itself
+    /// only shows the label string — combining "Primary / Secondary" would
+    /// make every chip wide and lose the visual hierarchy.
     private var visibleTags: [Tag] {
-        photo.tags.filter { $0.confidence >= tagConfidenceThreshold }
+        let kept = photo.tags.filter { $0.confidence >= tagConfidenceThreshold }
+        return kept.sorted { lhs, rhs in
+            let lParent = lhs.parentTag ?? lhs.label
+            let rParent = rhs.parentTag ?? rhs.label
+            let lr = AIInstructions.primaryRank(lParent)
+            let rr = AIInstructions.primaryRank(rParent)
+            if lr != rr { return lr < rr }
+            if lParent.lowercased() != rParent.lowercased() {
+                return lParent.lowercased() < rParent.lowercased()
+            }
+            // Same primary bucket — primary itself first, then secondaries.
+            let lIsPrimary = lhs.parentTag == nil
+            let rIsPrimary = rhs.parentTag == nil
+            if lIsPrimary != rIsPrimary { return lIsPrimary }
+            return lhs.label.lowercased() < rhs.label.lowercased()
+        }
     }
 
     var body: some View {

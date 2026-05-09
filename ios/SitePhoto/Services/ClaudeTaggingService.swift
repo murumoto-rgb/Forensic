@@ -319,41 +319,46 @@ enum ClaudeTaggingService {
         var firstPrimary: String? = nil
 
         if let tagEntries = payload.tags, !tagEntries.isEmpty {
-            // New primary/secondary format
+            // New primary/secondary format. Emit one primary-level suggestion
+            // per category and one secondary-level suggestion per non-"None"
+            // secondary, each linked back to its primary via `parentTag` so
+            // the filter UI can group them.
             for entry in tagEntries {
                 let primary = entry.primary.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !primary.isEmpty else { continue }
                 if firstPrimary == nil { firstPrimary = primary }
 
+                suggestions.append(TagSuggestion(
+                    label: primary,
+                    confidence: bucketConfidence,
+                    source: .claude,
+                    parentTag: nil
+                ))
+
                 let nonNoneSecondary = entry.secondary
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty && $0.lowercased() != "none" }
 
-                if nonNoneSecondary.isEmpty {
+                for sec in nonNoneSecondary {
                     suggestions.append(TagSuggestion(
-                        label: primary,
+                        label: sec,
                         confidence: bucketConfidence,
-                        source: .claude
+                        source: .claude,
+                        parentTag: primary
                     ))
-                } else {
-                    for sec in nonNoneSecondary {
-                        suggestions.append(TagSuggestion(
-                            label: "\(primary) / \(sec)",
-                            confidence: bucketConfidence,
-                            source: .claude
-                        ))
-                    }
                 }
             }
         } else {
-            // Legacy fallback: old bucket-array format
+            // Legacy fallback: old bucket-array format. These had no
+            // hierarchy, so they decode as primary-level suggestions.
             for raw in payload.buckets ?? [] {
                 let bucket = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !bucket.isEmpty else { continue }
                 suggestions.append(TagSuggestion(
                     label: bucket,
                     confidence: bucketConfidence,
-                    source: .claude
+                    source: .claude,
+                    parentTag: nil
                 ))
             }
         }
@@ -384,7 +389,10 @@ enum ClaudeTaggingService {
     /// Read the image at `url`, downsample to fit `maxDimension` on its long
     /// side, and re-encode as JPEG. Avoids loading the full-resolution photo
     /// into memory (`CGImageSourceCreateThumbnailAtIndex` does this work
-    /// in C).
+    /// in C). The thumbnail is redrawn into an opaque RGB context before
+    /// encoding so ImageIO doesn't carry a useless alpha channel through the
+    /// JPEG path — JPEG can't store alpha and the premultiplied buffer would
+    /// double the encode-time memory cost.
     private static func downsampleAsJPEG(url: URL,
                                           maxDimension: CGFloat,
                                           quality: CGFloat) -> Data? {
@@ -399,9 +407,11 @@ enum ClaudeTaggingService {
             kCGImageSourceThumbnailMaxPixelSize:          maxDimension,
             kCGImageSourceCreateThumbnailWithTransform:   true
         ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts as CFDictionary) else {
+        guard let thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts as CFDictionary) else {
             return nil
         }
+        guard let opaque = makeOpaqueRGB(from: thumb) else { return nil }
+
         let buf = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(
             buf, UTType.jpeg.identifier as CFString, 1, nil
@@ -409,8 +419,37 @@ enum ClaudeTaggingService {
         let writeOpts: [CFString: Any] = [
             kCGImageDestinationLossyCompressionQuality: quality
         ]
-        CGImageDestinationAddImage(dest, cg, writeOpts as CFDictionary)
+        CGImageDestinationAddImage(dest, opaque, writeOpts as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return buf as Data
+    }
+
+    /// Redraw `image` into an opaque sRGB bitmap context so the resulting
+    /// CGImage has no alpha channel. Lets `CGImageDestinationAddImage`
+    /// encode straight to JPEG without ImageIO logging an `AlphaPremulLast`
+    /// warning and without keeping a 4-byte-per-pixel premultiplied buffer
+    /// alive during encode.
+    private static func makeOpaqueRGB(from image: CGImage) -> CGImage? {
+        let w = image.width
+        let h = image.height
+        guard w > 0, h > 0 else { return nil }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        // 8-bit RGBA with the alpha channel ignored = opaque RGB packed in
+        // 4 bytes/pixel. The "X" alpha tells CG to skip the alpha byte
+        // entirely — JPEG output sees no alpha at all.
+        let info = CGImageAlphaInfo.noneSkipLast.rawValue
+              | CGBitmapInfo.byteOrder32Big.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: cs,
+            bitmapInfo: info
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
     }
 }

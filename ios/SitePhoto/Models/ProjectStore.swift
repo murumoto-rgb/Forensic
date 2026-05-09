@@ -877,70 +877,115 @@ final class ProjectStore {
 
     // MARK: - Tags
 
-    /// Add a tag to a photo. Trims whitespace, dedupes case-insensitively
-    /// against the photo's existing tags. Manually-typed tags get
+    /// Identity key for a Tag in the dedup pipelines: case-insensitive
+    /// label, scoped to its parent. "Brick crack" under "Masonry" and
+    /// "Brick crack" under any other primary count as different tags;
+    /// two "Brick crack" entries under the same parent collapse.
+    private static func tagKey(parent: String?, label: String) -> String {
+        let p = parent?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(p)|\(l)"
+    }
+
+    /// Add a tag to a photo. Trims whitespace, dedupes against the photo's
+    /// existing tags by (parentTag, label) so the same secondary appearing
+    /// under two different primaries stays distinct. Manually-typed tags get
     /// `confidence = 1.0` so they always pass any threshold the user sets.
     /// If the tag already exists, the higher of the two confidences wins.
     @discardableResult
     func addTag(_ project: Project,
                 photoID: UUID,
                 tag rawLabel: String,
-                confidence: Double = 1.0) -> Project {
+                confidence: Double = 1.0,
+                parentTag: String? = nil) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         let trimmed = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return p }
-        let lc = trimmed.lowercased()
-        if let existing = p.photos[idx].tags.firstIndex(where: { $0.label.lowercased() == lc }) {
-            // Promote confidence if the new value is higher; otherwise leave
-            // the existing tag alone.
+        let key = Self.tagKey(parent: parentTag, label: trimmed)
+        if let existing = p.photos[idx].tags.firstIndex(where: {
+            Self.tagKey(parent: $0.parentTag, label: $0.label) == key
+        }) {
             if p.photos[idx].tags[existing].confidence < confidence {
                 p.photos[idx].tags[existing].confidence = confidence
             }
             return save(p)
         }
-        p.photos[idx].tags.append(Tag(label: trimmed, confidence: confidence))
+        p.photos[idx].tags.append(
+            Tag(label: trimmed, confidence: confidence, parentTag: parentTag)
+        )
         return save(p)
     }
 
-    /// Remove a tag from a photo. Case-insensitive match.
+    /// Remove a tag from a photo. Case-insensitive match. When `parentTag`
+    /// is supplied, only the matching (parent, label) pair is removed; when
+    /// nil, every tag with that label across all primaries is removed —
+    /// preserves the historical "remove by name" behaviour for callers
+    /// that don't track hierarchy.
     @discardableResult
-    func removeTag(_ project: Project, photoID: UUID, tag: String) -> Project {
+    func removeTag(_ project: Project,
+                   photoID: UUID,
+                   tag: String,
+                   parentTag: String? = nil) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         let lc = tag.lowercased()
-        p.photos[idx].tags.removeAll { $0.label.lowercased() == lc }
+        if let parent = parentTag {
+            let key = Self.tagKey(parent: parent, label: tag)
+            p.photos[idx].tags.removeAll {
+                Self.tagKey(parent: $0.parentTag, label: $0.label) == key
+            }
+        } else {
+            p.photos[idx].tags.removeAll { $0.label.lowercased() == lc }
+        }
         return save(p)
     }
 
-    /// Replace the full tag list for a photo. Trims + dedupes.
+    /// Remove a primary tag *and every secondary that lives under it* in
+    /// one step. Used by the filter view's "remove all under category"
+    /// affordance and any future bulk editor.
+    @discardableResult
+    func removePrimaryTag(_ project: Project,
+                          photoID: UUID,
+                          primary: String) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let lc = primary.lowercased()
+        p.photos[idx].tags.removeAll { tag in
+            (tag.parentTag == nil && tag.label.lowercased() == lc) ||
+            (tag.parentTag?.lowercased() == lc)
+        }
+        return save(p)
+    }
+
+    /// Replace the full tag list for a photo. Trims + dedupes by
+    /// (parentTag, label).
     @discardableResult
     func setTags(_ project: Project, photoID: UUID, tags: [Tag]) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        var seen: [String: Int] = [:]   // lowercase → out index
+        var seen: [String: Int] = [:]
         var out: [Tag] = []
         for t in tags {
             let trimmed = t.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let lc = trimmed.lowercased()
-            if let i = seen[lc] {
-                // Duplicate within input — keep the higher-confidence copy.
+            let key = Self.tagKey(parent: t.parentTag, label: trimmed)
+            if let i = seen[key] {
                 if out[i].confidence < t.confidence {
                     out[i].confidence = t.confidence
                 }
                 continue
             }
-            seen[lc] = out.count
-            out.append(Tag(label: trimmed, confidence: t.confidence))
+            seen[key] = out.count
+            out.append(Tag(label: trimmed, confidence: t.confidence, parentTag: t.parentTag))
         }
         p.photos[idx].tags = out
         return save(p)
     }
 
-    /// Merge a list of `(label, confidence)` pairs into the photo's existing
-    /// tags. Used by the AI auto-accept paths so confidence is preserved
-    /// instead of being collapsed to 1.0.
+    /// Merge a list of incoming Tags into the photo's existing tags,
+    /// keyed by (parentTag, label). Used by the AI auto-accept paths so
+    /// confidence is preserved instead of being collapsed to 1.0.
     @discardableResult
     func mergeTags(_ project: Project,
                     photoID: UUID,
@@ -949,19 +994,21 @@ final class ProjectStore {
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         var lookup: [String: Int] = [:]
         for (i, t) in p.photos[idx].tags.enumerated() {
-            lookup[t.label.lowercased()] = i
+            lookup[Self.tagKey(parent: t.parentTag, label: t.label)] = i
         }
         for incoming in additions {
             let trimmed = incoming.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let lc = trimmed.lowercased()
-            if let i = lookup[lc] {
+            let key = Self.tagKey(parent: incoming.parentTag, label: trimmed)
+            if let i = lookup[key] {
                 if p.photos[idx].tags[i].confidence < incoming.confidence {
                     p.photos[idx].tags[i].confidence = incoming.confidence
                 }
             } else {
-                let newTag = Tag(label: trimmed, confidence: incoming.confidence)
-                lookup[lc] = p.photos[idx].tags.count
+                let newTag = Tag(label: trimmed,
+                                 confidence: incoming.confidence,
+                                 parentTag: incoming.parentTag)
+                lookup[key] = p.photos[idx].tags.count
                 p.photos[idx].tags.append(newTag)
             }
         }
@@ -969,21 +1016,23 @@ final class ProjectStore {
     }
 
     /// Replace the photo's pending AI suggestions, dropping any candidates
-    /// already present in the confirmed tags.
+    /// already present in the confirmed tags. Dedup key includes parentTag
+    /// so a primary suggestion and a same-named secondary suggestion don't
+    /// collide.
     @discardableResult
     func setPendingSuggestions(_ project: Project,
                                 photoID: UUID,
                                 suggestions: [TagSuggestion]) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        let confirmed = Set(p.photos[idx].tags.map { $0.label.lowercased() })
-        // Keep only one suggestion per (label,source); rank by confidence so the
-        // top-confidence one wins. Different sources can suggest the same label
-        // — that's fine, both are kept (different `id`s).
+        let confirmedKeys = Set(p.photos[idx].tags.map {
+            Self.tagKey(parent: $0.parentTag, label: $0.label)
+        })
         var bySrcLabel: [String: TagSuggestion] = [:]
         for s in suggestions {
-            let key = "\(s.source.rawValue):\(s.label.lowercased())"
-            if confirmed.contains(s.label.lowercased()) { continue }
+            let tkey = Self.tagKey(parent: s.parentTag, label: s.label)
+            if confirmedKeys.contains(tkey) { continue }
+            let key = "\(s.source.rawValue):\(tkey)"
             if let existing = bySrcLabel[key], existing.confidence >= s.confidence { continue }
             bySrcLabel[key] = s
         }
@@ -993,26 +1042,31 @@ final class ProjectStore {
     }
 
     /// Promote a single AI suggestion into a confirmed tag, preserving the
-    /// suggestion's confidence on the resulting Tag.
+    /// suggestion's confidence and parentTag on the resulting Tag.
     @discardableResult
     func confirmSuggestion(_ project: Project,
                             photoID: UUID,
                             suggestion: TagSuggestion) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        let lc = suggestion.label.lowercased()
-        if let existing = p.photos[idx].tags.firstIndex(where: { $0.label.lowercased() == lc }) {
+        let key = Self.tagKey(parent: suggestion.parentTag, label: suggestion.label)
+        if let existing = p.photos[idx].tags.firstIndex(where: {
+            Self.tagKey(parent: $0.parentTag, label: $0.label) == key
+        }) {
             if p.photos[idx].tags[existing].confidence < suggestion.confidence {
                 p.photos[idx].tags[existing].confidence = suggestion.confidence
             }
         } else {
             p.photos[idx].tags.append(Tag(label: suggestion.label,
-                                          confidence: suggestion.confidence))
+                                          confidence: suggestion.confidence,
+                                          parentTag: suggestion.parentTag))
         }
-        // Drop every pending suggestion for the same label, regardless of
-        // source — once confirmed, neither vision nor claude needs to keep
-        // pestering the user.
-        p.photos[idx].pendingSuggestions.removeAll { $0.label.lowercased() == lc }
+        // Drop every pending suggestion at the same (parent,label) coordinate,
+        // regardless of source — once confirmed, no source needs to keep
+        // pestering the user about that exact tag.
+        p.photos[idx].pendingSuggestions.removeAll {
+            Self.tagKey(parent: $0.parentTag, label: $0.label) == key
+        }
         return save(p)
     }
 
@@ -1073,11 +1127,40 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// One primary group surfaced in the hierarchical filter view. The
+    /// `primary` itself may also appear on photos as a tag, so we track
+    /// whether at least one photo carries it standalone (`primaryUsed`) —
+    /// that's what lights up the primary chip in the filter UI. The
+    /// `secondaries` list is every secondary tag observed under that
+    /// primary, with its frequency, sorted most-used first.
+    struct TagGroup: Hashable, Sendable {
+        let primary: String
+        let primaryUsed: Bool
+        let primaryCount: Int
+        let secondaries: [SecondaryEntry]
+
+        struct SecondaryEntry: Hashable, Sendable {
+            let label: String
+            let count: Int
+        }
+    }
+
     /// Tags currently in use across the given project. Sorted by frequency
     /// (most-used first). Tags below `minConfidence` (per-photo) are not
     /// counted, so the typeahead/filter list reflects the user's threshold.
     func tagsUsed(in project: Project, minConfidence: Double = 0) -> [String] {
         rankTags(in: project.photos, minConfidence: minConfidence)
+    }
+
+    /// Hierarchical view of tags used in `project`: one `TagGroup` per
+    /// distinct primary (canonical primary tags from `AIInstructions` come
+    /// first in guide order, then any unknown primaries appear alphabetically
+    /// at the end). Used by the tag-filter view to render primary headers
+    /// with secondary chips beneath them. Tags below `minConfidence` are
+    /// excluded.
+    func tagsUsedHierarchically(in project: Project,
+                                minConfidence: Double = 0) -> [TagGroup] {
+        rankTagsHierarchically(in: project.photos, minConfidence: minConfidence)
     }
 
     /// Tags currently in use across every project the user has — used to
@@ -1108,6 +1191,94 @@ final class ProjectStore {
                 let perCasing = displays[key] ?? [:]
                 return perCasing.max { $0.value < $1.value }?.key ?? key
             }
+    }
+
+    /// Group photo tags into primary→secondary rows. A primary "bucket" is
+    /// created for any primary that's directly tagged on a photo (parentTag
+    /// == nil) AND for any primary that's referenced as the parent of a
+    /// secondary tag (parentTag == "Masonry"). Secondaries are listed under
+    /// their parent. Primary-tag display casing follows the canonical
+    /// `AIInstructions.primaryTags` capitalisation when the case-insensitive
+    /// match wins; otherwise it follows whatever casing photos used.
+    private func rankTagsHierarchically(in photos: [Photo],
+                                         minConfidence: Double) -> [TagGroup] {
+        // Aggregator keyed on lowercased primary name.
+        struct Bucket {
+            var displayCounts: [String: Int] = [:]      // casing → count
+            var primaryUsed: Bool = false               // photo had primary tag itself
+            var primaryCount: Int = 0
+            var secondaryCounts: [String: Int] = [:]    // lowercased label → count
+            var secondaryDisplays: [String: [String: Int]] = [:] // lc → casing → count
+        }
+        var buckets: [String: Bucket] = [:]
+
+        @inline(__always)
+        func bucket(for primary: String) -> String {
+            let lc = primary.lowercased()
+            if buckets[lc] == nil {
+                buckets[lc] = Bucket()
+            }
+            // Track all the casings we've seen for this primary so the
+            // canonical one can win when we render. AIInstructions casing
+            // gets a leg up so guide-style names beat photo-typed variants.
+            buckets[lc]!.displayCounts[primary, default: 0] += 1
+            return lc
+        }
+
+        for photo in photos {
+            for t in photo.tags where t.confidence >= minConfidence {
+                if let parent = t.parentTag, !parent.isEmpty {
+                    let lc = bucket(for: parent)
+                    let labelLC = t.label.lowercased()
+                    buckets[lc]!.secondaryCounts[labelLC, default: 0] += 1
+                    buckets[lc]!.secondaryDisplays[labelLC, default: [:]][t.label, default: 0] += 1
+                } else {
+                    let lc = bucket(for: t.label)
+                    buckets[lc]!.primaryUsed = true
+                    buckets[lc]!.primaryCount += 1
+                }
+            }
+        }
+
+        // Pick canonical display casing for each primary. If the lowercased
+        // name matches a known primary from the guide, use the guide's
+        // capitalisation; otherwise pick the most-frequent observed casing.
+        let canonicalByLC: [String: String] = Dictionary(
+            uniqueKeysWithValues: AIInstructions.primaryTags.map { ($0.lowercased(), $0) }
+        )
+
+        let groups: [TagGroup] = buckets.map { (lc, b) in
+            let display: String
+            if let canon = canonicalByLC[lc] {
+                display = canon
+            } else {
+                display = b.displayCounts.max { $0.value < $1.value }?.key ?? lc
+            }
+            let secondaries = b.secondaryCounts
+                .sorted { lhs, rhs in
+                    if lhs.value != rhs.value { return lhs.value > rhs.value }
+                    return lhs.key < rhs.key
+                }
+                .map { (key, count) -> TagGroup.SecondaryEntry in
+                    let casings = b.secondaryDisplays[key] ?? [:]
+                    let labelDisplay = casings.max { $0.value < $1.value }?.key ?? key
+                    return TagGroup.SecondaryEntry(label: labelDisplay, count: count)
+                }
+            return TagGroup(primary: display,
+                            primaryUsed: b.primaryUsed,
+                            primaryCount: b.primaryCount,
+                            secondaries: secondaries)
+        }
+
+        // Sort: known primaries by guide order, unknown primaries alphabetical
+        // at the end. Within a tied rank (Int.max for unknowns), tiebreak by
+        // primary name so the order is stable.
+        return groups.sorted { lhs, rhs in
+            let lr = AIInstructions.primaryRank(lhs.primary)
+            let rr = AIInstructions.primaryRank(rhs.primary)
+            if lr != rr { return lr < rr }
+            return lhs.primary.lowercased() < rhs.primary.lowercased()
+        }
     }
 
     // MARK: - Batch Claude tagging
@@ -1222,11 +1393,14 @@ final class ProjectStore {
         let total = candidates.count
         let instructions = project.effectiveAIInstructions
 
-        // Read concurrency from the user's setting (default 5). Tier-1
-        // Anthropic accounts handle ~5 concurrent comfortably; users on
-        // higher tiers can dial it up in Settings.
+        // Read concurrency from the user's setting (default 3). Tier-1
+        // Anthropic accounts have a 30k input-tokens/min cap; with a long
+        // forensic guide + 1024 px image (~5–6k input tokens uncached, ~1.5k
+        // once the system message is cached), 3 in flight stays under the
+        // limit on sustained batches. Users on higher tiers can dial it up
+        // in Settings.
         let raw = UserDefaults.standard.integer(forKey: "sitephoto.aiConcurrency")
-        let maxConcurrent = max(1, min(20, raw == 0 ? 5 : raw))
+        let maxConcurrent = max(1, min(20, raw == 0 ? 3 : raw))
 
         // Pre-compute the per-photo work list on the main actor so the
         // task closures don't have to call back into `self` for URLs —
@@ -1300,7 +1474,9 @@ final class ProjectStore {
                         var p = proj
                         if !r.suggestions.isEmpty {
                             let additions = r.suggestions.map {
-                                Tag(label: $0.label, confidence: $0.confidence)
+                                Tag(label: $0.label,
+                                    confidence: $0.confidence,
+                                    parentTag: $0.parentTag)
                             }
                             switch mode {
                             case .add:

@@ -168,9 +168,57 @@ struct PhotoTagEditorSheet: View {
 
     // MARK: - Confirmed tags
 
+    /// One primary→secondary group in the confirmed-tags display. Built per
+    /// render from the photo's flat tag list. The `primaryTag` is non-nil
+    /// when the photo actually carries the primary tag itself; if a photo
+    /// has only secondaries under a primary, `primaryTag` is nil and the
+    /// header chip is drawn in a "category-only" style.
+    private struct ConfirmedGroup {
+        let primary: String
+        var primaryTag: Tag?
+        var secondaries: [Tag]
+    }
+
+    private var confirmedGroups: [ConfirmedGroup] {
+        guard let tags = photo?.tags, !tags.isEmpty else { return [] }
+        var byLC: [String: ConfirmedGroup] = [:]
+        var orderLC: [String] = []
+        for tag in tags {
+            let parentName: String
+            let isPrimaryEntry: Bool
+            if let p = tag.parentTag?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !p.isEmpty {
+                parentName = p
+                isPrimaryEntry = false
+            } else {
+                parentName = tag.label
+                isPrimaryEntry = true
+            }
+            let lc = parentName.lowercased()
+            if byLC[lc] == nil {
+                byLC[lc] = ConfirmedGroup(primary: parentName, primaryTag: nil, secondaries: [])
+                orderLC.append(lc)
+            }
+            if isPrimaryEntry {
+                byLC[lc]?.primaryTag = tag
+            } else {
+                byLC[lc]?.secondaries.append(tag)
+            }
+        }
+        return orderLC
+            .compactMap { byLC[$0] }
+            .sorted { lhs, rhs in
+                let lr = AIInstructions.primaryRank(lhs.primary)
+                let rr = AIInstructions.primaryRank(rhs.primary)
+                if lr != rr { return lr < rr }
+                return lhs.primary.lowercased() < rhs.primary.lowercased()
+            }
+    }
+
     @ViewBuilder
     private var confirmedTagsSection: some View {
         let tags = photo?.tags ?? []
+        let groups = confirmedGroups
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Tags").font(.headline)
@@ -181,15 +229,47 @@ struct PhotoTagEditorSheet: View {
                 Text("No tags yet. Type below to add one, or tap \"Suggest with AI\" to let Claude propose some.")
                     .font(.callout).foregroundStyle(.secondary)
             } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(groups, id: \.primary) { group in
+                        confirmedGroupView(group)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func confirmedGroupView(_ group: ConfirmedGroup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Primary header chip. If the photo actually carries the
+            // primary tag itself, the chip is removable (and removing it
+            // cascade-clears the secondaries underneath — they'd be
+            // orphaned otherwise). If only secondaries are present, the
+            // header chip is purely a category label.
+            if let primary = group.primaryTag {
+                TagChip(text: group.primary,
+                        confidence: primary.confidence,
+                        removable: true) {
+                    removePrimary(group.primary)
+                }
+            } else {
+                Text(group.primary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
+
+            if !group.secondaries.isEmpty {
                 FlowLayout(spacing: 6) {
-                    ForEach(tags, id: \.label) { tag in
+                    ForEach(group.secondaries, id: \.label) { tag in
                         TagChip(text: tag.label,
                                 confidence: tag.confidence,
                                 removable: true) {
-                            removeTag(tag.label)
+                            removeSecondary(label: tag.label, parent: group.primary)
                         }
                     }
                 }
+                .padding(.leading, 12)
             }
         }
     }
@@ -301,19 +381,83 @@ struct PhotoTagEditorSheet: View {
         }
     }
 
+    /// Build the same primary→secondaries grouping the confirmed-tags
+    /// section uses, but for `[TagSuggestion]`. Drives the hierarchical
+    /// suggestion chip layout.
+    private struct SuggestionGroup {
+        let primary: String
+        var primaryItem: TagSuggestion?
+        var secondaries: [TagSuggestion]
+    }
+
+    private func suggestionGroups(from items: [TagSuggestion]) -> [SuggestionGroup] {
+        var byLC: [String: SuggestionGroup] = [:]
+        var orderLC: [String] = []
+        for s in items {
+            let parentName: String
+            let isPrimaryEntry: Bool
+            if let p = s.parentTag?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !p.isEmpty {
+                parentName = p
+                isPrimaryEntry = false
+            } else {
+                parentName = s.label
+                isPrimaryEntry = true
+            }
+            let lc = parentName.lowercased()
+            if byLC[lc] == nil {
+                byLC[lc] = SuggestionGroup(primary: parentName, primaryItem: nil, secondaries: [])
+                orderLC.append(lc)
+            }
+            if isPrimaryEntry {
+                byLC[lc]?.primaryItem = s
+            } else {
+                byLC[lc]?.secondaries.append(s)
+            }
+        }
+        return orderLC
+            .compactMap { byLC[$0] }
+            .sorted { lhs, rhs in
+                let lr = AIInstructions.primaryRank(lhs.primary)
+                let rr = AIInstructions.primaryRank(rhs.primary)
+                if lr != rr { return lr < rr }
+                return lhs.primary.lowercased() < rhs.primary.lowercased()
+            }
+    }
+
     @ViewBuilder
     private func suggestionGroup(_ title: String,
                                   items: [TagSuggestion],
                                   accent: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let grouped = suggestionGroups(from: items)
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            FlowLayout(spacing: 6) {
-                ForEach(items) { sug in
-                    SuggestionChip(suggestion: sug, accent: accent,
-                                    onAccept: { confirm(sug) },
-                                    onDismiss: { reject(sug) })
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(grouped, id: \.primary) { g in
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let primaryItem = g.primaryItem {
+                            SuggestionChip(suggestion: primaryItem, accent: accent,
+                                           onAccept: { confirm(primaryItem) },
+                                           onDismiss: { reject(primaryItem) })
+                        } else {
+                            Text(g.primary)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+                        }
+                        if !g.secondaries.isEmpty {
+                            FlowLayout(spacing: 6) {
+                                ForEach(g.secondaries) { sug in
+                                    SuggestionChip(suggestion: sug, accent: accent,
+                                                   onAccept: { confirm(sug) },
+                                                   onDismiss: { reject(sug) })
+                                }
+                            }
+                            .padding(.leading, 12)
+                        }
+                    }
                 }
             }
         }
@@ -336,6 +480,24 @@ struct PhotoTagEditorSheet: View {
     private func removeTag(_ tag: String) {
         guard let project else { return }
         _ = store.removeTag(project, photoID: photoID, tag: tag)
+    }
+
+    /// Remove a primary tag and every secondary that lives under it. The
+    /// editor uses this on the primary chip's "x" so the user can clear a
+    /// whole category in one tap; otherwise removing only the primary
+    /// would leave dangling secondaries with a parent name that's no
+    /// longer represented.
+    private func removePrimary(_ name: String) {
+        guard let project else { return }
+        _ = store.removePrimaryTag(project, photoID: photoID, primary: name)
+    }
+
+    /// Remove a single secondary tag under a specific primary. Scoped so we
+    /// don't accidentally drop a same-named secondary that belongs to a
+    /// different category.
+    private func removeSecondary(label: String, parent: String) {
+        guard let project else { return }
+        _ = store.removeTag(project, photoID: photoID, tag: label, parentTag: parent)
     }
 
     private func confirm(_ suggestion: TagSuggestion) {
