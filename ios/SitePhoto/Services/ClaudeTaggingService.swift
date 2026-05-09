@@ -53,21 +53,10 @@ enum ClaudeTaggingService {
         let severity: String?
         let observation: String?
         let followUp: String?
-        /// "High" / "Medium" / "Low" — the per-photo confidence Claude
-        /// reported. Maps to a per-tag numeric score via `Self.score(for:)`.
+        /// Free-form per-photo confidence label ("High" / "Medium" / "Low")
+        /// — kept for backward compatibility with prompts that ask for it.
+        /// The bucket prompt doesn't populate this.
         let confidenceLabel: String?
-    }
-
-    /// Map Claude's High/Medium/Low to the numeric per-tag score we store
-    /// on each Tag. The default threshold is 0.50 so Low gets filtered;
-    /// Medium and High pass.
-    static func score(for label: String?) -> Double {
-        switch label?.lowercased() {
-        case "high":   return 0.92
-        case "medium": return 0.68
-        case "low":    return 0.40
-        default:       return 0.70
-        }
     }
 
     static func tag(imageURL: URL,
@@ -222,33 +211,25 @@ enum ClaudeTaggingService {
     The object must have exactly these keys:
 
       {
-        "primary_category":     "<one Primary Category from the guide>",
-        "condition_tags":       ["<tag>", ...],   // 0–3 entries from Condition Tags
-        "relevance_tags":       ["<tag>", ...],   // 0–2 entries from Relevance Tags
-        "severity":             "<None|Minor|Moderate|Significant|Severe|Cannot Determine>",
-        "confidence":           "<High|Medium|Low>",
-        "observation":          "<one cautious report-style sentence>",
-        "recommended_follow_up": "<one concise recommendation>"
+        "buckets":  ["<exact bucket name>", ...],   // 1–2 entries
+        "severity": "<None|Minor|Moderate|Significant|Severe|Cannot Determine>"
       }
 
     Rules:
-      - Use ONLY tags from the controlled lists in the guide above. Do not \
-    invent new tags. Match casing exactly (lowercase with underscores for \
-    condition / relevance tags; the natural casing shown for primary \
-    categories, e.g. "Foundation / Slab").
-      - Limit `condition_tags` to the 3 most relevant. Limit \
-    `relevance_tags` to 2.
-      - Per-photo `confidence` reflects how clearly the most-relevant \
-    distress is visible: High = unambiguous, Medium = probable, Low = \
-    tentative or photo-quality limited.
-      - Use cautious language in `observation` and `recommended_follow_up` \
-    — phrases like "visible", "appears", "may be consistent with", \
-    "should be correlated with".
+      - Use ONLY bucket names exactly as listed in the guide above. Do \
+    not paraphrase, abbreviate, or invent new buckets. Match casing and \
+    punctuation (e.g. "Foundation or slab crack", not "foundation crack").
+      - Use no more than 2 buckets per photo unless the photo clearly \
+    shows multiple unrelated conditions.
+      - `severity` is one of the six allowed values, spelled exactly.
+      - Do not include any other keys. No `confidence`, `observation`, \
+    `recommended_follow_up`, or any other field — those are not part of \
+    this contract.
     """
 
     private static let userPrompt = """
-    Tag this site photo using the project's tagging guide. Return only the \
-    JSON object, nothing else.
+    Categorize this site photo using the project's tagging guide. Return \
+    only the JSON object, nothing else.
     """
 
     // MARK: - Response parsing
@@ -265,14 +246,15 @@ enum ClaudeTaggingService {
     /// optional in the decoder so a missing/extra key in Claude's output
     /// doesn't blow up the whole response.
     private struct ClaudePayload: Decodable {
-        let primary_category: String?
-        let condition_tags: [String]?
-        let relevance_tags: [String]?
+        let buckets: [String]?
         let severity: String?
-        let confidence: String?
-        let observation: String?
-        let recommended_follow_up: String?
     }
+
+    /// Confidence assigned to every bucket Claude emits. The bucket prompt
+    /// doesn't ask Claude to qualify its picks — it's a controlled
+    /// categorisation rather than a probabilistic finding — so we use a
+    /// single high score that comfortably clears the default 50% threshold.
+    private static let bucketConfidence: Double = 0.9
 
     private static func parseResult(from data: Data) throws -> Result {
         let envelope: AnthropicResponse
@@ -309,40 +291,23 @@ enum ClaudeTaggingService {
             throw Error.malformedResponse("object decode: \(error)")
         }
 
-        // Per-tag confidence comes from the per-photo confidence label.
-        // The primary category tag gets a fixed-high score so it always
-        // passes any reasonable threshold — it's the bucket the photo
-        // belongs to, not a probabilistic finding.
-        let perTag = score(for: payload.confidence)
-
         var suggestions: [TagSuggestion] = []
-        if let primary = payload.primary_category?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !primary.isEmpty {
-            suggestions.append(TagSuggestion(label: primary,
-                                             confidence: 0.95,
-                                             source: .claude))
-        }
-        for raw in payload.condition_tags ?? [] {
-            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else { continue }
-            suggestions.append(TagSuggestion(label: t,
-                                             confidence: perTag,
-                                             source: .claude))
-        }
-        for raw in payload.relevance_tags ?? [] {
-            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else { continue }
-            suggestions.append(TagSuggestion(label: t,
-                                             confidence: perTag,
-                                             source: .claude))
+        for raw in payload.buckets ?? [] {
+            let bucket = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !bucket.isEmpty else { continue }
+            suggestions.append(TagSuggestion(
+                label: bucket,
+                confidence: bucketConfidence,
+                source: .claude
+            ))
         }
 
         let metadata = Metadata(
-            primaryCategory: payload.primary_category?.trimmingCharacters(in: .whitespacesAndNewlines),
+            primaryCategory: nil,
             severity:        payload.severity?.trimmingCharacters(in: .whitespacesAndNewlines),
-            observation:     payload.observation?.trimmingCharacters(in: .whitespacesAndNewlines),
-            followUp:        payload.recommended_follow_up?.trimmingCharacters(in: .whitespacesAndNewlines),
-            confidenceLabel: payload.confidence?.trimmingCharacters(in: .whitespacesAndNewlines)
+            observation:     nil,
+            followUp:        nil,
+            confidenceLabel: nil
         )
 
         return Result(suggestions: suggestions, metadata: metadata)

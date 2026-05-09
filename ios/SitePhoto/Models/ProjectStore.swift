@@ -1144,11 +1144,26 @@ final class ProjectStore {
     /// swallowed so a single bad photo doesn't kill the rest of the batch —
     /// the result tuple reports how many photos got at least one tag and
     /// how many failed.
+    /// How a batch reconciles its newly-returned tags with what each photo
+    /// already has on record. Selected once at the start of a batch and
+    /// applied to every photo in that run.
+    enum BatchTagMode: Sendable {
+        /// Merge new tags with existing ones (case-insensitive dedup; the
+        /// higher of two confidences wins for duplicates). Existing tags
+        /// stay put.
+        case add
+        /// Discard the photo's existing tags before applying the new ones.
+        /// Manually-typed tags get wiped — only use this when retagging
+        /// from scratch.
+        case overwrite
+    }
+
     @MainActor
     @discardableResult
     func batchClaudeTagging(
         projectID: UUID,
         skipAlreadyTagged: Bool = true,
+        mode: BatchTagMode = .add,
         onProgress: @escaping @MainActor (_ current: Int, _ total: Int, _ photoSeq: Int?) -> Void
     ) async throws -> (tagged: Int, failed: Int, skipped: Int) {
         guard KeychainStore.loadAnthropicKey()?.isEmpty == false else {
@@ -1245,8 +1260,24 @@ final class ProjectStore {
                             let additions = r.suggestions.map {
                                 Tag(label: $0.label, confidence: $0.confidence)
                             }
-                            p = self.mergeTags(p, photoID: result.photoID, additions: additions)
+                            switch mode {
+                            case .add:
+                                p = self.mergeTags(p, photoID: result.photoID,
+                                                   additions: additions)
+                            case .overwrite:
+                                // Replace the photo's existing tag list
+                                // entirely with what Claude returned.
+                                p = self.setTags(p, photoID: result.photoID,
+                                                 tags: additions)
+                            }
                             tagged += 1
+                        } else if mode == .overwrite {
+                            // Overwrite mode + no new tags = wipe to empty
+                            // tag list. Without this, an empty Claude
+                            // response would silently leave old tags in
+                            // place — the opposite of what overwrite
+                            // promises.
+                            p = self.setTags(p, photoID: result.photoID, tags: [])
                         }
                         // Always persist metadata, even on photos with no
                         // tags returned — the observation/follow-up may be

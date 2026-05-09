@@ -189,8 +189,8 @@ struct ProjectDetailView: View {
                     progressTotal: batchTagProgressTotal,
                     progressSeq: batchTagProgressSeq,
                     costFor: estimatedCostString,
-                    onConfirm: { prompt in
-                        startBatchTagging(prompt)
+                    onConfirm: { prompt, mode in
+                        startBatchTagging(prompt, mode: mode)
                         batchTagConfirm = nil
                     },
                     onCancel: cancelBatchTagging
@@ -677,7 +677,8 @@ struct ProjectDetailView: View {
                 batchTagConfirm = BatchTagPrompt(
                     candidateCount: untaggedCount,
                     skippedCount: taggedCount,
-                    skipAlreadyTagged: true
+                    skipAlreadyTagged: true,
+                    candidatesWithExistingTags: 0
                 )
             } label: {
                 Label {
@@ -704,10 +705,11 @@ struct ProjectDetailView: View {
                     batchTagConfirm = BatchTagPrompt(
                         candidateCount: project.photos.count,
                         skippedCount: 0,
-                        skipAlreadyTagged: false
+                        skipAlreadyTagged: false,
+                        candidatesWithExistingTags: taggedCount
                     )
                 } label: {
-                    Label("Auto-tag every photo (overwrite skip)",
+                    Label("Auto-tag every photo",
                           systemImage: "wand.and.sparkles.inverse")
                 }
                 .disabled(batchTagTask != nil)
@@ -731,7 +733,8 @@ struct ProjectDetailView: View {
         return String(format: "$%.2f", cents / 100)
     }
 
-    private func startBatchTagging(_ prompt: BatchTagPrompt) {
+    private func startBatchTagging(_ prompt: BatchTagPrompt,
+                                    mode: ProjectStore.BatchTagMode) {
         batchTagError = nil
         batchTagSummary = nil
         batchTagProgressCurrent = 0
@@ -767,6 +770,7 @@ struct ProjectDetailView: View {
                 let result = try await store.batchClaudeTagging(
                     projectID: pid,
                     skipAlreadyTagged: skip,
+                    mode: mode,
                     onProgress: { current, total, seq in
                         self.batchTagProgressCurrent = current
                         self.batchTagProgressTotal = total
@@ -805,6 +809,11 @@ fileprivate struct BatchTagPrompt: Identifiable {
     let candidateCount: Int
     let skippedCount: Int
     let skipAlreadyTagged: Bool
+    /// Number of candidate photos that already carry at least one tag —
+    /// the population that "Overwrite" will actually clobber. Equal to 0
+    /// when `skipAlreadyTagged` is true (those photos are filtered out
+    /// before the prompt shows).
+    let candidatesWithExistingTags: Int
 }
 
 /// Bundles the four batch-tagging-related view modifiers (3 alerts + 1
@@ -819,14 +828,20 @@ fileprivate struct BatchTagModifiers: ViewModifier {
     let progressTotal: Int
     let progressSeq: Int?
     let costFor: (Int) -> String
-    let onConfirm: (BatchTagPrompt) -> Void
+    let onConfirm: (BatchTagPrompt, ProjectStore.BatchTagMode) -> Void
     let onCancel: () -> Void
 
     func body(content: Content) -> some View {
         content
             .alert(confirmTitle, isPresented: confirmIsPresented, presenting: confirm) { prompt in
-                Button("Run · ~\(costFor(prompt.candidateCount))") {
-                    onConfirm(prompt)
+                Button("Add to existing · ~\(costFor(prompt.candidateCount))") {
+                    onConfirm(prompt, .add)
+                }
+                if prompt.candidatesWithExistingTags > 0 {
+                    Button("Overwrite existing · ~\(costFor(prompt.candidateCount))",
+                           role: .destructive) {
+                        onConfirm(prompt, .overwrite)
+                    }
                 }
                 Button("Cancel", role: .cancel) { confirm = nil }
             } message: { prompt in
@@ -878,10 +893,16 @@ fileprivate struct BatchTagModifiers: ViewModifier {
 
     private func confirmMessage(for prompt: BatchTagPrompt) -> String {
         let cost = costFor(prompt.candidateCount)
+        var lines: [String] = []
+        lines.append("Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost).")
+
         if prompt.skipAlreadyTagged && prompt.skippedCount > 0 {
-            return "Each photo is sent to Claude vision and every returned tag is auto-accepted. \(prompt.skippedCount) photo\(prompt.skippedCount == 1 ? "" : "s") with existing tags will be skipped. Estimated cost: ~\(cost)."
+            lines.append("\(prompt.skippedCount) photo\(prompt.skippedCount == 1 ? "" : "s") with existing tags will be skipped.")
         }
-        return "Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost)."
+        if prompt.candidatesWithExistingTags > 0 {
+            lines.append("\(prompt.candidatesWithExistingTags) of these photo\(prompt.candidatesWithExistingTags == 1 ? "" : "s") already have tags. \"Add\" preserves them; \"Overwrite\" replaces them with what Claude returns.")
+        }
+        return lines.joined(separator: "\n\n")
     }
 }
 
