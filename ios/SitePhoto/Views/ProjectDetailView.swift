@@ -40,6 +40,7 @@ struct ProjectDetailView: View {
     @State private var confirmingBatchDelete: Bool = false
     @State private var showingBucketManager: Bool = false
     @State private var showingBucketPicker: Bool = false
+    @State private var showingBulkTagPicker: Bool = false
     /// Bucket IDs currently active as filters on the photo list. Empty =
     /// no bucket filter. OR semantics across selected buckets, ANDed with
     /// the existing tag and recommended-use filters.
@@ -168,6 +169,16 @@ struct ProjectDetailView: View {
                         projectID: projectID,
                         photoIDs: selectedPhotoIDs,
                         onAssigned: {
+                            exitSelectionMode()
+                        }
+                    )
+                    .environment(store)
+                }
+                .sheet(isPresented: $showingBulkTagPicker) {
+                    BulkTagPickerSheet(
+                        projectID: projectID,
+                        photoIDs: selectedPhotoIDs,
+                        onApplied: {
                             exitSelectionMode()
                         }
                     )
@@ -702,7 +713,7 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 8) {
                 Button {
                     showingBucketPicker = true
                 } label: {
@@ -713,6 +724,17 @@ struct ProjectDetailView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.accentColor)
+                .disabled(selectedPhotoIDs.isEmpty)
+                Button {
+                    showingBulkTagPicker = true
+                } label: {
+                    Label(
+                        "Apply Tag…",
+                        systemImage: "tag"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(.purple)
                 .disabled(selectedPhotoIDs.isEmpty)
                 Spacer()
             }
