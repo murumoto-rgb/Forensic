@@ -4,8 +4,9 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Calls the Anthropic Messages API with a downsampled photo and asks
-/// Claude to emit forensic-vocabulary tags. Used as the on-demand AI
-/// backend; for free, on-device classification we use `VisionTaggingService`.
+/// Claude to emit forensic-vocabulary tags. The single AI tagging path
+/// in the app — on-device classification was tried and dropped because
+/// the generic ImageNet-style labels couldn't carry forensic vocabulary.
 enum ClaudeTaggingService {
 
     /// Errors surfaced to the UI. The user sees the rawValue.

@@ -998,8 +998,9 @@ private struct PhotoRow: View {
                     } else {
                         badge(text: "LOCATED", color: .green)
                     }
-                    if !photo.pendingSuggestions.isEmpty {
-                        badge(text: "AI \(photo.pendingSuggestions.count)", color: .purple)
+                    let livePending = photo.pendingSuggestions.filter { $0.source == .claude }
+                    if !livePending.isEmpty {
+                        badge(text: "AI \(livePending.count)", color: .purple)
                     }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))

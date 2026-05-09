@@ -667,9 +667,7 @@ final class ProjectStore {
         }
 
         p.photos.append(photo)
-        let saved = save(p)
-        scheduleVisionAutoTagging(projectID: saved.id, photoID: photoID)
-        return saved
+        return save(p)
     }
 
     func imageURL(for photo: Photo, in project: Project) -> URL {
@@ -717,9 +715,7 @@ final class ProjectStore {
         photo.flashMode = .off
 
         p.photos.append(photo)
-        let saved = save(p)
-        scheduleVisionAutoTagging(projectID: saved.id, photoID: photoID)
-        return saved
+        return save(p)
     }
 
     /// Pull DateTimeOriginal (or TIFF DateTime) out of an image's metadata.
@@ -1112,40 +1108,6 @@ final class ProjectStore {
                 let perCasing = displays[key] ?? [:]
                 return perCasing.max { $0.value < $1.value }?.key ?? key
             }
-    }
-
-    // MARK: - Vision auto-tagging hook
-
-    /// Kick off an off-main on-device classification for the given photo.
-    /// Fire-and-forget — when the Vision request finishes, any extracted
-    /// forensic-relevant labels land in the photo's `pendingSuggestions`.
-    /// Does nothing on failure (e.g. corrupt image, request error) — the
-    /// user can still tap "Suggest with AI" later.
-    func scheduleVisionAutoTagging(projectID: UUID, photoID: UUID) {
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            let urlOpt: URL? = await MainActor.run {
-                guard let p = self.project(withID: projectID),
-                      let photo = p.photos.first(where: { $0.id == photoID })
-                else { return nil }
-                return self.imageURL(for: photo, in: p)
-            }
-            guard let url = urlOpt else { return }
-            // iCloud-backed photos have to materialise on disk before Vision
-            // can read them. The freshly-saved file in addPhoto/importPhoto
-            // is already local so this is a no-op there, but doing it
-            // unconditionally makes the helper safe to call against any
-            // photoID later on.
-            await self.ensureDownloaded(url)
-            let suggestions = VisionTaggingService.tag(imageURL: url) ?? []
-            guard !suggestions.isEmpty else { return }
-            await MainActor.run {
-                guard let current = self.project(withID: projectID) else { return }
-                _ = self.setPendingSuggestions(
-                    current, photoID: photoID, suggestions: suggestions
-                )
-            }
-        }
     }
 
     // MARK: - Batch Claude tagging

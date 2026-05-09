@@ -242,7 +242,12 @@ struct PhotoTagEditorSheet: View {
 
     @ViewBuilder
     private var suggestionsSection: some View {
-        let suggestions = photo?.pendingSuggestions ?? []
+        // Only Claude suggestions are surfaced. Old manifests may still
+        // carry .vision-source pending entries from when on-device tagging
+        // existed; treat them as if they're not there. "Clear AI Tagging"
+        // wipes them when the user runs it.
+        let suggestions = (photo?.pendingSuggestions ?? [])
+            .filter { $0.source == .claude }
 
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -273,20 +278,13 @@ struct PhotoTagEditorSheet: View {
 
             if suggestions.isEmpty {
                 if !aiRunning {
-                    Text("No pending suggestions. Tap \"Suggest with AI\" for a Claude-powered analysis, or wait for the on-device scan to finish on newly-captured photos.")
+                    Text("No pending suggestions. Tap \"Suggest with AI\" to ask Claude to categorise this photo.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                if !suggestions.filter({ $0.source == .claude }).isEmpty {
-                    suggestionGroup("Claude",
-                                    items: suggestions.filter { $0.source == .claude },
-                                    accent: .purple)
-                }
-                if !suggestions.filter({ $0.source == .vision }).isEmpty {
-                    suggestionGroup("On-device",
-                                    items: suggestions.filter { $0.source == .vision },
-                                    accent: .teal)
-                }
+                suggestionGroup("Claude",
+                                items: suggestions,
+                                accent: .purple)
                 HStack {
                     Button("Accept all") { acceptAll() }
                         .buttonStyle(.bordered)

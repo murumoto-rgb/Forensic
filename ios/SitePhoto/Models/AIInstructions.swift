@@ -21,22 +21,27 @@ enum AIInstructions {
     Observation Buckets:
 
     1. Drainage / grading issue
-    2. Foundation or slab crack
-    3. Driveway / flatwork movement
-    4. Masonry cracking or separation
-    5. Exterior trim / siding separation
-    6. Interior wall or ceiling cracking
-    7. Interior trim / flooring / cabinet separation
-    8. Door or window operation issue
-    9. Floor slope / unevenness
-    10. Roof / attic framing issue
-    11. Prior repair / patch / recurring distress
-    12. Soil erosion / backfill issue
-    13. Tree / vegetation / site moisture context
-    14. General exterior context
-    15. General interior context
-    16. No visible distress
-    17. Poor / unclear photo
+    2. Regional ponding / site moisture context
+    3. Foundation or slab crack / concrete distress
+    4. Driveway / flatwork movement
+    5. Masonry cracking or separation
+    6. Stucco cracking or separation
+    7. Exterior trim / siding separation
+    8. Interior wall or ceiling cracking
+    9. Interior trim / flooring / cabinet separation
+    10. Wall framing / wall attachment distress
+    11. Door or window operation issue
+    12. Floor slope / unevenness
+    13. Garage / porch reverse slope
+    14. Roof / attic framing issue
+    15. Stair geometry / stair safety issue
+    16. Prior repair / patch / recurring distress
+    17. Soil erosion / backfill issue
+    18. Tree / vegetation / site moisture context
+    19. General exterior context
+    20. General interior context
+    21. No visible distress
+    22. Poor / unclear photo
 
     For each photo, output only:
 
@@ -57,7 +62,32 @@ enum AIInstructions {
     - Do not invent additional categories.
     - Do not tag every visible object.
     - Focus only on conditions relevant to foundation performance, \
-    structural distress, drainage, prior repair, or serviceability.
+    structural distress, drainage, prior repair, construction quality, \
+    safety, or serviceability.
+    - Use "Masonry cracking or separation" for brick, stone, mortar \
+    joints, masonry veneer, masonry corners, masonry expansion joints, \
+    masonry-to-trim gaps, and masonry-to-wall/floor separations such as \
+    fireplace masonry separation.
+    - Use "Stucco cracking or separation" only for stucco cladding, \
+    stucco cracks, stucco panel distress, stucco separation, or stucco \
+    repair/patch conditions.
+    - Use "Regional ponding / site moisture context" for drone views, \
+    aerial views, recurring ponding, broad area drainage patterns, or \
+    standing water affecting multiple lots.
+    - Use "Drainage / grading issue" for localized grading, downspouts, \
+    surface slope, poor clearance between soil and finished floor, or \
+    water accumulation immediately near the foundation.
+    - Use "Foundation or slab crack / concrete distress" for visible \
+    foundation cracks, grade beam cracks, slab cracks, concrete spalls, \
+    broken concrete, or anchor-related concrete damage.
+    - Use "Wall framing / wall attachment distress" for loose walls, \
+    wall bottoms separating from the floor, distorted wall framing, or \
+    apparent wall-to-foundation attachment issues.
+    - Use "Garage / porch reverse slope" when a garage slab, porch, or \
+    exterior slab appears to drain toward the house or interior.
+    - Use "Stair geometry / stair safety issue" for stair riser height, \
+    stair uniformity, tread/riser irregularity, or visible stair \
+    movement/distortion.
     - If the photo is mostly contextual, use General Exterior Context or \
     General Interior Context.
     - If distress is not clearly visible, use No Visible Distress.
