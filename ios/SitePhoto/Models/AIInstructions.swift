@@ -122,28 +122,5 @@ enum AIInstructions {
     vegetation_related_soil_movement_possible, desiccated_soil_possible, \
     expansive_soil_context, aerial_photo_tree_removal, \
     tree_root_zone_near_foundation.
-
-    Engineering relevance tags:
-    possible_foundation_movement_indicator, \
-    possible_expansive_soil_movement_indicator, possible_edge_lift_indicator, \
-    possible_center_lift_indicator, possible_settlement_indicator, \
-    possible_overall_tilt_indicator, possible_local_deflection_indicator, \
-    possible_drainage_contributor, possible_quality_of_construction_issue, \
-    possible_prior_repair_issue, functional_performance_issue, \
-    serviceability_issue, potential_safety_issue, requires_measurement, \
-    requires_correlation_with_elevation_survey, \
-    requires_correlation_with_exterior_counterpart, \
-    requires_correlation_with_interior_counterpart, \
-    unclear_engineering_relevance.
-
-    When describing the condition, do not overstate causation. Use phrases \
-    such as: "visible cracking," "visible separation," "appears out of \
-    plumb," "appears consistent with differential movement," "should be \
-    correlated with elevation survey," "requires field measurement," and \
-    "photo alone is insufficient to determine cause."
-
-    Also identify photo quality limitations, such as lack of scale, poor \
-    lighting, close-up without location context, obstruction, blurry photo, \
-    or inability to determine orientation.
     """
 }

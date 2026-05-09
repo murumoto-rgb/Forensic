@@ -19,9 +19,10 @@ struct Photo: Identifiable, Codable, Hashable {
     var flashMode: FlashMode
     var aiDescription: String?
     /// User-confirmed tags (what shows up on the row, in filters, in the PDF).
-    /// Stored verbatim — display case is preserved — but compared
-    /// case-insensitively for dedup. Trimmed of leading/trailing whitespace.
-    var tags: [String]
+    /// Each carries a confidence — `1.0` for manually-typed/confirmed tags,
+    /// the originating AI score for accepted suggestions. The threshold
+    /// slider in Settings filters which of these actually render.
+    var tags: [Tag]
     /// AI-generated tag candidates that haven't been confirmed yet. Persisted
     /// so the user can come back later and accept/reject without re-running
     /// the analysis. Empty array (not nil) when none are pending.
@@ -70,9 +71,34 @@ struct Photo: Identifiable, Codable, Hashable {
         self.lensName           = try c.decodeIfPresent(String.self,   forKey: .lensName)
         self.flashMode          = try c.decode(FlashMode.self,         forKey: .flashMode)
         self.aiDescription      = try c.decodeIfPresent(String.self,   forKey: .aiDescription)
-        self.tags               = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        // tags has shipped in two formats — legacy `[String]` (no
+        // confidence) and the current `[Tag]`. Decode whichever the
+        // manifest contains, treating legacy entries as confidence 1.0
+        // (manual / confirmed) so they pass any threshold the user sets.
+        if let typed = try? c.decode([Tag].self, forKey: .tags) {
+            self.tags = typed
+        } else if let legacy = try? c.decode([String].self, forKey: .tags) {
+            self.tags = legacy.map { Tag(label: $0, confidence: 1.0) }
+        } else {
+            self.tags = []
+        }
         self.pendingSuggestions = try c.decodeIfPresent([TagSuggestion].self,
                                                         forKey: .pendingSuggestions) ?? []
+    }
+}
+
+/// A tag attached to a photo. `label` is the display string (case
+/// preserved as the user / AI typed it). `confidence` is 1.0 for
+/// manually-added tags and the originating AI score (0.0–1.0) for
+/// accepted suggestions. A threshold slider in Settings filters which
+/// tags actually render.
+struct Tag: Codable, Hashable {
+    var label: String
+    var confidence: Double
+
+    init(label: String, confidence: Double = 1.0) {
+        self.label = label
+        self.confidence = max(0, min(1, confidence))
     }
 }
 

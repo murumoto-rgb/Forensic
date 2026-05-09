@@ -243,8 +243,14 @@ struct PDFExportService {
                      at: CGPoint(x: cx + pad + 30, y: captionY + 1),
                      font: .systemFont(ofSize: 7.5), color: UIColor(white: 0.35, alpha: 1))
 
-            if !item.photo.tags.isEmpty {
-                let tagsLine = item.photo.tags.joined(separator: " · ")
+            // Match the on-screen threshold so the PDF and the app agree on
+            // which tags are "active" for this photo.
+            let threshold = UserDefaults.standard.double(
+                forKey: "sitephoto.tagConfidenceThreshold"
+            )
+            let visible = item.photo.tags.filter { $0.confidence >= threshold }
+            if !visible.isEmpty {
+                let tagsLine = visible.map { $0.label }.joined(separator: " · ")
                 drawTruncatedText(
                     tagsLine,
                     at: CGPoint(x: cx + pad, y: captionY + 12),

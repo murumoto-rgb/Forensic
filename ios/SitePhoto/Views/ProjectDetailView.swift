@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 struct ProjectDetailView: View {
     @Environment(ProjectStore.self) private var store
     @Environment(LocationService.self) private var location
+    @AppStorage("sitephoto.tagConfidenceThreshold")
+    private var tagConfidenceThreshold: Double = 0.5
     let projectID: UUID
 
     @State private var addressLookupRunning = false
@@ -37,6 +39,7 @@ struct ProjectDetailView: View {
     @State private var activeTagFilters: Set<String> = []
 
     @State private var showingAIInstructions = false
+    @State private var showingTagFilter = false
     @State private var batchTagConfirm: BatchTagPrompt?
     @State private var batchTagTask: Task<Void, Never>?
     @State private var batchTagProgressCurrent: Int = 0
@@ -120,6 +123,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingAIInstructions) {
                     AIInstructionsSheet(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingTagFilter) {
+                    TagFilterView(projectID: projectID)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingAddressEditor) {
@@ -527,7 +534,7 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func photosSection(_ project: Project) -> some View {
-        let projectTags = store.tagsUsed(in: project)
+        let projectTags = store.tagsUsed(in: project, minConfidence: tagConfidenceThreshold)
         let visiblePhotos = filteredPhotos(project)
         Section {
             if !projectTags.isEmpty {
@@ -580,7 +587,9 @@ struct ProjectDetailView: View {
         guard !activeTagFilters.isEmpty else { return project.photos }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
         return project.photos.filter { photo in
-            let photoLC = Set(photo.tags.map { $0.lowercased() })
+            let photoLC = Set(photo.tags
+                .filter { $0.confidence >= tagConfidenceThreshold }
+                .map { $0.label.lowercased() })
             return lcFilters.isSubset(of: photoLC)
         }
     }
@@ -637,6 +646,13 @@ struct ProjectDetailView: View {
         let taggedCount   = project.photos.count - untaggedCount
 
         Section {
+            Button {
+                showingTagFilter = true
+            } label: {
+                Label("Filter photos by tag…", systemImage: "line.3.horizontal.decrease.circle")
+            }
+            .disabled(project.photos.isEmpty)
+
             Button {
                 showingAIInstructions = true
             } label: {
@@ -886,6 +902,12 @@ private struct PhotoRow: View {
     let store: ProjectStore
     var onLocate: (() -> Void)? = nil
     var onTag: (() -> Void)? = nil
+    @AppStorage("sitephoto.tagConfidenceThreshold")
+    private var tagConfidenceThreshold: Double = 0.5
+
+    private var visibleTags: [Tag] {
+        photo.tags.filter { $0.confidence >= tagConfidenceThreshold }
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -921,7 +943,7 @@ private struct PhotoRow: View {
                 Text(metaLine)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
-                if !photo.tags.isEmpty {
+                if !visibleTags.isEmpty {
                     tagsRow
                 }
             }
@@ -931,7 +953,7 @@ private struct PhotoRow: View {
                     Button {
                         onTag()
                     } label: {
-                        Image(systemName: photo.tags.isEmpty ? "tag" : "tag.fill")
+                        Image(systemName: visibleTags.isEmpty ? "tag" : "tag.fill")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -963,13 +985,19 @@ private struct PhotoRow: View {
         // a layout pass per row — the horizontal scroll is fine for now.
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(photo.tags, id: \.self) { tag in
-                    Text(tag)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.purple.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.purple)
+                ForEach(visibleTags, id: \.label) { tag in
+                    HStack(spacing: 3) {
+                        Text(tag.label)
+                        if tag.confidence < 1.0 {
+                            Text("\(Int(round(tag.confidence * 100)))")
+                                .foregroundStyle(.purple.opacity(0.6))
+                        }
+                    }
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.purple.opacity(0.15), in: Capsule())
+                    .foregroundStyle(.purple)
                 }
             }
         }

@@ -27,7 +27,7 @@ struct PhotoTagEditorSheet: View {
     /// after the current project's tags are exhausted.
     private var typeaheadCandidates: [String] {
         guard let project else { return [] }
-        let existing = Set((photo?.tags ?? []).map { $0.lowercased() })
+        let existing = Set((photo?.tags ?? []).map { $0.label.lowercased() })
         let projectTags  = store.tagsUsed(in: project).filter {
             !existing.contains($0.lowercased())
         }
@@ -119,9 +119,11 @@ struct PhotoTagEditorSheet: View {
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 FlowLayout(spacing: 6) {
-                    ForEach(tags, id: \.self) { tag in
-                        TagChip(text: tag, removable: true) {
-                            removeTag(tag)
+                    ForEach(tags, id: \.label) { tag in
+                        TagChip(text: tag.label,
+                                confidence: tag.confidence,
+                                removable: true) {
+                            removeTag(tag.label)
                         }
                     }
                 }
@@ -345,6 +347,7 @@ struct PhotoTagEditorSheet: View {
 
 private struct TagChip: View {
     let text: String
+    var confidence: Double? = nil
     var removable: Bool = false
     var onRemove: () -> Void = {}
 
@@ -352,6 +355,11 @@ private struct TagChip: View {
         HStack(spacing: 6) {
             Text(text)
                 .font(.callout)
+            if let confidence, confidence < 1.0 {
+                Text("\(Int(round(confidence * 100)))%")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Color.accentColor.opacity(0.65))
+            }
             if removable {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")

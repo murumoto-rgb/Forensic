@@ -13,6 +13,13 @@ struct SettingsSheet: View {
     /// accounts comfortably handle 5; higher tiers can go higher.
     @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 5
 
+    /// Minimum confidence required for a tag to render on the photo row,
+    /// in the filter bar, in the tag-filter screen, and in the PDF. Tags
+    /// below this score stay attached to the photo (so the user can lower
+    /// the threshold to see them again later) but are hidden from view.
+    @AppStorage("sitephoto.tagConfidenceThreshold")
+    private var tagConfidenceThreshold: Double = 0.5
+
     var body: some View {
         NavigationStack {
             Form {
@@ -62,6 +69,23 @@ struct SettingsSheet: View {
                     Text("AI Batch Tagging Speed")
                 } footer: {
                     Text("Number of photos processed in parallel during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts). Bump higher if you have a Tier 2+ account or run into idle CPU; the app retries with backoff on rate-limit responses.")
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Minimum confidence")
+                            Spacer()
+                            Text("\(Int(tagConfidenceThreshold * 100))%")
+                                .font(.body.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $tagConfidenceThreshold, in: 0...1, step: 0.05)
+                    }
+                } header: {
+                    Text("Tag Confidence Filter")
+                } footer: {
+                    Text("Tags below this confidence are hidden from photo rows, the filter bar, the tag-filter screen, and the PDF — but they stay on the photo, so lowering the slider brings them back. Manually-typed tags are always 100%. AI-suggested tags carry whatever score Claude returned. Default 50%.")
                 }
 
                 Section {

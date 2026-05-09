@@ -882,18 +882,28 @@ final class ProjectStore {
     // MARK: - Tags
 
     /// Add a tag to a photo. Trims whitespace, dedupes case-insensitively
-    /// against the photo's existing tags. The first-typed casing wins for
-    /// display ("Water Damage" stays "Water Damage" even if the next entry
-    /// is "water damage").
+    /// against the photo's existing tags. Manually-typed tags get
+    /// `confidence = 1.0` so they always pass any threshold the user sets.
+    /// If the tag already exists, the higher of the two confidences wins.
     @discardableResult
-    func addTag(_ project: Project, photoID: UUID, tag rawTag: String) -> Project {
+    func addTag(_ project: Project,
+                photoID: UUID,
+                tag rawLabel: String,
+                confidence: Double = 1.0) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        let trimmed = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return p }
         let lc = trimmed.lowercased()
-        if p.photos[idx].tags.contains(where: { $0.lowercased() == lc }) { return p }
-        p.photos[idx].tags.append(trimmed)
+        if let existing = p.photos[idx].tags.firstIndex(where: { $0.label.lowercased() == lc }) {
+            // Promote confidence if the new value is higher; otherwise leave
+            // the existing tag alone.
+            if p.photos[idx].tags[existing].confidence < confidence {
+                p.photos[idx].tags[existing].confidence = confidence
+            }
+            return save(p)
+        }
+        p.photos[idx].tags.append(Tag(label: trimmed, confidence: confidence))
         return save(p)
     }
 
@@ -903,26 +913,62 @@ final class ProjectStore {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         let lc = tag.lowercased()
-        p.photos[idx].tags.removeAll { $0.lowercased() == lc }
+        p.photos[idx].tags.removeAll { $0.label.lowercased() == lc }
         return save(p)
     }
 
     /// Replace the full tag list for a photo. Trims + dedupes.
     @discardableResult
-    func setTags(_ project: Project, photoID: UUID, tags: [String]) -> Project {
+    func setTags(_ project: Project, photoID: UUID, tags: [Tag]) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        var seen: Set<String> = []
-        var out: [String] = []
+        var seen: [String: Int] = [:]   // lowercase → out index
+        var out: [Tag] = []
         for t in tags {
-            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = t.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             let lc = trimmed.lowercased()
-            if seen.insert(lc).inserted {
-                out.append(trimmed)
+            if let i = seen[lc] {
+                // Duplicate within input — keep the higher-confidence copy.
+                if out[i].confidence < t.confidence {
+                    out[i].confidence = t.confidence
+                }
+                continue
             }
+            seen[lc] = out.count
+            out.append(Tag(label: trimmed, confidence: t.confidence))
         }
         p.photos[idx].tags = out
+        return save(p)
+    }
+
+    /// Merge a list of `(label, confidence)` pairs into the photo's existing
+    /// tags. Used by the AI auto-accept paths so confidence is preserved
+    /// instead of being collapsed to 1.0.
+    @discardableResult
+    func mergeTags(_ project: Project,
+                    photoID: UUID,
+                    additions: [Tag]) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        var lookup: [String: Int] = [:]
+        for (i, t) in p.photos[idx].tags.enumerated() {
+            lookup[t.label.lowercased()] = i
+        }
+        for incoming in additions {
+            let trimmed = incoming.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let lc = trimmed.lowercased()
+            if let i = lookup[lc] {
+                if p.photos[idx].tags[i].confidence < incoming.confidence {
+                    p.photos[idx].tags[i].confidence = incoming.confidence
+                }
+            } else {
+                let newTag = Tag(label: trimmed, confidence: incoming.confidence)
+                lookup[lc] = p.photos[idx].tags.count
+                p.photos[idx].tags.append(newTag)
+            }
+        }
         return save(p)
     }
 
@@ -934,7 +980,7 @@ final class ProjectStore {
                                 suggestions: [TagSuggestion]) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
-        let confirmed = Set(p.photos[idx].tags.map { $0.lowercased() })
+        let confirmed = Set(p.photos[idx].tags.map { $0.label.lowercased() })
         // Keep only one suggestion per (label,source); rank by confidence so the
         // top-confidence one wins. Different sources can suggest the same label
         // — that's fine, both are kept (different `id`s).
@@ -950,7 +996,8 @@ final class ProjectStore {
         return save(p)
     }
 
-    /// Promote a single AI suggestion into a confirmed tag.
+    /// Promote a single AI suggestion into a confirmed tag, preserving the
+    /// suggestion's confidence on the resulting Tag.
     @discardableResult
     func confirmSuggestion(_ project: Project,
                             photoID: UUID,
@@ -958,8 +1005,13 @@ final class ProjectStore {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         let lc = suggestion.label.lowercased()
-        if !p.photos[idx].tags.contains(where: { $0.lowercased() == lc }) {
-            p.photos[idx].tags.append(suggestion.label)
+        if let existing = p.photos[idx].tags.firstIndex(where: { $0.label.lowercased() == lc }) {
+            if p.photos[idx].tags[existing].confidence < suggestion.confidence {
+                p.photos[idx].tags[existing].confidence = suggestion.confidence
+            }
+        } else {
+            p.photos[idx].tags.append(Tag(label: suggestion.label,
+                                          confidence: suggestion.confidence))
         }
         // Drop every pending suggestion for the same label, regardless of
         // source — once confirmed, neither vision nor claude needs to keep
@@ -980,28 +1032,29 @@ final class ProjectStore {
     }
 
     /// Tags currently in use across the given project. Sorted by frequency
-    /// (most-used first) for typeahead.
-    func tagsUsed(in project: Project) -> [String] {
-        rankTags(in: project.photos)
+    /// (most-used first). Tags below `minConfidence` (per-photo) are not
+    /// counted, so the typeahead/filter list reflects the user's threshold.
+    func tagsUsed(in project: Project, minConfidence: Double = 0) -> [String] {
+        rankTags(in: project.photos, minConfidence: minConfidence)
     }
 
     /// Tags currently in use across every project the user has — used to
     /// surface previously-typed tags on a fresh project. Sorted by frequency.
-    func tagsUsedGlobally() -> [String] {
+    func tagsUsedGlobally(minConfidence: Double = 0) -> [String] {
         let all = activeProjects.flatMap { $0.photos } + deletedProjects.flatMap { $0.photos }
-        return rankTags(in: all)
+        return rankTags(in: all, minConfidence: minConfidence)
     }
 
-    private func rankTags(in photos: [Photo]) -> [String] {
+    private func rankTags(in photos: [Photo], minConfidence: Double) -> [String] {
         // Count case-insensitively, but remember the most-common display
         // casing for each lowercase key.
         var counts: [String: Int] = [:]
         var displays: [String: [String: Int]] = [:]
         for photo in photos {
-            for t in photo.tags {
-                let key = t.lowercased()
+            for t in photo.tags where t.confidence >= minConfidence {
+                let key = t.label.lowercased()
                 counts[key, default: 0] += 1
-                displays[key, default: [:]][t, default: 0] += 1
+                displays[key, default: [:]][t.label, default: 0] += 1
             }
         }
         return counts
@@ -1166,9 +1219,10 @@ final class ProjectStore {
                 case .success(let suggestions):
                     if !suggestions.isEmpty,
                        let proj = self.project(withID: projectID) {
-                        let existing = proj.photos.first(where: { $0.id == result.photoID })?.tags ?? []
-                        let newTags = existing + suggestions.map { $0.label }
-                        _ = self.setTags(proj, photoID: result.photoID, tags: newTags)
+                        let additions = suggestions.map {
+                            Tag(label: $0.label, confidence: $0.confidence)
+                        }
+                        _ = self.mergeTags(proj, photoID: result.photoID, additions: additions)
                         tagged += 1
                     }
                 case .otherFailure(let msg):
