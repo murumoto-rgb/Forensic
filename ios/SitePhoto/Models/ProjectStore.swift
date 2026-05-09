@@ -1167,7 +1167,7 @@ final class ProjectStore {
         var failed = 0
         var completed = 0
 
-        try await withTaskGroup(of: PhotoTagResult.self) { group in
+        try await withThrowingTaskGroup(of: PhotoTagResult.self) { group in
             var iterator = work.makeIterator()
 
             // Helper: launch the next photo's API call. Returns false once
@@ -1208,7 +1208,7 @@ final class ProjectStore {
             // Drain: as each task finishes, apply its result on the main
             // actor and queue the next one. Maintains a steady N tasks in
             // flight until `iterator` is exhausted.
-            for await result in group {
+            for try await result in group {
                 try Task.checkCancellation()
                 completed += 1
 
