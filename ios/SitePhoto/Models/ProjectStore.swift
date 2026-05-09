@@ -1042,6 +1042,30 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Wipe everything an AI run can have left behind on the given photos:
+    /// tags whose confidence is < 1.0 (i.e. AI-attributed; manually-typed
+    /// tags default to 1.0 and survive), pending suggestions awaiting
+    /// confirmation, and the AI metadata fields (severity / observation /
+    /// follow-up). One save per affected photo.
+    ///
+    /// Note: legacy tags that decoded out of the old `[String]` format are
+    /// stored at confidence 1.0 because the original source was lost — they
+    /// can't be distinguished from user-typed entries. Those survive too;
+    /// the user has to remove them manually if they really want them gone.
+    @discardableResult
+    func clearAIInfo(_ project: Project, photoIDs: Set<UUID>) -> Project {
+        var p = project
+        for id in photoIDs {
+            guard let idx = p.photos.firstIndex(where: { $0.id == id }) else { continue }
+            p.photos[idx].tags.removeAll { $0.confidence < 1.0 }
+            p.photos[idx].pendingSuggestions = []
+            p.photos[idx].aiSeverity = nil
+            p.photos[idx].aiObservation = nil
+            p.photos[idx].aiFollowUp = nil
+        }
+        return save(p)
+    }
+
     /// Drop a single AI suggestion without confirming it.
     @discardableResult
     func dismissSuggestion(_ project: Project,

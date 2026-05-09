@@ -41,6 +41,7 @@ struct ProjectDetailView: View {
 
     @State private var showingAIInstructions = false
     @State private var showingTagFilter = false
+    @State private var showingClearAITags = false
     @State private var batchTagConfirm: BatchTagPrompt?
     @State private var batchTagTask: Task<Void, Never>?
     @State private var batchTagProgressCurrent: Int = 0
@@ -129,6 +130,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingTagFilter) {
                     TagFilterView(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingClearAITags) {
+                    ClearAITagsSheet(projectID: projectID)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingAddressEditor) {
@@ -714,10 +719,18 @@ struct ProjectDetailView: View {
                 }
                 .disabled(batchTagTask != nil)
             }
+
+            Button(role: .destructive) {
+                showingClearAITags = true
+            } label: {
+                Label("Clear AI tagging from photos…",
+                      systemImage: "eraser")
+            }
+            .disabled(project.photos.isEmpty || batchTagTask != nil)
         } header: {
             Text("AI Tagging")
         } footer: {
-            Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time.")
+            Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time. \"Clear AI tagging\" wipes AI tags + findings from chosen photos while preserving manual entries.")
         }
     }
 
