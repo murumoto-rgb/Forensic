@@ -49,6 +49,7 @@ struct ProjectDetailView: View {
     @State private var batchTagProgressSeq: Int?
     @State private var batchTagError: String?
     @State private var batchTagSummary: String?
+    @State private var batchTagFailureReport: BatchTagFailureReport?
     @State private var batchBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private struct PhotoTarget: Identifiable {
@@ -135,6 +136,18 @@ struct ProjectDetailView: View {
                 .sheet(isPresented: $showingClearAITags) {
                     ClearAITagsSheet(projectID: projectID)
                         .environment(store)
+                }
+                .sheet(item: $batchTagFailureReport) { report in
+                    BatchTagSummarySheet(
+                        projectID: projectID,
+                        result: report.result,
+                        candidateCount: report.candidateCount,
+                        mode: report.mode,
+                        onRetry: { ids, mode in
+                            retryFailedTagging(photoIDs: ids, mode: mode)
+                        }
+                    )
+                    .environment(store)
                 }
                 .sheet(isPresented: $showingAddressEditor) {
                     AddressEditSheet(
@@ -774,6 +787,7 @@ struct ProjectDetailView: View {
 
         let pid = projectID
         let skip = prompt.skipAlreadyTagged
+        let candidateCount = prompt.candidateCount
         batchTagTask = Task { @MainActor in
             defer {
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -784,15 +798,14 @@ struct ProjectDetailView: View {
                     projectID: pid,
                     skipAlreadyTagged: skip,
                     mode: mode,
+                    onlyPhotoIDs: nil,
                     onProgress: { current, total, seq in
                         self.batchTagProgressCurrent = current
                         self.batchTagProgressTotal = total
                         self.batchTagProgressSeq = seq
                     }
                 )
-                self.batchTagSummary = "Tagged \(result.tagged) of \(prompt.candidateCount) photos."
-                    + (result.failed > 0 ? " \(result.failed) failed." : "")
-                    + (result.skipped > 0 ? " \(result.skipped) already had tags." : "")
+                self.presentResult(result, candidateCount: candidateCount, mode: mode)
             } catch is CancellationError {
                 self.batchTagSummary = "Cancelled at \(self.batchTagProgressCurrent) of \(self.batchTagProgressTotal). Re-run \"Auto-tag untagged\" to resume — already-tagged photos will be skipped."
             } catch let err as ClaudeTaggingService.Error {
@@ -815,6 +828,88 @@ struct ProjectDetailView: View {
         batchTagTask?.cancel()
     }
 
+    /// Decide how to surface a finished batch: clean runs get a quiet
+    /// text alert, runs with failures open the failure-summary sheet so
+    /// the user can see which photos errored and retry them.
+    private func presentResult(_ result: ProjectStore.BatchTagResult,
+                                 candidateCount: Int,
+                                 mode: ProjectStore.BatchTagMode) {
+        if result.failed == 0 {
+            self.batchTagSummary = "Tagged \(result.tagged) of \(candidateCount) photo\(candidateCount == 1 ? "" : "s")."
+                + (result.skipped > 0 ? " \(result.skipped) already had tags." : "")
+        } else {
+            self.batchTagFailureReport = BatchTagFailureReport(
+                result: result,
+                candidateCount: candidateCount,
+                mode: mode
+            )
+        }
+    }
+
+    /// Re-run the batch on a specific set of photo IDs (typically the
+    /// failed ones from a prior run). Bypasses the confirmation alert
+    /// since the user explicitly asked to retry, and uses the same
+    /// Add/Overwrite mode the original batch ran with.
+    private func retryFailedTagging(photoIDs: Set<UUID>,
+                                      mode: ProjectStore.BatchTagMode) {
+        guard !photoIDs.isEmpty else { return }
+        guard batchTagTask == nil else { return }   // a batch is already running
+
+        batchTagError = nil
+        batchTagSummary = nil
+        batchTagFailureReport = nil
+        batchTagProgressCurrent = 0
+        batchTagProgressTotal = photoIDs.count
+        batchTagProgressSeq = nil
+
+        UIApplication.shared.isIdleTimerDisabled = true
+        batchBackgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "AI Tagging Retry"
+        ) {
+            batchTagTask?.cancel()
+            endBatchBackgroundTask()
+        }
+
+        let pid = projectID
+        let candidateCount = photoIDs.count
+        batchTagTask = Task { @MainActor in
+            defer {
+                UIApplication.shared.isIdleTimerDisabled = false
+                endBatchBackgroundTask()
+            }
+            do {
+                let result = try await store.batchClaudeTagging(
+                    projectID: pid,
+                    mode: mode,
+                    onlyPhotoIDs: photoIDs,
+                    onProgress: { current, total, seq in
+                        self.batchTagProgressCurrent = current
+                        self.batchTagProgressTotal = total
+                        self.batchTagProgressSeq = seq
+                    }
+                )
+                self.presentResult(result, candidateCount: candidateCount, mode: mode)
+            } catch is CancellationError {
+                self.batchTagSummary = "Retry cancelled at \(self.batchTagProgressCurrent) of \(self.batchTagProgressTotal)."
+            } catch let err as ClaudeTaggingService.Error {
+                self.batchTagError = err.errorDescription ?? "Failed."
+            } catch {
+                self.batchTagError = error.localizedDescription
+            }
+            self.batchTagTask = nil
+        }
+    }
+
+}
+
+/// State envelope for the failure-summary sheet. Carries the batch result
+/// + the parameters needed to retry just the failed photos with the same
+/// settings the original run used.
+fileprivate struct BatchTagFailureReport: Identifiable {
+    let id = UUID()
+    let result: ProjectStore.BatchTagResult
+    let candidateCount: Int
+    let mode: ProjectStore.BatchTagMode
 }
 
 fileprivate struct BatchTagPrompt: Identifiable {

@@ -1144,25 +1144,81 @@ final class ProjectStore {
         case overwrite
     }
 
+    /// One per-photo failure surfaced from a batch run. Carries enough
+    /// information for the summary sheet to render a row (sequence number,
+    /// thumbnail via photoID) and tell the user *why* it failed.
+    struct BatchTagFailure: Identifiable, Sendable {
+        let id: UUID
+        let photoID: UUID
+        let sequenceNumber: Int
+        let message: String
+
+        init(photoID: UUID, sequenceNumber: Int, message: String) {
+            self.id = photoID
+            self.photoID = photoID
+            self.sequenceNumber = sequenceNumber
+            self.message = message
+        }
+    }
+
+    /// Outcome of a batch tagging run. Replaces the older `(Int, Int, Int)`
+    /// tuple so the UI can list the actual failed photos and offer a retry.
+    struct BatchTagResult: Sendable {
+        /// Number of photos that got at least one new tag from Claude.
+        let tagged: Int
+        /// Number of photos skipped because they already had tags
+        /// (`skipAlreadyTagged == true`).
+        let skipped: Int
+        /// Per-photo failures with reason. `failed` is `failures.count`.
+        let failures: [BatchTagFailure]
+
+        var failed: Int { failures.count }
+    }
+
+    /// Run Claude vision tagging across the project's photos.
+    ///
+    /// `skipAlreadyTagged` — when true (default), photos that already have
+    /// at least one confirmed tag are left alone. Lets the user add manual
+    /// tags first, then top up with AI for the rest. Ignored when
+    /// `onlyPhotoIDs` is set.
+    ///
+    /// `onlyPhotoIDs` — when set, only the listed photos are processed and
+    /// `skipAlreadyTagged` is ignored. Used by the retry-failed flow so the
+    /// user can re-run only the photos that errored out the first time.
+    ///
+    /// `mode` — `.add` merges new tags; `.overwrite` replaces existing tags.
+    ///
+    /// Throws `ClaudeTaggingService.Error.missingAPIKey` immediately if no
+    /// key is on file. Per-photo errors (network blips, parse failures) are
+    /// captured into `BatchTagResult.failures` so a single bad photo doesn't
+    /// kill the rest of the batch.
     @MainActor
     @discardableResult
     func batchClaudeTagging(
         projectID: UUID,
         skipAlreadyTagged: Bool = true,
         mode: BatchTagMode = .add,
+        onlyPhotoIDs: Set<UUID>? = nil,
         onProgress: @escaping @MainActor (_ current: Int, _ total: Int, _ photoSeq: Int?) -> Void
-    ) async throws -> (tagged: Int, failed: Int, skipped: Int) {
+    ) async throws -> BatchTagResult {
         guard KeychainStore.loadAnthropicKey()?.isEmpty == false else {
             throw ClaudeTaggingService.Error.missingAPIKey
         }
         guard let project = self.project(withID: projectID) else {
-            return (0, 0, 0)
+            return BatchTagResult(tagged: 0, skipped: 0, failures: [])
         }
 
-        let candidates = project.photos.filter { photo in
-            skipAlreadyTagged ? photo.tags.isEmpty : true
+        let candidates: [Photo]
+        let skippedCount: Int
+        if let onlyPhotoIDs {
+            candidates = project.photos.filter { onlyPhotoIDs.contains($0.id) }
+            skippedCount = 0
+        } else {
+            candidates = project.photos.filter { photo in
+                skipAlreadyTagged ? photo.tags.isEmpty : true
+            }
+            skippedCount = project.photos.count - candidates.count
         }
-        let skipped = project.photos.count - candidates.count
         let total = candidates.count
         let instructions = project.effectiveAIInstructions
 
@@ -1187,7 +1243,7 @@ final class ProjectStore {
         }
 
         var tagged = 0
-        var failed = 0
+        var failures: [BatchTagFailure] = []
         var completed = 0
 
         try await withThrowingTaskGroup(of: PhotoTagResult.self) { group in
@@ -1276,7 +1332,11 @@ final class ProjectStore {
                         )
                     }
                 case .otherFailure(let msg):
-                    failed += 1
+                    failures.append(BatchTagFailure(
+                        photoID: result.photoID,
+                        sequenceNumber: result.sequenceNumber,
+                        message: msg
+                    ))
                     #if DEBUG
                     print("Claude batch failed for #\(result.sequenceNumber): \(msg)")
                     #endif
@@ -1288,7 +1348,7 @@ final class ProjectStore {
         }
 
         onProgress(total, total, nil)
-        return (tagged: tagged, failed: failed, skipped: skipped)
+        return BatchTagResult(tagged: tagged, skipped: skippedCount, failures: failures)
     }
 
     /// Per-photo result emitted by the batch task group. Aggregating the
