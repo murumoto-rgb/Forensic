@@ -75,9 +75,9 @@ struct ProjectDetailView: View {
                     metadataSection(project)
                     actionsSection(project)
                     floorPlanSection(project)
-                    photosSection(project)
                     aiTaggingSection(project)
                     exportSection(project)
+                    photosSection(project)
                 }
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
