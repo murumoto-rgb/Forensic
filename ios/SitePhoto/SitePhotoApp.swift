@@ -64,6 +64,11 @@ private struct SplashScreen: View {
                     // Match the navy from the logo so it reads as part of
                     // the same identity rather than a system grey spinner.
                     .tint(Color(red: 0.06, green: 0.16, blue: 0.31))
+                Text("Please wait. First launch may take a few minutes while iCloud sets up. Do not navigate away from this screen.")
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.31))
+                    .padding(.horizontal, 32)
             }
         }
     }
