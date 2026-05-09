@@ -1,37 +1,66 @@
 import SwiftUI
 import UIKit
 
-/// Multi-select photo list for wiping out the AI-attributed tags + AI
-/// metadata (severity, observation, follow-up, pending suggestions) from
-/// chosen photos. Manually-typed tags (confidence 1.0) are preserved.
+/// Pick which AI-attributed tags to clear and which photos to clear them
+/// from. Defaults to "every AI tag in the project", which mirrors the
+/// previous full-clear behaviour for the tag portion. Selecting a subset
+/// of tags narrows both the photo list (only photos that carry at least
+/// one selected tag remain selectable) and the action (only the selected
+/// tags are removed). Manually-typed tags (confidence 1.0) are preserved,
+/// and the photo's `aiAnalysis` / legacy AI metadata are left intact —
+/// this sheet is now strictly about removing tags.
 struct ClearAITagsSheet: View {
     let projectID: UUID
 
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @State private var selection: Set<UUID> = []
+    @State private var photoSelection: Set<UUID> = []
+    @State private var tagSelectors: Set<ProjectStore.TagSelector> = []
+    @State private var didInitTagSelectors: Bool = false
     @State private var confirming: Bool = false
 
     private var project: Project? { store.project(withID: projectID) }
     private var photos: [Photo] { project?.photos ?? [] }
 
-    /// Photos that actually have something to clear — AI tags, metadata,
-    /// pending suggestions, or a stored schema-2 analysis (which carries
-    /// the caption draft, recommended use, etc., and the raw response).
-    private func aiResidueCount(for photo: Photo) -> Int {
-        let aiTags = photo.tags.filter { $0.confidence < 1.0 }.count
-        let pending = photo.pendingSuggestions.count
-        let metadata = [photo.aiSeverity, photo.aiObservation, photo.aiFollowUp]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-            .count
-        let analysis = photo.aiAnalysis == nil ? 0 : 1
-        return aiTags + pending + metadata + analysis
+    /// Hierarchical view of every AI-attributed tag (confidence < 1.0) plus
+    /// every pending suggestion currently on a photo. Sorted in canonical
+    /// guide order: primaries Drainage / Grading … Poor / Unclear Photo,
+    /// then any unknown primaries, with secondaries listed under each.
+    private var aiTagGroups: [TagGroup] {
+        buildGroups(from: photos)
     }
 
-    private var photosWithResidue: [Photo] {
-        photos.filter { aiResidueCount(for: $0) > 0 }
+    /// Flat set of every selectable token surfaced in the chip list.
+    /// Used to seed `tagSelectors` on first appearance and to drive
+    /// "Select All / None" toggling.
+    private var allSelectors: Set<ProjectStore.TagSelector> {
+        var out: Set<ProjectStore.TagSelector> = []
+        for group in aiTagGroups {
+            out.insert(.init(label: group.primary))
+            for sec in group.secondaries {
+                out.insert(.init(parent: group.primary, label: sec.label))
+            }
+        }
+        return out
+    }
+
+    /// Photos eligible for selection: those that carry at least one tag
+    /// or pending suggestion matching the current `tagSelectors`. With no
+    /// selectors, returns the empty list — there's nothing to clear.
+    private var matchingPhotos: [Photo] {
+        guard !tagSelectors.isEmpty else { return [] }
+        return photos.filter { photo in
+            tagsOnPhoto(photo).contains { tag in
+                selectorMatches(parent: tag.parent, label: tag.label)
+            }
+        }
+    }
+
+    /// True when the user has every chip checked. Mirrors today's
+    /// "clear every AI tag" default.
+    private var allTagsSelected: Bool {
+        !allSelectors.isEmpty && tagSelectors == allSelectors
     }
 
     var body: some View {
@@ -39,65 +68,69 @@ struct ClearAITagsSheet: View {
             VStack(spacing: 0) {
                 infoBanner
                 Divider()
-                if photos.isEmpty {
-                    ContentUnavailableView(
-                        "No photos in this project",
-                        systemImage: "photo.on.rectangle.angled"
-                    )
-                    .frame(maxHeight: .infinity)
-                } else if photosWithResidue.isEmpty {
+                if aiTagGroups.isEmpty {
                     ContentUnavailableView(
                         "Nothing to clear",
                         systemImage: "checkmark.seal",
-                        description: Text("No photo in this project has AI tags, pending suggestions, or AI findings on it.")
+                        description: Text("No photo in this project has AI tags or pending suggestions.")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
-                    photoList
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            tagChipsSection
+                            Divider()
+                            photoListSection
+                        }
+                    }
                 }
                 Divider()
                 bottomBar
             }
-            .navigationTitle("Clear AI Tagging")
+            .navigationTitle("Clear AI Tags")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(allSelected ? "Deselect All" : "Select All") {
-                        if allSelected {
-                            selection.removeAll()
-                        } else {
-                            selection = Set(photosWithResidue.map { $0.id })
-                        }
-                    }
-                    .disabled(photosWithResidue.isEmpty)
-                }
             }
-            .alert("Clear AI tagging from \(selection.count) photo\(selection.count == 1 ? "" : "s")?",
-                   isPresented: $confirming) {
+            .alert(
+                "Clear \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s") from \(photoSelection.count) photo\(photoSelection.count == 1 ? "" : "s")?",
+                isPresented: $confirming
+            ) {
                 Button("Clear", role: .destructive) {
                     runClear()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes AI-attributed tags, pending suggestions, severity, summary observation, and follow-up notes from the selected photos. Manually-typed tags are preserved. This cannot be undone.")
+                Text("Removes the chosen AI tags (and any pending suggestions for those tags) from the selected photos. Manually-typed tags and the photo's saved AI analysis are preserved. This cannot be undone.")
+            }
+            .onAppear {
+                if !didInitTagSelectors {
+                    tagSelectors = allSelectors
+                    didInitTagSelectors = true
+                }
+            }
+            // If the user clears tags and the chip set shrinks, drop any
+            // selectors that no longer have a matching chip so the "select
+            // all" check stays consistent.
+            .onChange(of: aiTagGroups) { _, _ in
+                tagSelectors.formIntersection(allSelectors)
+                photoSelection = photoSelection.intersection(
+                    matchingPhotos.map(\.id)
+                )
             }
         }
     }
 
-    private var allSelected: Bool {
-        !photosWithResidue.isEmpty &&
-            selection.count == photosWithResidue.count
-    }
+    // MARK: - Subviews
 
     @ViewBuilder
     private var infoBanner: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Removes AI tags + findings from selected photos.")
+            Text("Pick the AI tags to clear, then the photos to clear them from.")
                 .font(.callout)
-            Text("Manually-typed tags (confidence 100%) are preserved. AI tags from older versions of the app may also be preserved if their confidence reads as 100% — those would need to be removed manually.")
+            Text("Manually-typed tags are kept. The photo's saved AI analysis (caption, recommended use, etc.) is also preserved — only tags and matching pending suggestions are removed.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -106,18 +139,166 @@ struct ClearAITagsSheet: View {
     }
 
     @ViewBuilder
-    private var photoList: some View {
-        List(selection: $selection) {
-            ForEach(photosWithResidue) { photo in
-                ClearAITagsRow(photo: photo,
-                                 project: project!,
-                                 store: store,
-                                 residueCount: aiResidueCount(for: photo))
-                    .tag(photo.id)
+    private var tagChipsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Tags to clear")
+                    .font(.subheadline.bold())
+                Spacer()
+                Button(allTagsSelected ? "Deselect All" : "Select All") {
+                    if allTagsSelected {
+                        tagSelectors.removeAll()
+                    } else {
+                        tagSelectors = allSelectors
+                    }
+                }
+                .font(.caption)
+            }
+            ForEach(aiTagGroups, id: \.primary) { group in
+                tagGroupRow(group)
             }
         }
-        .listStyle(.plain)
-        .environment(\.editMode, .constant(.active))
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private func tagGroupRow(_ group: TagGroup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            FlowLayout(spacing: 6) {
+                tagChip(label: group.primary,
+                         selector: .init(label: group.primary),
+                         isPrimary: true,
+                         count: group.primaryCount)
+                ForEach(group.secondaries, id: \.label) { sec in
+                    tagChip(label: sec.label,
+                             selector: .init(parent: group.primary, label: sec.label),
+                             isPrimary: false,
+                             count: sec.count)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tagChip(label: String,
+                         selector: ProjectStore.TagSelector,
+                         isPrimary: Bool,
+                         count: Int) -> some View {
+        let on = tagSelectors.contains(selector)
+        Button {
+            if on { tagSelectors.remove(selector) } else { tagSelectors.insert(selector) }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.caption2)
+                Text(label)
+                    .font(isPrimary ? .caption.bold() : .caption)
+                Text("\(count)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                (on ? Color.purple.opacity(0.2) : Color.secondary.opacity(0.1)),
+                in: Capsule()
+            )
+            .foregroundStyle(on ? Color.purple : Color.primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var photoListSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Photos with selected tags")
+                    .font(.subheadline.bold())
+                Text("(\(matchingPhotos.count))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                let allMatchingSelected = !matchingPhotos.isEmpty
+                    && matchingPhotos.allSatisfy { photoSelection.contains($0.id) }
+                Button(allMatchingSelected ? "Deselect All" : "Select All") {
+                    if allMatchingSelected {
+                        photoSelection.subtract(matchingPhotos.map(\.id))
+                    } else {
+                        photoSelection.formUnion(matchingPhotos.map(\.id))
+                    }
+                }
+                .font(.caption)
+                .disabled(matchingPhotos.isEmpty)
+            }
+            if tagSelectors.isEmpty {
+                Text("Pick at least one tag to see matching photos.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if matchingPhotos.isEmpty {
+                Text("No photos carry the selected tags.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(matchingPhotos) { photo in
+                        photoRow(photo)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private func photoRow(_ photo: Photo) -> some View {
+        let isSelected = photoSelection.contains(photo.id)
+        Button {
+            if isSelected {
+                photoSelection.remove(photo.id)
+            } else {
+                photoSelection.insert(photo.id)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.blue : Color.secondary)
+                photoThumbnail(photo)
+                    .frame(width: 56, height: 42)
+                    .clipped()
+                    .background(Color.secondary.opacity(0.2))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("#\(photo.sequenceNumber)")
+                        .font(.subheadline.monospaced())
+                    Text(matchedTagsLine(for: photo))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func photoThumbnail(_ photo: Photo) -> some View {
+        if let project,
+           let url = store.thumbnailURL(for: photo, in: project),
+           let data = try? Data(contentsOf: url),
+           let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     @ViewBuilder
@@ -130,90 +311,221 @@ struct ClearAITagsSheet: View {
             Button(role: .destructive) {
                 confirming = true
             } label: {
-                Label("Clear AI Tagging", systemImage: "eraser")
+                Label("Clear Tags", systemImage: "eraser")
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .disabled(selection.isEmpty)
+            .disabled(photoSelection.isEmpty || tagSelectors.isEmpty)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
+    // MARK: - Behaviour
+
     private var selectionSummary: String {
-        if selection.isEmpty {
-            return "Select photos to clear."
+        if tagSelectors.isEmpty {
+            return "Pick tags to clear."
         }
-        return "\(selection.count) of \(photosWithResidue.count) selected"
+        if photoSelection.isEmpty {
+            return "Pick photos to clear from."
+        }
+        return "\(photoSelection.count) of \(matchingPhotos.count) photos · \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s")"
     }
 
     private func runClear() {
         guard let project else { return }
-        _ = store.clearAIInfo(project, photoIDs: selection)
-        // Drop selection so the empty-state view appears once everything
-        // selected has been wiped.
-        selection.removeAll()
+        _ = store.removeTags(project,
+                             photoIDs: photoSelection,
+                             selectors: tagSelectors)
+        photoSelection.removeAll()
+    }
+
+    /// True when a tag with these (parent, label) coordinates would be
+    /// removed by the current `tagSelectors`. Mirrors the matching logic
+    /// in `ProjectStore.removeTags` so the UI's photo list can predict
+    /// what the action will touch.
+    private func selectorMatches(parent: String?, label: String) -> Bool {
+        let lc = label.lowercased()
+        for sel in tagSelectors {
+            if sel.parent == nil {
+                let primaryLC = sel.label.lowercased()
+                if parent == nil, primaryLC == lc { return true }
+                if let parent, parent.lowercased() == primaryLC { return true }
+            } else if let selParent = sel.parent,
+                      selParent.lowercased() == (parent?.lowercased() ?? ""),
+                      sel.label.lowercased() == lc {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Comma-separated list of the tags on `photo` that would be removed
+    /// by the current selection. Helps the user verify they're picking
+    /// the right photos.
+    private func matchedTagsLine(for photo: Photo) -> String {
+        let matched = tagsOnPhoto(photo).filter {
+            selectorMatches(parent: $0.parent, label: $0.label)
+        }
+        if matched.isEmpty { return "—" }
+        return matched.map { tag in
+            tag.parent.map { "\($0) / \(tag.label)" } ?? tag.label
+        }.joined(separator: " · ")
+    }
+
+    /// Flatten this photo's tags + pending suggestions into a uniform
+    /// list of (parent, label) coordinates so the chip-matching logic
+    /// only needs to walk one collection. Manually-typed tags
+    /// (confidence == 1.0) are excluded — the sheet only operates on
+    /// AI-attributed entries.
+    private func tagsOnPhoto(_ photo: Photo) -> [(parent: String?, label: String)] {
+        var out: [(String?, String)] = []
+        for t in photo.tags where t.confidence < 1.0 {
+            out.append((t.parentTag, t.label))
+        }
+        for s in photo.pendingSuggestions {
+            out.append((s.parentTag, s.label))
+        }
+        return out
+    }
+
+    /// Build the AI-only tag hierarchy for `photos`. Mirrors the shape of
+    /// `ProjectStore.tagsUsedHierarchically` but filters to confidence < 1.0
+    /// and pulls in pending suggestions, both of which the public helper
+    /// doesn't surface today.
+    private func buildGroups(from photos: [Photo]) -> [TagGroup] {
+        struct Bucket {
+            var displayCounts: [String: Int] = [:]
+            var primaryUsed: Bool = false
+            var primaryCount: Int = 0
+            var secondaries: [String: (display: String, count: Int)] = [:]
+        }
+        var buckets: [String: Bucket] = [:]
+
+        func bumpDisplay(_ bucket: inout Bucket, _ display: String) {
+            bucket.displayCounts[display, default: 0] += 1
+        }
+
+        for photo in photos {
+            let entries = tagsOnPhoto(photo)
+            for (parent, label) in entries {
+                if let parent {
+                    let pLC = parent.lowercased()
+                    var b = buckets[pLC] ?? Bucket()
+                    bumpDisplay(&b, parent)
+                    let sLC = label.lowercased()
+                    let existing = b.secondaries[sLC]
+                    b.secondaries[sLC] = (
+                        display: existing?.display ?? label,
+                        count: (existing?.count ?? 0) + 1
+                    )
+                    buckets[pLC] = b
+                } else {
+                    let pLC = label.lowercased()
+                    var b = buckets[pLC] ?? Bucket()
+                    bumpDisplay(&b, label)
+                    b.primaryUsed = true
+                    b.primaryCount += 1
+                    buckets[pLC] = b
+                }
+            }
+        }
+
+        // Order: known primaries in canonical guide order first, then any
+        // unknown primaries alphabetically.
+        let canonicalRank: (String) -> Int = { lc in
+            ControlledVocabulary.primariesLowercased.contains(lc)
+                ? ControlledVocabulary.primaryRank(lc)
+                : Int.max
+        }
+        let sortedKeys = buckets.keys.sorted { lhs, rhs in
+            let lr = canonicalRank(lhs)
+            let rr = canonicalRank(rhs)
+            if lr != rr { return lr < rr }
+            return lhs < rhs
+        }
+
+        return sortedKeys.map { key in
+            let b = buckets[key]!
+            let display = b.displayCounts.max { $0.value < $1.value }?.key ?? key
+            let secs = b.secondaries.values
+                .map { TagGroup.SecondaryEntry(label: $0.display, count: $0.count) }
+                .sorted { lhs, rhs in
+                    if lhs.count != rhs.count { return lhs.count > rhs.count }
+                    return lhs.label.lowercased() < rhs.label.lowercased()
+                }
+            return TagGroup(primary: display,
+                            primaryUsed: b.primaryUsed,
+                            primaryCount: b.primaryCount,
+                            secondaries: secs)
+        }
+    }
+
+    /// Local mirror of `ProjectStore.TagGroup` so this sheet can compute
+    /// its own AI-only hierarchy without widening the public API.
+    fileprivate struct TagGroup: Hashable {
+        let primary: String
+        let primaryUsed: Bool
+        let primaryCount: Int
+        let secondaries: [SecondaryEntry]
+
+        struct SecondaryEntry: Hashable {
+            let label: String
+            let count: Int
+        }
     }
 }
 
-private struct ClearAITagsRow: View {
-    let photo: Photo
-    let project: Project
-    let store: ProjectStore
-    let residueCount: Int
+/// Simple wrap-on-overflow flow layout for the chip rows. Built-in iOS
+/// list/HStack doesn't wrap; SwiftUI's `Layout` protocol lets us roll a
+/// minimal one without pulling in a 3rd-party dependency.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
 
-    var body: some View {
-        HStack(spacing: 10) {
-            thumbnail
-                .frame(width: 56, height: 42)
-                .clipped()
-                .background(Color.secondary.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("#\(photo.sequenceNumber)")
-                    .font(.subheadline.monospaced())
-                Text(detailLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    func sizeThatFits(proposal: ProposedViewSize,
+                      subviews: Subviews,
+                      cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                y += rowHeight + spacing
+                x = 0
+                rowHeight = 0
             }
-            Spacer()
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            totalWidth = max(totalWidth, x)
         }
+        return CGSize(width: totalWidth, height: y + rowHeight)
     }
 
-    private var detailLine: String {
-        var parts: [String] = []
-        let aiTagCount = photo.tags.filter { $0.confidence < 1.0 }.count
-        if aiTagCount > 0 {
-            parts.append("\(aiTagCount) AI tag\(aiTagCount == 1 ? "" : "s")")
-        }
-        if !photo.pendingSuggestions.isEmpty {
-            parts.append("\(photo.pendingSuggestions.count) pending")
-        }
-        if let sev = photo.aiSeverity, !sev.isEmpty {
-            parts.append("Severity: \(sev)")
-        }
-        if photo.aiObservation?.isEmpty == false {
-            parts.append("has summary")
-        }
-        if photo.aiAnalysis != nil {
-            parts.append("AI analysis")
-        }
-        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
-    }
+    func placeSubviews(in bounds: CGRect,
+                       proposal: ProposedViewSize,
+                       subviews: Subviews,
+                       cache: inout ()) {
+        let maxWidth = bounds.width
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var rowHeight: CGFloat = 0
 
-    @ViewBuilder
-    private var thumbnail: some View {
-        if let url = store.thumbnailURL(for: photo, in: project),
-           let data = try? Data(contentsOf: url),
-           let img = UIImage(data: data) {
-            Image(uiImage: img)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Image(systemName: "photo")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > bounds.minX + maxWidth, x > bounds.minX {
+                y += rowHeight + spacing
+                x = bounds.minX
+                rowHeight = 0
+            }
+            sub.place(at: CGPoint(x: x, y: y),
+                      proposal: ProposedViewSize(width: size.width, height: size.height))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }

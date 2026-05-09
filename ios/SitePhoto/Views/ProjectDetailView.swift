@@ -963,7 +963,7 @@ struct ProjectDetailView: View {
         } header: {
             Text("AI Tagging")
         } footer: {
-            Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time. \"Clear AI tagging\" wipes AI tags + findings from chosen photos while preserving manual entries.")
+            Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time. \"Clear AI tagging\" lets you pick which AI tags to remove from selected photos while preserving manual entries and the photo's saved AI analysis.")
         }
     }
 

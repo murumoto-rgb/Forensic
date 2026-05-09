@@ -1126,6 +1126,63 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// One unit of "what tag to remove" for the granular clear path. When
+    /// `parent` is nil, `label` is treated as a primary — matches the primary
+    /// itself (parentTag == nil) AND any secondary whose parentTag matches
+    /// `label`. When `parent` is non-nil, only matches the exact (parent, label)
+    /// pair. Comparisons are case-insensitive.
+    struct TagSelector: Hashable, Sendable {
+        let parent: String?
+        let label: String
+
+        init(parent: String? = nil, label: String) {
+            self.parent = parent
+            self.label = label
+        }
+    }
+
+    /// Remove every tag and pending suggestion on `photoIDs` that matches
+    /// any of `selectors`. Leaves manually-typed tags whose label/parent
+    /// don't match a selector alone, and never touches `aiAnalysis` or the
+    /// legacy `aiSeverity` / `aiObservation` / `aiFollowUp` metadata —
+    /// callers wanting the full nuke should use `clearAIInfo` instead.
+    @discardableResult
+    func removeTags(_ project: Project,
+                    photoIDs: Set<UUID>,
+                    selectors: Set<TagSelector>) -> Project {
+        var p = project
+        guard !photoIDs.isEmpty, !selectors.isEmpty else { return p }
+
+        // Pre-bucket selectors so the per-tag check is O(1) lookups.
+        var primaryLC: Set<String> = []
+        var pairKeys: Set<String> = []
+        for sel in selectors {
+            if let parent = sel.parent {
+                pairKeys.insert(Self.tagKey(parent: parent, label: sel.label))
+            } else {
+                primaryLC.insert(sel.label.lowercased())
+            }
+        }
+
+        func matches(parent: String?, label: String) -> Bool {
+            let lc = label.lowercased()
+            if parent == nil, primaryLC.contains(lc) { return true }
+            if let parent, primaryLC.contains(parent.lowercased()) { return true }
+            return pairKeys.contains(Self.tagKey(parent: parent, label: label))
+        }
+
+        for id in photoIDs {
+            guard let idx = p.photos.firstIndex(where: { $0.id == id }) else { continue }
+            p.photos[idx].tags.removeAll {
+                matches(parent: $0.parentTag, label: $0.label)
+            }
+            p.photos[idx].pendingSuggestions.removeAll {
+                matches(parent: $0.parentTag, label: $0.label)
+            }
+        }
+        return save(p)
+    }
+
     /// Drop a single AI suggestion without confirming it.
     @discardableResult
     func dismissSuggestion(_ project: Project,
