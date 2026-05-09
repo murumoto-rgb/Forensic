@@ -48,6 +48,10 @@ struct Photo: Identifiable, Codable, Hashable {
     /// so the user can come back later and accept/reject without re-running
     /// the analysis. Empty array (not nil) when none are pending.
     var pendingSuggestions: [TagSuggestion]
+    /// Optional reference to a `Bucket` defined on the parent project. nil
+    /// means the photo hasn't been categorized; folder export drops those
+    /// into a fallback "Unbucketed" folder.
+    var bucketID: UUID?
 
     init(id: UUID = UUID(), sequenceNumber: Int, imageFilename: String) {
         self.id = id
@@ -73,6 +77,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.aiAnalysis = nil
         self.tags = []
         self.pendingSuggestions = []
+        self.bucketID = nil
     }
 
     /// Tolerate manifests written before tags existed — decode the new fields
@@ -114,6 +119,8 @@ struct Photo: Identifiable, Codable, Hashable {
         }
         self.pendingSuggestions = try c.decodeIfPresent([TagSuggestion].self,
                                                         forKey: .pendingSuggestions) ?? []
+        self.bucketID           = try c.decodeIfPresent(UUID.self,
+                                                         forKey: .bucketID)
     }
 }
 

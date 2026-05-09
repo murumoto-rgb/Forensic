@@ -886,6 +886,101 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - Buckets
+
+    /// Append a new bucket with the given name and color, picking the next
+    /// available `sortOrder`. Trims and rejects empty names. Returns the
+    /// updated project.
+    @discardableResult
+    func addBucket(_ project: Project,
+                    name rawName: String,
+                    colorHex: String) -> Project {
+        var p = project
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return p }
+        let nextOrder = (p.buckets.map(\.sortOrder).max() ?? -1) + 1
+        p.buckets.append(Bucket(name: name,
+                                 colorHex: colorHex,
+                                 sortOrder: nextOrder))
+        return save(p)
+    }
+
+    /// Rename an existing bucket. No-op if the bucket isn't found or the
+    /// new name is blank.
+    @discardableResult
+    func renameBucket(_ project: Project,
+                       bucketID: UUID,
+                       to rawName: String) -> Project {
+        var p = project
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let idx = p.buckets.firstIndex(where: { $0.id == bucketID }) else {
+            return p
+        }
+        p.buckets[idx].name = name
+        return save(p)
+    }
+
+    /// Update a bucket's `colorHex`. No-op if the bucket isn't found.
+    @discardableResult
+    func recolorBucket(_ project: Project,
+                        bucketID: UUID,
+                        colorHex: String) -> Project {
+        var p = project
+        guard let idx = p.buckets.firstIndex(where: { $0.id == bucketID }) else {
+            return p
+        }
+        p.buckets[idx].colorHex = colorHex
+        return save(p)
+    }
+
+    /// Replace the project's buckets with the given order, rewriting each
+    /// `sortOrder` to its position in the array. The caller is expected to
+    /// pass the same set of buckets — extras are accepted, missing ones are
+    /// dropped (which would also drop them from `Photo.bucketID` references
+    /// via `deleteBucket`'s sweep, so prefer `deleteBucket` for removals).
+    @discardableResult
+    func reorderBuckets(_ project: Project, ordered: [Bucket]) -> Project {
+        var p = project
+        p.buckets = ordered.enumerated().map { i, bucket in
+            var b = bucket
+            b.sortOrder = i
+            return b
+        }
+        return save(p)
+    }
+
+    /// Drop a bucket and clear `Photo.bucketID` on every photo that pointed
+    /// at it (so they fall back to "Unbucketed").
+    @discardableResult
+    func deleteBucket(_ project: Project, bucketID: UUID) -> Project {
+        var p = project
+        p.buckets.removeAll { $0.id == bucketID }
+        for i in p.photos.indices where p.photos[i].bucketID == bucketID {
+            p.photos[i].bucketID = nil
+        }
+        return save(p)
+    }
+
+    /// Assign every photo in `photoIDs` to `bucketID`. Pass `nil` to clear
+    /// the bucket (drop the photos back into "Unbucketed"). Bucket IDs that
+    /// aren't actually defined on the project are silently rejected so a
+    /// stale reference can't corrupt the manifest.
+    @discardableResult
+    func setBucket(_ project: Project,
+                    photoIDs: Set<UUID>,
+                    bucketID: UUID?) -> Project {
+        var p = project
+        guard !photoIDs.isEmpty else { return p }
+        if let id = bucketID, !p.buckets.contains(where: { $0.id == id }) {
+            return p
+        }
+        for i in p.photos.indices where photoIDs.contains(p.photos[i].id) {
+            p.photos[i].bucketID = bucketID
+        }
+        return save(p)
+    }
+
     // MARK: - Tags
 
     /// Identity key for a Tag in the dedup pipelines: case-insensitive

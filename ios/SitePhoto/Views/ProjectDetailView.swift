@@ -38,6 +38,12 @@ struct ProjectDetailView: View {
     @State private var selectionMode: Bool = false
     @State private var selectedPhotoIDs: Set<UUID> = []
     @State private var confirmingBatchDelete: Bool = false
+    @State private var showingBucketManager: Bool = false
+    @State private var showingBucketPicker: Bool = false
+    /// Bucket IDs currently active as filters on the photo list. Empty =
+    /// no bucket filter. OR semantics across selected buckets, ANDed with
+    /// the existing tag and recommended-use filters.
+    @State private var activeBucketFilter: Set<UUID> = []
     @State private var showingAddressEditor = false
     @State private var addressUpdating = false
     @State private var taggingPhoto: PhotoTarget?
@@ -83,6 +89,7 @@ struct ProjectDetailView: View {
                     actionsSection(project)
                     floorPlanSection(project)
                     aiTaggingSection(project)
+                    bucketsSection(project)
                     exportSection(project)
                     photosSection(project)
                 }
@@ -151,6 +158,20 @@ struct ProjectDetailView: View {
                 .sheet(isPresented: $showingClearAITags) {
                     ClearAITagsSheet(projectID: projectID)
                         .environment(store)
+                }
+                .sheet(isPresented: $showingBucketManager) {
+                    BucketManagerSheet(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingBucketPicker) {
+                    BucketPickerSheet(
+                        projectID: projectID,
+                        photoIDs: selectedPhotoIDs,
+                        onAssigned: {
+                            exitSelectionMode()
+                        }
+                    )
+                    .environment(store)
                 }
                 .sheet(item: $batchTagFailureReport) { report in
                     BatchTagSummarySheet(
@@ -661,6 +682,7 @@ struct ProjectDetailView: View {
                 Text("Photos · \(project.photos.count)")
                 if !activeTagFilters.isEmpty
                     || !recommendedUseFilter.isEmpty
+                    || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
@@ -679,19 +701,35 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
-        HStack {
-            Button(role: .destructive) {
-                confirmingBatchDelete = true
-            } label: {
-                Label(
-                    "Delete \(selectedPhotoIDs.count) Photo\(selectedPhotoIDs.count == 1 ? "" : "s")",
-                    systemImage: "trash"
-                )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button {
+                    showingBucketPicker = true
+                } label: {
+                    Label(
+                        "Move \(selectedPhotoIDs.count) to Bucket…",
+                        systemImage: "folder"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+                .disabled(selectedPhotoIDs.isEmpty)
+                Spacer()
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(selectedPhotoIDs.isEmpty)
-            Spacer()
+            HStack {
+                Button(role: .destructive) {
+                    confirmingBatchDelete = true
+                } label: {
+                    Label(
+                        "Delete \(selectedPhotoIDs.count) Photo\(selectedPhotoIDs.count == 1 ? "" : "s")",
+                        systemImage: "trash"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedPhotoIDs.isEmpty)
+                Spacer()
+            }
         }
     }
 
@@ -740,7 +778,8 @@ struct ProjectDetailView: View {
     private func filteredPhotos(_ project: Project) -> [Photo] {
         let tagFilterActive = !activeTagFilters.isEmpty
         let useFilterActive = !recommendedUseFilter.isEmpty
-        if !tagFilterActive && !useFilterActive && !showOnlyNeedsReview {
+        let bucketFilterActive = !activeBucketFilter.isEmpty
+        if !tagFilterActive && !useFilterActive && !bucketFilterActive && !showOnlyNeedsReview {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
@@ -754,6 +793,10 @@ struct ProjectDetailView: View {
             if useFilterActive {
                 let bucket = photo.aiAnalysis?.recommendedUse.bucketKey ?? ""
                 if !recommendedUseFilter.contains(bucket) { return false }
+            }
+            if bucketFilterActive {
+                guard let bid = photo.bucketID,
+                      activeBucketFilter.contains(bid) else { return false }
             }
             if showOnlyNeedsReview {
                 if !needsReview(photo) { return false }
@@ -782,16 +825,20 @@ struct ProjectDetailView: View {
         // one photo would match.
         let needsReviewCount = store.project(withID: projectID)
             .map { project in project.photos.filter { needsReview($0) }.count } ?? 0
-        let bucketsInUse = bucketsInUseFor(projectID: projectID)
+        let recommendedUseChips = bucketsInUseFor(projectID: projectID)
+        let userBuckets = (store.project(withID: projectID)?.buckets ?? [])
+            .sorted { $0.sortOrder < $1.sortOrder }
 
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 if !activeTagFilters.isEmpty
                     || !recommendedUseFilter.isEmpty
+                    || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
+                        activeBucketFilter.removeAll()
                         showOnlyNeedsReview = false
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
@@ -812,7 +859,25 @@ struct ProjectDetailView: View {
                     .controlSize(.small)
                     .tint(showOnlyNeedsReview ? .orange : .secondary)
                 }
-                ForEach(bucketsInUse, id: \.self) { bucket in
+                ForEach(userBuckets) { bucket in
+                    let on = activeBucketFilter.contains(bucket.id)
+                    Button {
+                        if on { activeBucketFilter.remove(bucket.id) }
+                        else  { activeBucketFilter.insert(bucket.id) }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(bucket.color)
+                                .frame(width: 8, height: 8)
+                            Text(bucket.name)
+                                .font(.caption)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(on ? bucket.color : .secondary)
+                }
+                ForEach(recommendedUseChips, id: \.self) { bucket in
                     let on = recommendedUseFilter.contains(bucket)
                     Button {
                         if on { recommendedUseFilter.remove(bucket) }
@@ -964,6 +1029,82 @@ struct ProjectDetailView: View {
             Text("AI Tagging")
         } footer: {
             Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time. \"Clear AI tagging\" lets you pick which AI tags to remove from selected photos while preserving manual entries and the photo's saved AI analysis.")
+        }
+    }
+
+    // MARK: - Buckets section
+
+    @ViewBuilder
+    private func bucketsSection(_ project: Project) -> some View {
+        let sortedBuckets = project.buckets.sorted { $0.sortOrder < $1.sortOrder }
+        Section {
+            Button {
+                showingBucketManager = true
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Manage Buckets")
+                        Text(sortedBuckets.isEmpty
+                             ? "No buckets yet — create some to group photos for export."
+                             : "\(sortedBuckets.count) bucket\(sortedBuckets.count == 1 ? "" : "s") defined")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "folder")
+                }
+            }
+            if !sortedBuckets.isEmpty {
+                let unbucketedCount = project.photos.filter { $0.bucketID == nil }.count
+                bucketCountsRow(buckets: sortedBuckets,
+                                  photos: project.photos,
+                                  unbucketedCount: unbucketedCount)
+            }
+        } header: {
+            Text("Buckets")
+        } footer: {
+            Text("Buckets are user-defined categories for grouping photos — typically one per report section. Use the Photos list's Select mode to assign multiple photos at once.")
+        }
+    }
+
+    @ViewBuilder
+    private func bucketCountsRow(buckets: [Bucket],
+                                   photos: [Photo],
+                                   unbucketedCount: Int) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(buckets) { bucket in
+                    let count = photos.filter { $0.bucketID == bucket.id }.count
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(bucket.color)
+                            .frame(width: 10, height: 10)
+                        Text(bucket.name)
+                            .font(.caption)
+                        Text("\(count)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                }
+                if unbucketedCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "tray")
+                            .font(.caption2)
+                        Text("Unbucketed")
+                            .font(.caption)
+                        Text("\(unbucketedCount)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                }
+            }
+            .padding(.vertical, 2)
         }
     }
 
@@ -1340,6 +1481,9 @@ private struct PhotoRow: View {
                     if !livePending.isEmpty {
                         badge(text: "AI \(livePending.count)", color: .purple)
                     }
+                    if let bucket = bucketFor(photo) {
+                        bucketBadge(bucket)
+                    }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
@@ -1439,6 +1583,32 @@ private struct PhotoRow: View {
             .padding(.vertical, 2)
             .background(color.opacity(0.2), in: Capsule())
             .foregroundStyle(color)
+    }
+
+    /// Resolve the photo's bucket against the project's defined buckets.
+    /// Returns nil for unbucketed photos or for stale references whose
+    /// bucket has since been deleted (ProjectStore.deleteBucket nilifies
+    /// these on save, but a freshly-decoded manifest could still carry an
+    /// orphan reference).
+    private func bucketFor(_ photo: Photo) -> Bucket? {
+        guard let id = photo.bucketID else { return nil }
+        return project.buckets.first(where: { $0.id == id })
+    }
+
+    @ViewBuilder
+    private func bucketBadge(_ bucket: Bucket) -> some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(bucket.color)
+                .frame(width: 7, height: 7)
+            Text(bucket.name)
+                .font(.caption2.bold())
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(bucket.color.opacity(0.2), in: Capsule())
+        .foregroundStyle(bucket.color)
     }
 
     private func zoomLabel(_ z: Double) -> String {

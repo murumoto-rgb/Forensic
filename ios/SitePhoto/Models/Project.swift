@@ -20,6 +20,11 @@ struct Project: Identifiable, Codable, Hashable {
     /// (`AIInstructions.default`). Empty string means the user explicitly
     /// disabled custom instructions.
     var aiInstructions: String?
+    /// User-defined categories for grouping photos in this project. Each
+    /// `Photo.bucketID` references one of these (or nil). Folder export
+    /// renders one directory per bucket in `sortOrder`. Empty by default —
+    /// the user opts in by creating buckets via the manager sheet.
+    var buckets: [Bucket]
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -35,6 +40,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.floorPlan = nil
         self.folderName = Self.makeFolderName(id: id, name: name, createdAt: self.createdAt)
         self.aiInstructions = nil
+        self.buckets = []
     }
 
     /// Tolerate manifests written before `aiInstructions` existed.
@@ -53,6 +59,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.floorPlan       = try c.decodeIfPresent(FloorPlan.self, forKey: .floorPlan)
         self.folderName      = try c.decodeIfPresent(String.self, forKey: .folderName)
         self.aiInstructions  = try c.decodeIfPresent(String.self, forKey: .aiInstructions)
+        self.buckets         = try c.decodeIfPresent([Bucket].self, forKey: .buckets) ?? []
     }
 
     var isActive: Bool { startedAt != nil && !stopped }
