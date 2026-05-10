@@ -234,6 +234,13 @@ struct PDFExportService {
             let ox = cx + pad
             let oy = cy + pad + (innerH - dH) / 2
             item.image.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
+            // Composite the PencilKit markup overlay (if any) on top of
+            // the photo, scaled to the same destination rect.
+            if let markupURL = store.markupOverlayURL(for: item.photo, in: project),
+               let markupData = try? Data(contentsOf: markupURL),
+               let markupImage = UIImage(data: markupData) {
+                markupImage.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
+            }
 
             let captionY = cy + cellH - captionH + 4
             drawText("#\(item.photo.sequenceNumber)",

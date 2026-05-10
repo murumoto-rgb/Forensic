@@ -24,6 +24,12 @@ struct PhotoTagEditorSheet: View {
     @State private var observationDraft: String = ""
     @FocusState private var captionFocused: Bool
     @FocusState private var observationFocused: Bool
+    /// One dictation controller per overridable field so two recordings
+    /// don't trample each other. SwiftUI rebuilds the view a lot, so these
+    /// live as `@State` to survive re-renders.
+    @State private var captionDictation = VoiceDictationController()
+    @State private var observationDictation = VoiceDictationController()
+    @State private var showingMarkup: Bool = false
 
     private var project: Project? { store.project(withID: projectID) }
     private var photo: Photo? {
@@ -87,6 +93,27 @@ struct PhotoTagEditorSheet: View {
             .onChange(of: observationFocused) { _, focused in
                 if !focused { flushObservationOverride() }
             }
+            // Mirror live dictation back into the buffer + the store. The
+            // controller keeps appending to `seed`, so writing the full
+            // transcript into the draft is safe — no double-text bug.
+            .onChange(of: captionDictation.transcript) { _, new in
+                guard captionDictation.isRecording else { return }
+                captionDraft = new
+            }
+            .onChange(of: observationDictation.transcript) { _, new in
+                guard observationDictation.isRecording else { return }
+                observationDraft = new
+            }
+            .onChange(of: captionDictation.isRecording) { _, recording in
+                if !recording { flushCaptionOverride() }
+            }
+            .onChange(of: observationDictation.isRecording) { _, recording in
+                if !recording { flushObservationOverride() }
+            }
+            .sheet(isPresented: $showingMarkup) {
+                PhotoMarkupView(projectID: projectID, photoID: photoID)
+                    .environment(store)
+            }
         }
     }
 
@@ -111,9 +138,13 @@ struct PhotoTagEditorSheet: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Caption")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Caption")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    micButton(controller: captionDictation, seedProvider: { captionDraft })
+                }
                 TextField(
                     aiCaption.isEmpty
                         ? "Short caption for the report figure"
@@ -131,12 +162,21 @@ struct PhotoTagEditorSheet: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+                if let err = captionDictation.error {
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Summary Observation")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Summary Observation")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    micButton(controller: observationDictation, seedProvider: { observationDraft })
+                }
                 TextField(
                     aiObservation.isEmpty
                         ? "One sentence using cautious language"
@@ -154,6 +194,11 @@ struct PhotoTagEditorSheet: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+                if let err = observationDictation.error {
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
             }
         }
         .padding(12)
@@ -166,6 +211,28 @@ struct PhotoTagEditorSheet: View {
     private func loadOverrideDrafts() {
         captionDraft = photo?.userCaption ?? ""
         observationDraft = photo?.userObservation ?? ""
+    }
+
+    /// Mic button rendered next to each override field's label. Tapping
+    /// starts dictation with the current text as the seed (so we append,
+    /// not replace); tapping again stops. Recording state colors the
+    /// icon red so the user can spot an active session at a glance.
+    @ViewBuilder
+    private func micButton(controller: VoiceDictationController,
+                            seedProvider: @escaping () -> String) -> some View {
+        Button {
+            if controller.isRecording {
+                controller.stop()
+            } else {
+                Task { await controller.start(seed: seedProvider()) }
+            }
+        } label: {
+            Image(systemName: controller.isRecording ? "stop.circle.fill" : "mic.circle")
+                .font(.title3)
+                .foregroundStyle(controller.isRecording ? Color.red : Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(controller.isRecording ? "Stop dictation" : "Start dictation")
     }
 
     private func flushCaptionOverride() {
@@ -207,6 +274,19 @@ struct PhotoTagEditorSheet: View {
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(8)
                         Spacer()
+                        Button {
+                            showingMarkup = true
+                        } label: {
+                            Label(photo.markupOverlayFilename == nil ? "Markup" : "Edit Markup",
+                                  systemImage: "pencil.tip.crop.circle")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(.black.opacity(0.6),
+                                            in: RoundedRectangle(cornerRadius: 6))
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(8)
                     }
                     Spacer()
                 }

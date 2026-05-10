@@ -41,6 +41,8 @@ targets:
         NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."
         NSLocationWhenInUseUsageDescription: "SitePhoto records the GPS location and address of each project at the start of a session."
         NSPhotoLibraryAddUsageDescription: "SitePhoto can save exported PDFs and photos to your Photos library."
+        NSMicrophoneUsageDescription: "SitePhoto uses the microphone so you can dictate photo captions and observations in the field instead of typing."
+        NSSpeechRecognitionUsageDescription: "SitePhoto converts your dictated observations into text. Recognition runs on-device when possible so the audio doesn't leave your iPhone."
         NSUbiquitousContainers:
           iCloud.com.murumoto.sitephoto:
             NSUbiquitousContainerIsDocumentScopePublic: true

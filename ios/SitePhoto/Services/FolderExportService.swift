@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Build a directory tree under the app's storage root with one folder per
 /// user-defined bucket, photos copied byte-for-byte (so EXIF and timestamps
@@ -112,7 +113,52 @@ struct FolderExportService {
             // ProjectStore.makePhotoFilename, so engineers can sort
             // alphabetically and get sequence order.
             let dst = destination.appending(path: photo.imageFilename)
+            // If the photo has a PencilKit markup overlay, composite it
+            // onto a fresh JPG copy (EXIF lost; markup is the point of
+            // the export). Otherwise byte-copy to preserve metadata.
+            if let markupURL = store.markupOverlayURL(for: photo, in: project),
+               compositeMarkup(photoURL: src, markupURL: markupURL, dst: dst) {
+                continue
+            }
             try? fileManager.copyItem(at: src, to: dst)
+        }
+    }
+
+    /// Render the source JPG + PencilKit overlay PNG into a single JPG at
+    /// the destination. Returns false (so the caller falls back to byte
+    /// copy) if either image fails to load or encoding produces nothing.
+    private func compositeMarkup(photoURL: URL,
+                                  markupURL: URL,
+                                  dst: URL) -> Bool {
+        guard let photoData = try? Data(contentsOf: photoURL),
+              let photoImage = UIImage(data: photoData),
+              let markupData = try? Data(contentsOf: markupURL),
+              let markupImage = UIImage(data: markupData) else {
+            return false
+        }
+        let size = photoImage.size
+        guard size.width > 0, size.height > 0 else { return false }
+        let renderer = UIGraphicsImageRenderer(
+            size: size,
+            format: {
+                let f = UIGraphicsImageRendererFormat.default()
+                f.opaque = true
+                f.scale = 1
+                return f
+            }()
+        )
+        let composited = renderer.image { _ in
+            photoImage.draw(in: CGRect(origin: .zero, size: size))
+            markupImage.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard let jpeg = composited.jpegData(compressionQuality: 0.92) else {
+            return false
+        }
+        do {
+            try jpeg.write(to: dst, options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 

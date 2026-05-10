@@ -52,6 +52,15 @@ struct Photo: Identifiable, Codable, Hashable {
     /// means the photo hasn't been categorized; folder export drops those
     /// into a fallback "Unbucketed" folder.
     var bucketID: UUID?
+    /// Filename (inside the project's markups folder) of a transparent PNG
+    /// overlay drawn by the engineer with PencilKit — arrows, circles,
+    /// callouts. Compositied onto the photo in PDF + folder exports. nil
+    /// means no markup yet.
+    var markupOverlayFilename: String?
+    /// Filename of the raw `PKDrawing.dataRepresentation()` (lives next to
+    /// the PNG). Preserved so the user can re-edit existing markup; the PNG
+    /// alone would lose stroke structure. nil when no markup exists.
+    var markupDrawingFilename: String?
     /// User flag for "include this in the headline figures of the report".
     /// Drives a star icon in the photo row and the "Favorites only" chip
     /// in the filter bar. Optional in the export pipelines later.
@@ -93,6 +102,8 @@ struct Photo: Identifiable, Codable, Hashable {
         self.isFavorite = false
         self.userCaption = nil
         self.userObservation = nil
+        self.markupOverlayFilename = nil
+        self.markupDrawingFilename = nil
     }
 
     /// Tolerate manifests written before tags existed — decode the new fields
@@ -142,6 +153,10 @@ struct Photo: Identifiable, Codable, Hashable {
                                                          forKey: .userCaption)
         self.userObservation    = try c.decodeIfPresent(String.self,
                                                          forKey: .userObservation)
+        self.markupOverlayFilename = try c.decodeIfPresent(String.self,
+                                                            forKey: .markupOverlayFilename)
+        self.markupDrawingFilename = try c.decodeIfPresent(String.self,
+                                                            forKey: .markupDrawingFilename)
     }
 
     /// Caption to show in exports / report surfaces. Prefers the user's

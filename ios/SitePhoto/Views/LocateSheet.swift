@@ -18,11 +18,19 @@ struct LocateSheet: View {
     @State private var showingMoreCamera = false
     @State private var showingGroupPicker = false
     @State private var error: String?
+    /// Optional caption the engineer dictates / types while the photo is
+    /// fresh. Persisted on the lead (primary) photo's `userCaption` after
+    /// `save()` succeeds so it shows up later in the tag editor and in
+    /// exports without a second trip back to the photo.
+    @State private var captionDraft: String = ""
+    @State private var captionDictation = VoiceDictationController()
+    @FocusState private var captionFocused: Bool
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 instructionBar
+                captionBar
 
                 if let img = planImage {
                     PlanLocateCanvas(
@@ -101,6 +109,55 @@ struct LocateSheet: View {
         }
         .padding()
         .background(.ultraThinMaterial)
+    }
+
+    /// Quick caption field + mic — captures the engineer's observation
+    /// while the photo is fresh and before the pin is placed. Saved onto
+    /// the lead photo's `userCaption` when the batch is committed.
+    @ViewBuilder
+    private var captionBar: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.bubble")
+                    .foregroundStyle(.secondary)
+                TextField("Optional caption (or use mic →)",
+                          text: $captionDraft, axis: .vertical)
+                    .lineLimit(1...3)
+                    .focused($captionFocused)
+                    .submitLabel(.done)
+                    .onSubmit { captionFocused = false }
+                Button {
+                    if captionDictation.isRecording {
+                        captionDictation.stop()
+                    } else {
+                        Task { await captionDictation.start(seed: captionDraft) }
+                    }
+                } label: {
+                    Image(systemName: captionDictation.isRecording
+                          ? "stop.circle.fill" : "mic.circle")
+                        .font(.title2)
+                        .foregroundStyle(captionDictation.isRecording
+                                         ? Color.red : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(captionDictation.isRecording
+                                    ? "Stop dictation"
+                                    : "Dictate caption")
+            }
+            if let err = captionDictation.error {
+                Text(err)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .onChange(of: captionDictation.transcript) { _, new in
+            guard captionDictation.isRecording else { return }
+            captionDraft = new
+        }
     }
 
     private var instructionText: String {
@@ -203,10 +260,12 @@ struct LocateSheet: View {
     // MARK: - Actions
 
     private func discard() {
+        captionDictation.stop()
         pendingPhotos = []
         planPoint = nil
         heading = nil
         step = .position
+        captionDraft = ""
         dismiss()
     }
 
@@ -215,9 +274,12 @@ struct LocateSheet: View {
         guard let plan = project.floorPlan else { return }
         guard !pendingPhotos.isEmpty else { dismiss(); return }
 
+        captionDictation.stop()
+
         let useLoc = !skipLocation && planPoint != nil
         let useHeading = useLoc && !skipDirection && heading != nil
         let groupID: UUID? = pendingPhotos.count > 1 ? UUID() : nil
+        let pendingCount = pendingPhotos.count
 
         var current = project
         for (i, captured) in pendingPhotos.enumerated() {
@@ -241,11 +303,30 @@ struct LocateSheet: View {
             }
         }
 
+        applyCaptionToLeadPhoto(in: &current, newlyAddedCount: pendingCount)
+
         pendingPhotos = []
         planPoint = nil
         heading = nil
         step = .position
+        captionDraft = ""
         dismiss()
+    }
+
+    /// Find the first photo of the just-committed batch (the lead, marked
+    /// `isPrimary` in the location helper above) and write the caption
+    /// draft to its `userCaption`. Newly-added photos are appended to the
+    /// end of `project.photos`, so the lead sits at index
+    /// `count - newlyAddedCount`. Falls back to a search by isPrimary if
+    /// the index is somehow out of range.
+    private func applyCaptionToLeadPhoto(in project: inout Project,
+                                          newlyAddedCount: Int) {
+        let trimmed = captionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, newlyAddedCount > 0 else { return }
+        let leadIndex = project.photos.count - newlyAddedCount
+        guard leadIndex >= 0, leadIndex < project.photos.count else { return }
+        let leadID = project.photos[leadIndex].id
+        project = store.setUserCaption(project, photoID: leadID, trimmed)
     }
 
     /// Save every pending photo at the chosen lead's plan position, joining
@@ -260,6 +341,14 @@ struct LocateSheet: View {
             dismiss()
             return
         }
+
+        captionDictation.stop()
+        // For the attach-to-existing flow, the dictated caption applies to
+        // the existing lead photo (since the new pendings are tails). Skip
+        // when the lead already has its own caption to avoid clobbering.
+        let trimmedCaption = captionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldApplyCaption = !trimmedCaption.isEmpty
+            && (current.photos[leadIdx].userCaption?.isEmpty ?? true)
 
         // Make sure the lead has a groupID and is marked as the primary.
         let gid: UUID
@@ -293,10 +382,17 @@ struct LocateSheet: View {
             }
         }
 
+        if shouldApplyCaption {
+            current = store.setUserCaption(current,
+                                            photoID: leadID,
+                                            trimmedCaption)
+        }
+
         pendingPhotos = []
         planPoint = nil
         heading = nil
         step = .position
+        captionDraft = ""
         dismiss()
     }
 }

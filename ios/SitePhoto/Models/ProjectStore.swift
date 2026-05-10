@@ -172,6 +172,74 @@ final class ProjectStore {
         projectURL(project).appending(path: "thumbnails", directoryHint: .isDirectory)
     }
 
+    /// Directory holding PencilKit markup overlay files (one PNG per
+    /// annotated photo, plus the matching `.drawing` data for re-editing).
+    func markupsFolder(for project: Project) -> URL {
+        projectURL(project).appending(path: "markups", directoryHint: .isDirectory)
+    }
+
+    /// Resolved URL of `photo`'s markup PNG overlay, or nil if the photo
+    /// has no overlay or the file is missing on disk.
+    func markupOverlayURL(for photo: Photo, in project: Project) -> URL? {
+        guard let name = photo.markupOverlayFilename else { return nil }
+        let url = markupsFolder(for: project).appending(path: name)
+        guard fileManager.fileExists(atPath: url.path()) else { return nil }
+        return url
+    }
+
+    /// Resolved URL of `photo`'s `.drawing` data, used to re-open the
+    /// markup view with prior strokes intact.
+    func markupDrawingURL(for photo: Photo, in project: Project) -> URL? {
+        guard let name = photo.markupDrawingFilename else { return nil }
+        let url = markupsFolder(for: project).appending(path: name)
+        guard fileManager.fileExists(atPath: url.path()) else { return nil }
+        return url
+    }
+
+    /// Persist a fresh PencilKit overlay for `photoID`. `pngData` is the
+    /// rendered transparent overlay (full-photo-resolution); `drawingData`
+    /// is the raw `PKDrawing.dataRepresentation()` so the next markup
+    /// session can resume editing. Both files share the photo's stem and
+    /// live under `markupsFolder(for:)`.
+    @discardableResult
+    func saveMarkup(_ project: Project,
+                     photoID: UUID,
+                     pngData: Data,
+                     drawingData: Data) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let folder = markupsFolder(for: p)
+        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stem = (p.photos[idx].imageFilename as NSString).deletingPathExtension
+        let pngName = "\(stem)_markup.png"
+        let drawingName = "\(stem)_markup.drawing"
+        let pngURL = folder.appending(path: pngName)
+        let drawingURL = folder.appending(path: drawingName)
+        try? pngData.write(to: pngURL, options: .atomic)
+        try? drawingData.write(to: drawingURL, options: .atomic)
+        p.photos[idx].markupOverlayFilename = pngName
+        p.photos[idx].markupDrawingFilename = drawingName
+        return save(p)
+    }
+
+    /// Drop the markup overlay + drawing file from disk and clear the
+    /// references on `photoID`.
+    @discardableResult
+    func clearMarkup(_ project: Project, photoID: UUID) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let folder = markupsFolder(for: p)
+        if let name = p.photos[idx].markupOverlayFilename {
+            try? fileManager.removeItem(at: folder.appending(path: name))
+        }
+        if let name = p.photos[idx].markupDrawingFilename {
+            try? fileManager.removeItem(at: folder.appending(path: name))
+        }
+        p.photos[idx].markupOverlayFilename = nil
+        p.photos[idx].markupDrawingFilename = nil
+        return save(p)
+    }
+
     func manifestURL(for project: Project) -> URL {
         projectURL(project).appending(path: "manifest.json")
     }
