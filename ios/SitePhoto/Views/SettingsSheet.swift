@@ -4,6 +4,7 @@ import SwiftUI
 /// tagging. Designed to grow — sections can be added without restructuring.
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(ProjectStore.self) private var store
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -90,6 +91,31 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
+                            .foregroundStyle(store.usingICloud ? .blue : .orange)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(store.usingICloud
+                                 ? "Synced via iCloud Drive"
+                                 : "Local storage only")
+                                .font(.subheadline.bold())
+                            if store.usingICloud {
+                                Text("Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them, or AirDrop the folder to share.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if let reason = store.iCloudUnavailableReason {
+                                Text(reason)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Storage")
+                }
+
+                Section {
                     Link("Get an API key →",
                          destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                     Link("Anthropic pricing →",
@@ -141,4 +167,5 @@ struct SettingsSheet: View {
 
 #Preview {
     SettingsSheet()
+        .environment(ProjectStore())
 }

@@ -405,26 +405,34 @@ struct PDFExportService {
         ctx.restoreGState()
         // MARK: end cluster-fanning leader lines
 
-        // SwiftUI Color.green maps to UIColor.systemGreen (#34C759 in light mode).
-        let green = UIColor(red: 52.0/255, green: 199.0/255, blue: 89.0/255, alpha: 1).cgColor
+        // Look up the user's plan colour mode once per render. The PDF and
+        // the on-screen plan resolve colours through the same helper so the
+        // two stay in sync.
+        let colorMode = PlanColorMode.stored
 
         for m in markers where !m.isPrimary {
+            let color = PlanMarkerColors.cgColor(for: m.photo,
+                                                  mode: colorMode,
+                                                  project: project)
             paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
                         cy: originY + CGFloat(m.y) * scale,
                         radius: secR, seq: m.photo.sequenceNumber, bearing: nil,
                         arrowLength: arrowLength, arrowBase: arrowBase,
-                        strokeWidth: strokeWidth, color: green)
+                        strokeWidth: strokeWidth, color: color)
         }
         for m in markers where m.isPrimary {
             // MARK: cluster-fanning per-marker arrow length
             let myArrowLengthPlan = arrowLengthsByID[m.photo.id] ?? arrowLengthPlan
             let myArrowLength = CGFloat(myArrowLengthPlan) * scale
             // MARK: end cluster-fanning per-marker arrow length
+            let color = PlanMarkerColors.cgColor(for: m.photo,
+                                                  mode: colorMode,
+                                                  project: project)
             paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
                         cy: originY + CGFloat(m.y) * scale,
                         radius: primaryR, seq: m.photo.sequenceNumber, bearing: m.bearing,
                         arrowLength: myArrowLength, arrowBase: arrowBase,
-                        strokeWidth: strokeWidth, color: green)
+                        strokeWidth: strokeWidth, color: color)
         }
     }
 

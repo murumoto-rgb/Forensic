@@ -6,6 +6,14 @@ struct PlanViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("sitephoto.bubbleScale") private var bubbleScale: Double = 1.5
+    /// Persisted color mode for the plan markers — `status` (single green,
+    /// historical default), `bucket`, or `primaryTag`. Stored under
+    /// `PlanColorMode.storageKey` so `PDFExportService` reads the same value
+    /// from `UserDefaults` when rendering the PDF floor plan.
+    @AppStorage(PlanColorMode.storageKey) private var planColorModeRaw: String = PlanColorMode.status.rawValue
+    private var planColorMode: PlanColorMode {
+        PlanColorMode(rawValue: planColorModeRaw) ?? .status
+    }
     @State private var selectedPhotoID: UUID?
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -65,10 +73,22 @@ struct PlanViewerView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button {
-                resetView()
-            } label: {
-                Image(systemName: "arrow.up.backward.and.arrow.down.forward")
+            HStack(spacing: 12) {
+                Button {
+                    resetView()
+                } label: {
+                    Image(systemName: "arrow.up.backward.and.arrow.down.forward")
+                }
+                Menu {
+                    Picker("Color markers by", selection: $planColorModeRaw) {
+                        ForEach(PlanColorMode.allCases, id: \.self) { mode in
+                            Label(mode.displayName, systemImage: mode.iconName)
+                                .tag(mode.rawValue)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "paintpalette")
+                }
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -343,7 +363,19 @@ struct PlanViewerView: View {
     @ViewBuilder
     private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
         let isSelected = marker.photo.id == selectedPhotoID
-        let fill: Color = isSelected ? Color(red: 0.92, green: 0.27, blue: 0.20) : .green
+        // Selected always wins (red) so the user can spot the active marker
+        // regardless of the color mode. Unselected markers come from the
+        // shared `PlanMarkerColors` resolver so on-screen and PDF stay in sync.
+        let fill: Color
+        if isSelected {
+            fill = Color(red: 0.92, green: 0.27, blue: 0.20)
+        } else if let project = store.project(withID: projectID) {
+            fill = PlanMarkerColors.color(for: marker.photo,
+                                            mode: planColorMode,
+                                            project: project)
+        } else {
+            fill = .green
+        }
         ZStack {
             Circle()
                 .fill(fill)
