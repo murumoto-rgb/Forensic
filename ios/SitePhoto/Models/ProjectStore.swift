@@ -549,19 +549,29 @@ final class ProjectStore {
 
     // Project-side helpers ----------------------------------------------
 
-    /// Add a batch of selected library entries to `project` as fresh
-    /// project buckets (each gets a new UUID — no aliasing with the
-    /// library entry id). Returns the saved project.
+    /// Add the library entries identified by `entryIDs` to `project` as
+    /// fresh project buckets. The store resolves each entry back to its
+    /// owning category so the new bucket's `libraryCategoryID` points
+    /// at the right group — that's what makes the Bucket Manager's
+    /// "subheadings" grouping work. Each new bucket gets a fresh UUID
+    /// (no aliasing with the library entry id).
     @discardableResult
-    func addLibraryEntries(_ entries: [BucketLibraryCategory.Entry],
+    func addLibraryEntries(withIDs entryIDs: Set<UUID>,
                             to project: Project) -> Project {
-        guard !entries.isEmpty else { return project }
+        guard !entryIDs.isEmpty else { return project }
         var p = project
         let baseOrder = p.buckets.map(\.sortOrder).max().map { $0 + 1 } ?? 0
-        for (offset, entry) in entries.enumerated() {
-            p.buckets.append(Bucket(name: entry.name,
-                                     colorHex: entry.colorHex,
-                                     sortOrder: baseOrder + offset))
+        var offset = 0
+        // Walk the library in render order so the added buckets fall in
+        // the same visual order as the picker presented them.
+        for category in bucketLibrary {
+            for entry in category.entries where entryIDs.contains(entry.id) {
+                p.buckets.append(Bucket(name: entry.name,
+                                         colorHex: entry.colorHex,
+                                         sortOrder: baseOrder + offset,
+                                         libraryCategoryID: category.id))
+                offset += 1
+            }
         }
         return save(p)
     }
@@ -575,6 +585,22 @@ final class ProjectStore {
         return addLibraryEntry(toCategory: categoryID,
                                 name: bucket.name,
                                 colorHex: bucket.colorHex)
+    }
+
+    /// Tag (or untag) a project bucket with the library category it
+    /// belongs to. Drives the subheading grouping in BucketManagerSheet
+    /// and lets "Save to Library" classify the bucket at the same time
+    /// it copies the entry into the library.
+    @discardableResult
+    func setBucketLibraryCategory(_ project: Project,
+                                   bucketID: UUID,
+                                   libraryCategoryID: UUID?) -> Project {
+        guard let idx = project.buckets.firstIndex(where: { $0.id == bucketID }) else {
+            return project
+        }
+        var p = project
+        p.buckets[idx].libraryCategoryID = libraryCategoryID
+        return save(p)
     }
 
     private static func resizeForLogo(_ image: UIImage) -> UIImage? {

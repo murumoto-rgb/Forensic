@@ -26,6 +26,48 @@ struct BucketManagerSheet: View {
         (project?.buckets ?? []).sorted { $0.sortOrder < $1.sortOrder }
     }
 
+    /// One row in the grouped bucket list — a library category (or the
+    /// "Uncategorized" sentinel) plus the buckets that fall under it,
+    /// kept in sortOrder. Categories the engineer hasn't tagged any
+    /// bucket under are omitted, so the manager only shows headings
+    /// that have content.
+    private struct BucketGroup: Identifiable {
+        let id: String
+        let categoryID: UUID?
+        let title: String
+        let buckets: [Bucket]
+    }
+
+    private var groupedBuckets: [BucketGroup] {
+        let sorted = buckets
+        let knownCategories = store.bucketLibrary
+        var groups: [BucketGroup] = []
+        // Render in the library's own order so the manager mirrors the
+        // grouping the engineer sees in the picker.
+        for category in knownCategories {
+            let members = sorted.filter { $0.libraryCategoryID == category.id }
+            guard !members.isEmpty else { continue }
+            groups.append(BucketGroup(id: category.id.uuidString,
+                                       categoryID: category.id,
+                                       title: category.name,
+                                       buckets: members))
+        }
+        // Buckets pointing at a category that no longer exists fall
+        // back to "Uncategorized" so they're still reachable.
+        let validIDs = Set(knownCategories.map(\.id))
+        let unmatched = sorted.filter { bucket in
+            guard let cid = bucket.libraryCategoryID else { return true }
+            return !validIDs.contains(cid)
+        }
+        if !unmatched.isEmpty {
+            groups.append(BucketGroup(id: "__uncategorized__",
+                                       categoryID: nil,
+                                       title: "Uncategorized",
+                                       buckets: unmatched))
+        }
+        return groups
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -40,11 +82,8 @@ struct BucketManagerSheet: View {
                         .listRowBackground(Color.clear)
                     }
                 } else {
-                    Section("Buckets · \(buckets.count)") {
-                        ForEach(buckets) { bucket in
-                            bucketRow(bucket)
-                        }
-                        .onMove(perform: moveBuckets)
+                    ForEach(groupedBuckets, id: \.id) { group in
+                        bucketGroupSection(group)
                     }
                 }
             }
@@ -115,6 +154,43 @@ struct BucketManagerSheet: View {
                 Label("Create", systemImage: "plus.circle.fill")
             }
             .disabled(trimmedNew.isEmpty)
+        }
+    }
+
+    /// One Section in the grouped list. Uses the library category's
+    /// name as the section header (or "Uncategorized" for buckets with
+    /// no link), and lets the engineer drag-reorder within the section.
+    /// Cross-section drag is intentionally disabled — moving a bucket
+    /// out of its category would require changing both `sortOrder` and
+    /// `libraryCategoryID`, which is too ambiguous to do silently.
+    @ViewBuilder
+    private func bucketGroupSection(_ group: BucketGroup) -> some View {
+        Section {
+            ForEach(group.buckets) { bucket in
+                bucketRow(bucket)
+            }
+            .onMove { source, destination in
+                moveBuckets(inGroup: group, from: source, to: destination)
+            }
+        } header: {
+            HStack(spacing: 8) {
+                if group.categoryID != nil {
+                    Text("Investigation Type")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    Text("·")
+                        .foregroundStyle(.secondary)
+                }
+                Text(group.title)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.primary)
+                    .textCase(nil)
+                Spacer()
+                Text("\(group.buckets.count)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -261,10 +337,18 @@ struct BucketManagerSheet: View {
     }
 
     private func saveToLibrary(_ bucket: Bucket, categoryID: UUID) {
-        guard let entry = store.saveBucketToLibrary(bucket,
+        guard let project,
+              let entry = store.saveBucketToLibrary(bucket,
                                                       intoCategory: categoryID) else {
             return
         }
+        // Classify the bucket on the project so it surfaces under the
+        // chosen category in the grouped list immediately. Without this
+        // the engineer would file the bucket to the library but the
+        // bucket itself would stay under "Uncategorized".
+        _ = store.setBucketLibraryCategory(project,
+                                            bucketID: bucket.id,
+                                            libraryCategoryID: categoryID)
         let categoryName = store.bucketLibrary
             .first(where: { $0.id == categoryID })?.name ?? ""
         Haptics.success()
@@ -290,11 +374,27 @@ struct BucketManagerSheet: View {
         renameDraft = ""
     }
 
-    private func moveBuckets(from source: IndexSet, to destination: Int) {
+    /// Move buckets inside one group only. SwiftUI's `.onMove` hands us
+    /// indices relative to the group's slice, so we translate those
+    /// back into a full-list reorder that keeps everything outside the
+    /// group exactly where it was.
+    private func moveBuckets(inGroup group: BucketGroup,
+                              from source: IndexSet,
+                              to destination: Int) {
         guard let project else { return }
-        var ordered = buckets
-        ordered.move(fromOffsets: source, toOffset: destination)
-        _ = store.reorderBuckets(project, ordered: ordered)
+        var groupBuckets = group.buckets
+        groupBuckets.move(fromOffsets: source, toOffset: destination)
+        // Stitch the reordered group back into the full bucket list at
+        // the positions the group's buckets previously occupied.
+        var remaining = groupBuckets.makeIterator()
+        let groupIDs = Set(group.buckets.map(\.id))
+        let stitched: [Bucket] = buckets.map { bucket in
+            if groupIDs.contains(bucket.id), let next = remaining.next() {
+                return next
+            }
+            return bucket
+        }
+        _ = store.reorderBuckets(project, ordered: stitched)
     }
 
     private func countOfPhotos(in bucket: Bucket) -> Int {

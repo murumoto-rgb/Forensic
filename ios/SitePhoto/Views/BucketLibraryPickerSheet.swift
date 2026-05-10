@@ -188,12 +188,12 @@ struct BucketLibraryPickerSheet: View {
 
     private func addSelected() {
         guard let project else { return }
-        let entries = categories.flatMap(\.entries).filter { selected.contains($0.id) }
-        guard !entries.isEmpty else { return }
-        _ = store.addLibraryEntries(entries, to: project)
+        let count = selected.count
+        guard count > 0 else { return }
+        _ = store.addLibraryEntries(withIDs: selected, to: project)
         Haptics.success()
         toastCenter.post(
-            "Added \(entries.count) bucket\(entries.count == 1 ? "" : "s") from library",
+            "Added \(count) bucket\(count == 1 ? "" : "s") from library",
             kind: .success
         )
         onApplied()

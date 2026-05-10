@@ -15,15 +15,24 @@ struct Bucket: Identifiable, Codable, Hashable, Sendable {
     var name: String
     var colorHex: String
     var sortOrder: Int
+    /// Optional back-pointer to the library category this bucket was
+    /// pulled from (or filed into via "Save to Library"). Drives the
+    /// grouping in the Bucket Manager — buckets with the same id show
+    /// up under that category's subheading; nil means "Uncategorized".
+    /// Optional so manifests from before the library rework decode
+    /// cleanly with the field defaulting to nil.
+    var libraryCategoryID: UUID?
 
     init(id: UUID = UUID(),
          name: String,
          colorHex: String = Bucket.palette[0],
-         sortOrder: Int) {
+         sortOrder: Int,
+         libraryCategoryID: UUID? = nil) {
         self.id = id
         self.name = name
         self.colorHex = colorHex
         self.sortOrder = sortOrder
+        self.libraryCategoryID = libraryCategoryID
     }
 
     /// SwiftUI Color resolved from `colorHex`. Falls back to the accent
