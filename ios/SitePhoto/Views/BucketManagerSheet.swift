@@ -17,10 +17,9 @@ struct BucketManagerSheet: View {
     @State private var pendingDelete: Bucket?
     @State private var renamingBucketID: UUID?
     @State private var renameDraft: String = ""
-    @State private var showingSaveTemplatePrompt: Bool = false
-    @State private var saveTemplateName: String = ""
-    @State private var showingTemplatePicker: Bool = false
-    @State private var showingTemplateManager: Bool = false
+    @State private var showingLibraryPicker: Bool = false
+    @State private var showingLibraryManager: Bool = false
+    @State private var savingBucketToLibrary: Bucket?
 
     private var project: Project? { store.project(withID: projectID) }
     private var buckets: [Bucket] {
@@ -57,35 +56,31 @@ struct BucketManagerSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
-                        templatesMenu
+                        libraryMenu
                         if !buckets.isEmpty {
                             EditButton()
                         }
                     }
                 }
             }
-            .alert("Save current buckets as a template",
-                   isPresented: $showingSaveTemplatePrompt) {
-                TextField("Template name", text: $saveTemplateName)
-                    .textInputAutocapitalization(.words)
-                Button("Save") { saveAsTemplate() }
-                    .disabled(saveTemplateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("Cancel", role: .cancel) {
-                    saveTemplateName = ""
+            .sheet(isPresented: $showingLibraryPicker) {
+                BucketLibraryPickerSheet(projectID: projectID,
+                                          onApplied: {})
+                    .environment(store)
+                    .environment(toastCenter)
+            }
+            .sheet(isPresented: $showingLibraryManager) {
+                BucketLibraryManagerSheet()
+                    .environment(store)
+                    .environment(toastCenter)
+            }
+            .sheet(item: $savingBucketToLibrary) { bucket in
+                SaveToLibraryCategorySheet(bucket: bucket) { categoryID in
+                    saveToLibrary(bucket, categoryID: categoryID)
                 }
-            } message: {
-                Text("The current bucket list (names + colors + order) will be saved as a reusable template you can load into other projects.")
-            }
-            .sheet(isPresented: $showingTemplatePicker) {
-                BucketTemplatePickerSheet(projectID: projectID,
-                                            onApplied: {})
-                    .environment(store)
-                    .environment(toastCenter)
-            }
-            .sheet(isPresented: $showingTemplateManager) {
-                BucketTemplateManagerSheet()
-                    .environment(store)
-                    .environment(toastCenter)
+                .environment(store)
+                .environment(toastCenter)
+                .presentationDetents([.medium])
             }
             .alert(
                 "Delete bucket \"\(pendingDelete?.name ?? "")\"?",
@@ -170,6 +165,11 @@ struct BucketManagerSheet: View {
                         }
                     }
                 }
+                Button {
+                    savingBucketToLibrary = bucket
+                } label: {
+                    Label("Save to Library…", systemImage: "books.vertical")
+                }
                 Divider()
                 Button(role: .destructive) {
                     pendingDelete = bucket
@@ -235,46 +235,42 @@ struct BucketManagerSheet: View {
         newBucketName = ""
     }
 
-    /// Toolbar menu offering the three template entry points. Hidden
-    /// "Save as Template…" when there are no buckets to capture; the
-    /// other two are always available so a fresh project can load a
-    /// starter pack right away.
+    /// Toolbar menu surfacing the two library entry points.
+    /// "Add from Library…" opens a picker showing every Primary
+    /// Investigation Type and lets the engineer multi-select observation
+    /// buckets to drop in. "Manage Library…" opens the curation surface
+    /// for adding / renaming / deleting categories and entries.
     @ViewBuilder
-    private var templatesMenu: some View {
+    private var libraryMenu: some View {
         Menu {
             Button {
-                showingTemplatePicker = true
+                showingLibraryPicker = true
             } label: {
-                Label("Load from Template…", systemImage: "tray.and.arrow.down")
-            }
-            if !buckets.isEmpty {
-                Button {
-                    saveTemplateName = ""
-                    showingSaveTemplatePrompt = true
-                } label: {
-                    Label("Save as Template…", systemImage: "square.and.arrow.down")
-                }
+                Label("Add from Library…", systemImage: "books.vertical")
             }
             Divider()
             Button {
-                showingTemplateManager = true
+                showingLibraryManager = true
             } label: {
-                Label("Manage Templates…", systemImage: "list.bullet.rectangle")
+                Label("Manage Library…", systemImage: "slider.horizontal.3")
             }
         } label: {
-            Image(systemName: "rectangle.stack")
+            Image(systemName: "books.vertical")
         }
-        .accessibilityLabel("Bucket Templates")
+        .accessibilityLabel("Bucket Library")
     }
 
-    private func saveAsTemplate() {
-        guard let template = store.addBucketTemplate(name: saveTemplateName,
-                                                        fromBuckets: buckets) else {
+    private func saveToLibrary(_ bucket: Bucket, categoryID: UUID) {
+        guard let entry = store.saveBucketToLibrary(bucket,
+                                                      intoCategory: categoryID) else {
             return
         }
+        let categoryName = store.bucketLibrary
+            .first(where: { $0.id == categoryID })?.name ?? ""
         Haptics.success()
-        toastCenter.post("Saved template \"\(template.name)\"", kind: .success)
-        saveTemplateName = ""
+        toastCenter.post("Saved \"\(entry.name)\" to \(categoryName)",
+                          kind: .success)
+        savingBucketToLibrary = nil
     }
 
     private func delete(_ bucket: Bucket) {
@@ -303,5 +299,73 @@ struct BucketManagerSheet: View {
 
     private func countOfPhotos(in bucket: Bucket) -> Int {
         project?.photos.filter { $0.bucketID == bucket.id }.count ?? 0
+    }
+}
+
+/// Half-height sheet shown when the engineer taps "Save to Library…" on
+/// a project bucket. Lists the existing Primary Investigation Type
+/// categories so the bucket can be filed under one. If the library is
+/// empty, the user is invited to open the manager and create a category
+/// first — saving into a non-existent category is meaningless.
+private struct SaveToLibraryCategorySheet: View {
+    let bucket: Bucket
+    let onPick: (UUID) -> Void
+
+    @Environment(ProjectStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if store.bucketLibrary.isEmpty {
+                    EmptyStateView(
+                        icon: "books.vertical",
+                        title: "No categories yet",
+                        message: "Create a Primary Investigation Type in Manage Library, then come back to save this bucket into it."
+                    )
+                } else {
+                    List {
+                        Section {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(bucket.color)
+                                    .frame(width: 14, height: 14)
+                                Text(bucket.name)
+                                    .font(.body.bold())
+                                Spacer()
+                            }
+                        } header: {
+                            Text("Bucket to save")
+                        }
+                        Section {
+                            ForEach(store.bucketLibrary) { category in
+                                Button {
+                                    onPick(category.id)
+                                    dismiss()
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(category.name)
+                                            .font(.body)
+                                            .foregroundStyle(.primary)
+                                        Text("\(category.entries.count) bucket\(category.entries.count == 1 ? "" : "s") already")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Save into category")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Save to Library")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
     }
 }

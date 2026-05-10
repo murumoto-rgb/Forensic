@@ -15,11 +15,15 @@ final class ProjectStore {
     /// during `loadInitial()` and saved back to disk on every mutation
     /// through `updateBranding(_:)` / `setBrandingLogo(_:)`.
     private(set) var reportBranding: ReportBranding = .empty
-    /// App-wide "standard bucket lists" — reusable starter packs the
-    /// engineer can apply to any project. Loaded during `loadInitial()`
-    /// (with default seeds on first launch) and saved back to disk on
-    /// every mutation. Manipulated through `addBucketTemplate(...)` etc.
-    private(set) var bucketTemplates: [BucketTemplate] = []
+    /// App-wide library of pickable observation buckets, grouped by
+    /// "Primary Investigation Type" (Foundation, Framing, Roofing, …).
+    /// The engineer adds individual buckets from this library to a
+    /// project rather than applying whole templates wholesale; the
+    /// library itself is fully editable through the Library Manager.
+    /// Loaded during `loadInitial()` (with default seeds on first
+    /// launch, plus a one-time migration from the older
+    /// `bucketTemplates.json` shape).
+    private(set) var bucketLibrary: [BucketLibraryCategory] = []
     /// True while a `save(_:)` call is writing to disk. Bound to the
     /// auto-save indicator chip in ProjectDetailView so the engineer
     /// can spot a stuck or slow save (e.g. iCloud throttling) at a
@@ -121,7 +125,7 @@ final class ProjectStore {
 
         load()
         loadBrandingFromDisk()
-        loadBucketTemplatesFromDisk()
+        loadBucketLibraryFromDisk()
         isReady = true
     }
 
@@ -396,107 +400,181 @@ final class ProjectStore {
         return UIImage(named: "BaykalLogo")
     }
 
-    // MARK: - Bucket templates (app-wide)
+    // MARK: - Bucket library (app-wide)
 
-    /// Where the bucket-templates JSON lives. Sibling of branding.json
-    /// under the storage root — survives iCloud promotion the same way.
-    private var bucketTemplatesURL: URL {
+    /// Where the library JSON lives. Sibling of branding.json under the
+    /// storage root — survives iCloud promotion the same way.
+    private var bucketLibraryURL: URL {
+        storageRoot.appending(path: "bucketLibrary.json")
+    }
+
+    /// Path to the legacy template file we wrote during the
+    /// short-lived "templates" iteration. Migrated forward and removed
+    /// on first launch after the library rework.
+    private var legacyBucketTemplatesURL: URL {
         storageRoot.appending(path: "bucketTemplates.json")
     }
 
-    /// Read templates from disk. On the very first launch the file
-    /// doesn't exist yet — seed `BucketTemplate.defaultSeeds` so the
-    /// feature surfaces a useful starter list rather than empty state.
-    fileprivate func loadBucketTemplatesFromDisk() {
-        if let data = try? Data(contentsOf: bucketTemplatesURL),
-           let decoded = try? decoder().decode([BucketTemplate].self, from: data) {
-            bucketTemplates = decoded
+    /// Hydrate `bucketLibrary` in priority order:
+    ///  1. `bucketLibrary.json` if it already exists (steady state)
+    ///  2. `bucketTemplates.json` from the older shape (one-time
+    ///     migration: assign UUIDs to entries, save into the new file,
+    ///     then delete the old)
+    ///  3. seeded defaults from `BucketLibraryCategory.defaultSeeds`
+    fileprivate func loadBucketLibraryFromDisk() {
+        if let data = try? Data(contentsOf: bucketLibraryURL),
+           let decoded = try? decoder().decode([BucketLibraryCategory].self, from: data) {
+            bucketLibrary = decoded
             return
         }
-        bucketTemplates = BucketTemplate.defaultSeeds
-        persistBucketTemplates()
+        if let data = try? Data(contentsOf: legacyBucketTemplatesURL),
+           let legacy = try? decoder().decode([LegacyBucketTemplate].self, from: data) {
+            bucketLibrary = legacy.map { $0.upgraded() }
+            persistBucketLibrary()
+            try? fileManager.removeItem(at: legacyBucketTemplatesURL)
+            return
+        }
+        bucketLibrary = BucketLibraryCategory.defaultSeeds
+        persistBucketLibrary()
     }
 
-    private func persistBucketTemplates() {
-        if let data = try? encoder().encode(bucketTemplates) {
-            try? data.write(to: bucketTemplatesURL, options: .atomic)
+    private func persistBucketLibrary() {
+        if let data = try? encoder().encode(bucketLibrary) {
+            try? data.write(to: bucketLibraryURL, options: .atomic)
         }
     }
 
-    /// Save a fresh template captured from a project's current bucket
-    /// list. Returns the new template (with assigned UUID) so the caller
-    /// can immediately reference it.
+    // Categories ---------------------------------------------------------
+
     @discardableResult
-    func addBucketTemplate(name rawName: String,
-                            fromBuckets buckets: [Bucket]) -> BucketTemplate? {
+    func addLibraryCategory(name rawName: String) -> BucketLibraryCategory? {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
-        let sorted = buckets.sorted { $0.sortOrder < $1.sortOrder }
-        let entries = sorted.map { BucketTemplate.Entry(name: $0.name,
-                                                          colorHex: $0.colorHex) }
-        let template = BucketTemplate(name: name, entries: entries)
-        bucketTemplates.append(template)
-        persistBucketTemplates()
-        return template
+        let category = BucketLibraryCategory(name: name, entries: [])
+        bucketLibrary.append(category)
+        persistBucketLibrary()
+        return category
     }
 
     @discardableResult
-    func renameBucketTemplate(_ id: UUID, to rawName: String) -> Bool {
+    func renameLibraryCategory(_ id: UUID, to rawName: String) -> Bool {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
-              let idx = bucketTemplates.firstIndex(where: { $0.id == id }) else {
+              let idx = bucketLibrary.firstIndex(where: { $0.id == id }) else {
             return false
         }
-        bucketTemplates[idx].name = name
-        persistBucketTemplates()
+        bucketLibrary[idx].name = name
+        persistBucketLibrary()
         return true
     }
 
     @discardableResult
-    func deleteBucketTemplate(_ id: UUID) -> Bool {
-        let before = bucketTemplates.count
-        bucketTemplates.removeAll { $0.id == id }
-        let changed = bucketTemplates.count != before
-        if changed { persistBucketTemplates() }
+    func deleteLibraryCategory(_ id: UUID) -> Bool {
+        let before = bucketLibrary.count
+        bucketLibrary.removeAll { $0.id == id }
+        let changed = bucketLibrary.count != before
+        if changed { persistBucketLibrary() }
         return changed
     }
 
-    /// Replace an existing template (e.g. after the user re-saves over
-    /// its slot). No-op if the id isn't present.
+    func reorderLibraryCategories(from source: IndexSet, to destination: Int) {
+        bucketLibrary.move(fromOffsets: source, toOffset: destination)
+        persistBucketLibrary()
+    }
+
+    // Entries ------------------------------------------------------------
+
     @discardableResult
-    func updateBucketTemplate(_ updated: BucketTemplate) -> Bool {
-        guard let idx = bucketTemplates.firstIndex(where: { $0.id == updated.id }) else {
+    func addLibraryEntry(toCategory categoryID: UUID,
+                          name rawName: String,
+                          colorHex: String) -> BucketLibraryCategory.Entry? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let idx = bucketLibrary.firstIndex(where: { $0.id == categoryID }) else {
+            return nil
+        }
+        let entry = BucketLibraryCategory.Entry(name: name, colorHex: colorHex)
+        bucketLibrary[idx].entries.append(entry)
+        persistBucketLibrary()
+        return entry
+    }
+
+    @discardableResult
+    func renameLibraryEntry(inCategory categoryID: UUID,
+                             entry entryID: UUID,
+                             to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let cIdx = bucketLibrary.firstIndex(where: { $0.id == categoryID }),
+              let eIdx = bucketLibrary[cIdx].entries.firstIndex(where: { $0.id == entryID }) else {
             return false
         }
-        bucketTemplates[idx] = updated
-        persistBucketTemplates()
+        bucketLibrary[cIdx].entries[eIdx].name = name
+        persistBucketLibrary()
         return true
     }
 
-    /// Apply `template` to `project` using the chosen mode. `replace`
-    /// wipes existing buckets (and clears `Photo.bucketID` on every
-    /// photo that pointed at them) before adding the template's buckets;
-    /// `append` simply tacks on the template's buckets at the end so
-    /// nothing on existing photos is disturbed. Returns the updated
-    /// project so the caller can keep its hot copy in sync.
     @discardableResult
-    func applyBucketTemplate(_ template: BucketTemplate,
-                              to project: Project,
-                              mode: BucketTemplate.ApplyMode) -> Project {
-        var current = project
-        if mode == .replace {
-            for bucket in current.buckets {
-                current = deleteBucket(current, bucketID: bucket.id)
-            }
+    func recolorLibraryEntry(inCategory categoryID: UUID,
+                              entry entryID: UUID,
+                              to colorHex: String) -> Bool {
+        guard let cIdx = bucketLibrary.firstIndex(where: { $0.id == categoryID }),
+              let eIdx = bucketLibrary[cIdx].entries.firstIndex(where: { $0.id == entryID }) else {
+            return false
         }
-        let baseOrder = current.buckets.map(\.sortOrder).max().map { $0 + 1 } ?? 0
-        var p = current
-        for (offset, entry) in template.entries.enumerated() {
+        bucketLibrary[cIdx].entries[eIdx].colorHex = colorHex
+        persistBucketLibrary()
+        return true
+    }
+
+    @discardableResult
+    func deleteLibraryEntry(inCategory categoryID: UUID, entry entryID: UUID) -> Bool {
+        guard let cIdx = bucketLibrary.firstIndex(where: { $0.id == categoryID }) else {
+            return false
+        }
+        let before = bucketLibrary[cIdx].entries.count
+        bucketLibrary[cIdx].entries.removeAll { $0.id == entryID }
+        let changed = bucketLibrary[cIdx].entries.count != before
+        if changed { persistBucketLibrary() }
+        return changed
+    }
+
+    func reorderLibraryEntries(inCategory categoryID: UUID,
+                                from source: IndexSet,
+                                to destination: Int) {
+        guard let cIdx = bucketLibrary.firstIndex(where: { $0.id == categoryID }) else { return }
+        bucketLibrary[cIdx].entries.move(fromOffsets: source, toOffset: destination)
+        persistBucketLibrary()
+    }
+
+    // Project-side helpers ----------------------------------------------
+
+    /// Add a batch of selected library entries to `project` as fresh
+    /// project buckets (each gets a new UUID — no aliasing with the
+    /// library entry id). Returns the saved project.
+    @discardableResult
+    func addLibraryEntries(_ entries: [BucketLibraryCategory.Entry],
+                            to project: Project) -> Project {
+        guard !entries.isEmpty else { return project }
+        var p = project
+        let baseOrder = p.buckets.map(\.sortOrder).max().map { $0 + 1 } ?? 0
+        for (offset, entry) in entries.enumerated() {
             p.buckets.append(Bucket(name: entry.name,
                                      colorHex: entry.colorHex,
                                      sortOrder: baseOrder + offset))
         }
         return save(p)
+    }
+
+    /// Reverse direction: capture a project's existing bucket and stash
+    /// it in the chosen library category so the engineer can reuse it
+    /// on future projects. Returns the new entry on success.
+    @discardableResult
+    func saveBucketToLibrary(_ bucket: Bucket,
+                              intoCategory categoryID: UUID) -> BucketLibraryCategory.Entry? {
+        return addLibraryEntry(toCategory: categoryID,
+                                name: bucket.name,
+                                colorHex: bucket.colorHex)
     }
 
     private static func resizeForLogo(_ image: UIImage) -> UIImage? {
