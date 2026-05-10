@@ -11,6 +11,13 @@ struct Project: Identifiable, Codable, Hashable {
     var projectGPS: ProjectGPS?
     var projectAddress: String?
     var photos: [Photo]
+    /// Soft-deleted photos awaiting restore or auto-purge. Moved out of
+    /// `photos` so every existing consumer (export, bucket counters,
+    /// filters, map markers, …) keeps showing only live records without
+    /// each call site having to remember to filter. Each entry's
+    /// `trashedAt` carries the move timestamp used by the 30-day purge
+    /// in `ProjectStore.purgeOldTrash()`.
+    var trashedPhotos: [Photo] = []
     var floorPlan: FloorPlan?
     /// Stable, human-readable folder name used on disk. Computed once at
     /// creation; nil only on projects created before this field existed.
@@ -37,6 +44,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.projectGPS = nil
         self.projectAddress = nil
         self.photos = []
+        self.trashedPhotos = []
         self.floorPlan = nil
         self.folderName = Self.makeFolderName(id: id, name: name, createdAt: self.createdAt)
         self.aiInstructions = nil
@@ -56,6 +64,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.projectGPS      = try c.decodeIfPresent(ProjectGPS.self, forKey: .projectGPS)
         self.projectAddress  = try c.decodeIfPresent(String.self, forKey: .projectAddress)
         self.photos          = try c.decode([Photo].self,         forKey: .photos)
+        self.trashedPhotos   = try c.decodeIfPresent([Photo].self, forKey: .trashedPhotos) ?? []
         self.floorPlan       = try c.decodeIfPresent(FloorPlan.self, forKey: .floorPlan)
         self.folderName      = try c.decodeIfPresent(String.self, forKey: .folderName)
         self.aiInstructions  = try c.decodeIfPresent(String.self, forKey: .aiInstructions)

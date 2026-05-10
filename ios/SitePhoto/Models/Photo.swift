@@ -70,6 +70,11 @@ struct Photo: Identifiable, Codable, Hashable {
     /// Drives a star icon in the photo row and the "Favorites only" chip
     /// in the filter bar. Optional in the export pipelines later.
     var isFavorite: Bool
+    /// Timestamp captured when the photo was soft-deleted. Set when the
+    /// photo is moved into `Project.trashedPhotos`; cleared on restore.
+    /// Used by the 30-day auto-purge sweep in `ProjectStore.purgeOldTrash()`
+    /// and to render "Trashed N days ago" in the Trash row.
+    var trashedAt: Date?
     /// User-typed caption that overrides `aiAnalysis.captionDraft` when set.
     /// nil = use the AI's draft; empty string = use the AI's draft (treated
     /// the same as nil so deleting all the text reverts to the AI version).
@@ -105,6 +110,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.pendingSuggestions = []
         self.bucketID = nil
         self.isFavorite = false
+        self.trashedAt = nil
         self.userCaption = nil
         self.userObservation = nil
         self.markupOverlayFilename = nil
@@ -155,6 +161,8 @@ struct Photo: Identifiable, Codable, Hashable {
                                                          forKey: .bucketID)
         self.isFavorite         = try c.decodeIfPresent(Bool.self,
                                                          forKey: .isFavorite) ?? false
+        self.trashedAt          = try c.decodeIfPresent(Date.self,
+                                                         forKey: .trashedAt)
         self.userCaption        = try c.decodeIfPresent(String.self,
                                                          forKey: .userCaption)
         self.userObservation    = try c.decodeIfPresent(String.self,

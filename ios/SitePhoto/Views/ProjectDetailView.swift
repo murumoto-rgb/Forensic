@@ -68,6 +68,11 @@ struct ProjectDetailView: View {
     /// Recommended-use bucket(s) to keep. Empty = no use-based filtering.
     /// ANDed with the tag filter and the needs-review toggle.
     @State private var recommendedUseFilter: Set<String> = []
+    /// Active date-window filter applied to the photo list. `.all` is
+    /// the default no-op state. `.custom` carries an inclusive start /
+    /// end pair (with timezone-naive day boundaries).
+    @State private var dateFilter: DateFilter = .all
+    @State private var showingCustomDateSheet: Bool = false
 
     @State private var showingAIInstructions = false
     @State private var showingTagFilter = false
@@ -94,6 +99,75 @@ struct ProjectDetailView: View {
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
+    }
+
+    /// Time-window applied to the photo list. `.all` is the default
+    /// pass-through; the other cases scope the visible photos to a
+    /// rolling window or an explicit custom range. The active filter
+    /// is rendered as a single chip in the filter bar that opens a
+    /// menu on tap.
+    enum DateFilter: Equatable {
+        case all
+        case today
+        case last7Days
+        case last30Days
+        case custom(start: Date, end: Date)
+
+        var chipLabel: String {
+            switch self {
+            case .all:                          return "Any date"
+            case .today:                        return "Today"
+            case .last7Days:                    return "Last 7 days"
+            case .last30Days:                   return "Last 30 days"
+            case .custom(let start, let end):
+                let formatter = DateFormatter()
+                formatter.dateFormat = "MMM d"
+                let calendar = Calendar.current
+                if calendar.isDate(start, inSameDayAs: end) {
+                    return formatter.string(from: start)
+                }
+                return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
+            }
+        }
+
+        var isActive: Bool {
+            if case .all = self { return false }
+            return true
+        }
+
+        /// Resolve to an inclusive [start, end] pair in the user's
+        /// current calendar. `.all` returns nil to signal "no clamp".
+        func bounds() -> (start: Date, end: Date)? {
+            let calendar = Calendar.current
+            let now = Date()
+            switch self {
+            case .all:
+                return nil
+            case .today:
+                let start = calendar.startOfDay(for: now)
+                let end = calendar.date(byAdding: .day, value: 1, to: start)
+                    ?? now
+                return (start, end)
+            case .last7Days:
+                let end = calendar.date(byAdding: .day, value: 1,
+                                          to: calendar.startOfDay(for: now)) ?? now
+                let start = calendar.date(byAdding: .day, value: -7, to: end) ?? now
+                return (start, end)
+            case .last30Days:
+                let end = calendar.date(byAdding: .day, value: 1,
+                                          to: calendar.startOfDay(for: now)) ?? now
+                let start = calendar.date(byAdding: .day, value: -30, to: end) ?? now
+                return (start, end)
+            case .custom(let start, let end):
+                // Snap start to beginning-of-day, end to start of the
+                // following day so the inclusive UI behaves like the
+                // engineer expects.
+                let s = calendar.startOfDay(for: start)
+                let dayAfterEnd = calendar.date(byAdding: .day, value: 1,
+                                                  to: calendar.startOfDay(for: end))
+                return (s, dayAfterEnd ?? end)
+            }
+        }
     }
 
     private var project: Project? {
@@ -193,6 +267,12 @@ struct ProjectDetailView: View {
                 .sheet(isPresented: $showingClearAITags) {
                     ClearAITagsSheet(projectID: projectID)
                         .environment(store)
+                }
+                .sheet(isPresented: $showingCustomDateSheet) {
+                    CustomDateRangeSheet(current: dateFilter) { newFilter in
+                        dateFilter = newFilter
+                    }
+                    .presentationDetents([.medium])
                 }
                 .sheet(isPresented: $showingBucketManager) {
                     BucketManagerSheet(projectID: projectID)
@@ -331,10 +411,16 @@ struct ProjectDetailView: View {
     private func deletePhoto(_ photo: Photo) {
         guard let project = store.project(withID: projectID) else { return }
         let seq = photo.sequenceNumber
+        let photoID = photo.id
         do {
-            _ = try store.deletePhoto(project, photoID: photo.id)
+            _ = try store.deletePhoto(project, photoID: photoID)
             Haptics.confirm()
-            toastCenter.post("Photo #\(seq) deleted", kind: .success)
+            toastCenter.post("Moved photo #\(seq) to Trash",
+                              kind: .success,
+                              actionTitle: "Undo") { [projectID, store] in
+                guard let current = store.project(withID: projectID) else { return }
+                _ = store.restorePhoto(current, photoID: photoID)
+            }
         } catch {
             captureError = "Could not delete photo: \(error.localizedDescription)"
             Haptics.error()
@@ -775,6 +861,116 @@ struct ProjectDetailView: View {
         } header: {
             photosSectionHeader(project: project, visiblePhotos: visiblePhotos)
         }
+        if !project.trashedPhotos.isEmpty {
+            trashSection(project)
+        }
+    }
+
+    @ViewBuilder
+    private func trashSection(_ project: Project) -> some View {
+        Section {
+            ForEach(project.trashedPhotos.sorted { ($0.trashedAt ?? .distantPast) > ($1.trashedAt ?? .distantPast) }) { photo in
+                trashRow(photo, project: project)
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Image(systemName: "trash")
+                    .font(.caption)
+                Text("Trash · \(project.trashedPhotos.count)")
+                Spacer()
+                Menu {
+                    Button(role: .destructive) {
+                        emptyTrash(project)
+                    } label: {
+                        Label("Empty Trash", systemImage: "trash.slash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .textCase(nil)
+            }
+        } footer: {
+            Text("Trashed photos are permanently deleted 30 days after they're moved here. Restore them anytime before then.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func trashRow(_ photo: Photo, project: Project) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("#\(photo.sequenceNumber) · \(photo.timestamp.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.callout)
+                if let trashedAt = photo.trashedAt {
+                    Text("Trashed \(relativeAgo(from: trashedAt))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button {
+                restoreTrashed(photo, project: project)
+            } label: {
+                Label("Restore", systemImage: "arrow.uturn.backward")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Button(role: .destructive) {
+                permanentlyDelete(photo, project: project)
+            } label: {
+                Label("Delete", systemImage: "trash.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(.red)
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                restoreTrashed(photo, project: project)
+            } label: {
+                Label("Restore", systemImage: "arrow.uturn.backward")
+            }
+            .tint(.blue)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                permanentlyDelete(photo, project: project)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    private func restoreTrashed(_ photo: Photo, project: Project) {
+        _ = store.restorePhoto(project, photoID: photo.id)
+        Haptics.confirm()
+        toastCenter.post("Restored photo #\(photo.sequenceNumber)", kind: .success)
+    }
+
+    private func permanentlyDelete(_ photo: Photo, project: Project) {
+        _ = store.permanentlyDeleteFromTrash(project, photoIDs: [photo.id])
+        Haptics.confirm()
+        toastCenter.post("Deleted permanently", kind: .success)
+    }
+
+    private func emptyTrash(_ project: Project) {
+        let count = project.trashedPhotos.count
+        _ = store.emptyTrash(project)
+        Haptics.confirm()
+        toastCenter.post("Emptied Trash · \(count) photo\(count == 1 ? "" : "s")",
+                          kind: .success)
+    }
+
+    private func relativeAgo(from date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     @ViewBuilder
@@ -914,8 +1110,12 @@ struct ProjectDetailView: View {
             _ = try store.deletePhotos(project, photoIDs: ids)
             exitSelectionMode()
             Haptics.confirm()
-            toastCenter.post("Deleted \(count) photo\(count == 1 ? "" : "s")",
-                              kind: .success)
+            toastCenter.post("Moved \(count) photo\(count == 1 ? "" : "s") to Trash",
+                              kind: .success,
+                              actionTitle: "Undo") { [projectID, store] in
+                guard let current = store.project(withID: projectID) else { return }
+                _ = store.restorePhotos(current, photoIDs: ids)
+            }
         } catch {
             captureError = "Could not delete photos: \(error.localizedDescription)"
             Haptics.error()
@@ -930,13 +1130,22 @@ struct ProjectDetailView: View {
         let bucketFilterActive = !activeBucketFilter.isEmpty
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchActive = !trimmedSearch.isEmpty
+        let dateBounds = dateFilter.bounds()
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
-            && !showOnlyNeedsReview && !favoritesOnly && !searchActive {
+            && !showOnlyNeedsReview && !favoritesOnly && !searchActive
+            && dateBounds == nil {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
         let lcSearch = trimmedSearch.lowercased()
         return project.photos.filter { photo in
+            if let bounds = dateBounds {
+                // Use a half-open interval [start, end) so "Today"
+                // doesn't pick up tomorrow's earliest photo by mistake.
+                if photo.timestamp < bounds.start || photo.timestamp >= bounds.end {
+                    return false
+                }
+            }
             if tagFilterActive {
                 let photoLC = Set(photo.tags
                     .filter { $0.confidence >= tagConfidenceThreshold }
@@ -998,6 +1207,62 @@ struct ProjectDetailView: View {
         return false
     }
 
+    /// Date-window chip rendered into the filter bar. Always present —
+    /// even when no filter is applied it shows "Any date" so the
+    /// engineer can discover the feature. Tapping opens a menu of
+    /// preset windows plus a "Custom range…" option that pops a sheet.
+    @ViewBuilder
+    private var dateFilterChip: some View {
+        Menu {
+            Button {
+                dateFilter = .all
+            } label: {
+                if case .all = dateFilter {
+                    Label("Any date", systemImage: "checkmark")
+                } else {
+                    Text("Any date")
+                }
+            }
+            Button {
+                dateFilter = .today
+            } label: {
+                if case .today = dateFilter {
+                    Label("Today", systemImage: "checkmark")
+                } else {
+                    Text("Today")
+                }
+            }
+            Button {
+                dateFilter = .last7Days
+            } label: {
+                if case .last7Days = dateFilter {
+                    Label("Last 7 days", systemImage: "checkmark")
+                } else {
+                    Text("Last 7 days")
+                }
+            }
+            Button {
+                dateFilter = .last30Days
+            } label: {
+                if case .last30Days = dateFilter {
+                    Label("Last 30 days", systemImage: "checkmark")
+                } else {
+                    Text("Last 30 days")
+                }
+            }
+            Divider()
+            Button("Custom range…") {
+                showingCustomDateSheet = true
+            }
+        } label: {
+            Label(dateFilter.chipLabel, systemImage: "calendar")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(dateFilter.isActive ? .accentColor : .secondary)
+    }
+
     @ViewBuilder
     private func tagFilterBar(allTags: [String]) -> some View {
         // Buckets and reviewer-attention counts come from the project's
@@ -1042,6 +1307,7 @@ struct ProjectDetailView: View {
                     .controlSize(.small)
                     .tint(favoritesOnly ? .yellow : .secondary)
                 }
+                dateFilterChip
                 if needsReviewCount > 0 {
                     Button {
                         showOnlyNeedsReview.toggle()

@@ -24,6 +24,10 @@ final class ProjectStore {
     /// launch, plus a one-time migration from the older
     /// `bucketTemplates.json` shape).
     private(set) var bucketLibrary: [BucketLibraryCategory] = []
+    /// App-wide library of saved per-project AI instruction prompts.
+    /// Loaded during `loadInitial()`; seeded with the defaults on first
+    /// launch. Mutations go through `addAIPromptTemplate(...)` etc.
+    private(set) var aiPromptTemplates: [AIPromptTemplate] = []
     /// True while a `save(_:)` call is writing to disk. Bound to the
     /// auto-save indicator chip in ProjectDetailView so the engineer
     /// can spot a stuck or slow save (e.g. iCloud throttling) at a
@@ -126,6 +130,8 @@ final class ProjectStore {
         load()
         loadBrandingFromDisk()
         loadBucketLibraryFromDisk()
+        loadAIPromptTemplatesFromDisk()
+        purgeOldTrash()
         isReady = true
     }
 
@@ -601,6 +607,73 @@ final class ProjectStore {
         var p = project
         p.buckets[idx].libraryCategoryID = libraryCategoryID
         return save(p)
+    }
+
+    // MARK: - AI prompt templates (app-wide)
+
+    private var aiPromptTemplatesURL: URL {
+        storageRoot.appending(path: "aiPromptTemplates.json")
+    }
+
+    fileprivate func loadAIPromptTemplatesFromDisk() {
+        if let data = try? Data(contentsOf: aiPromptTemplatesURL),
+           let decoded = try? decoder().decode([AIPromptTemplate].self, from: data) {
+            aiPromptTemplates = decoded
+            return
+        }
+        aiPromptTemplates = AIPromptTemplate.defaultSeeds
+        persistAIPromptTemplates()
+    }
+
+    private func persistAIPromptTemplates() {
+        if let data = try? encoder().encode(aiPromptTemplates) {
+            try? data.write(to: aiPromptTemplatesURL, options: .atomic)
+        }
+    }
+
+    @discardableResult
+    func addAIPromptTemplate(name rawName: String,
+                              prompt: String) -> AIPromptTemplate? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !body.isEmpty else { return nil }
+        let template = AIPromptTemplate(name: name, prompt: body)
+        aiPromptTemplates.append(template)
+        persistAIPromptTemplates()
+        return template
+    }
+
+    @discardableResult
+    func renameAIPromptTemplate(_ id: UUID, to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let idx = aiPromptTemplates.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        aiPromptTemplates[idx].name = name
+        persistAIPromptTemplates()
+        return true
+    }
+
+    @discardableResult
+    func updateAIPromptTemplate(_ id: UUID, prompt: String) -> Bool {
+        let body = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty,
+              let idx = aiPromptTemplates.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        aiPromptTemplates[idx].prompt = body
+        persistAIPromptTemplates()
+        return true
+    }
+
+    @discardableResult
+    func deleteAIPromptTemplate(_ id: UUID) -> Bool {
+        let before = aiPromptTemplates.count
+        aiPromptTemplates.removeAll { $0.id == id }
+        let changed = aiPromptTemplates.count != before
+        if changed { persistAIPromptTemplates() }
+        return changed
     }
 
     private static func resizeForLogo(_ image: UIImage) -> UIImage? {
@@ -1295,12 +1368,12 @@ final class ProjectStore {
         return try deletePhotos(project, photoIDs: [photoID])
     }
 
-    /// Delete every photo in `photoIDs` in a single pass, removing their
-    /// image + thumbnail files and renumbering the survivors so sequence
-    /// numbers stay contiguous from 1. The renumber walks survivors in
-    /// ascending order and only ever assigns a smaller sequence number,
-    /// so each rename targets a slot that's already free (either vacated
-    /// by a delete or by an earlier rename in the loop).
+    /// Soft-delete every photo in `photoIDs`: move them from
+    /// `project.photos` into `project.trashedPhotos` with a `trashedAt`
+    /// timestamp, then renumber the survivors so the active sequence
+    /// stays contiguous (1…N). Image + thumbnail files stay on disk so
+    /// restore is cheap; permanent removal happens in
+    /// `permanentlyDeleteFromTrash(_:photoIDs:)` and the auto-purge.
     func deletePhotos(_ project: Project, photoIDs: Set<UUID>) throws -> Project {
         var p = project
         guard !photoIDs.isEmpty else { return p }
@@ -1312,11 +1385,10 @@ final class ProjectStore {
         guard !removed.isEmpty else { return p }
         p.photos.removeAll { photoIDs.contains($0.id) }
 
-        for photo in removed {
-            try? fileManager.removeItem(at: photosDir.appending(path: photo.imageFilename))
-            if let thumb = photo.thumbnailFilename {
-                try? fileManager.removeItem(at: thumbsDir.appending(path: thumb))
-            }
+        let now = Date()
+        for var photo in removed {
+            photo.trashedAt = now
+            p.trashedPhotos.append(photo)
         }
 
         for i in p.photos.indices {
@@ -1348,6 +1420,106 @@ final class ProjectStore {
         }
 
         return save(p)
+    }
+
+    /// Move trashed photos back into the live list. Each restored photo
+    /// is appended at the end (its old sequence number is gone) and the
+    /// `sequenceNumber` is reassigned to follow the current tail so the
+    /// numbering remains 1…N without gaps. Files stay where they are;
+    /// only the manifest moves the entries between arrays.
+    @discardableResult
+    func restorePhotos(_ project: Project, photoIDs: Set<UUID>) -> Project {
+        var p = project
+        guard !photoIDs.isEmpty else { return p }
+        let restored = p.trashedPhotos.filter { photoIDs.contains($0.id) }
+        guard !restored.isEmpty else { return p }
+        p.trashedPhotos.removeAll { photoIDs.contains($0.id) }
+
+        let photosDir = photosFolder(for: p)
+        let thumbsDir = thumbnailsFolder(for: p)
+        var nextSeq = (p.photos.map(\.sequenceNumber).max() ?? 0) + 1
+        for var photo in restored {
+            photo.trashedAt = nil
+            // Rename the on-disk files to match the new sequence number
+            // so iCloud doesn't keep stale filenames floating around.
+            let newImageName = Self.makePhotoFilename(
+                sequenceNumber: nextSeq,
+                timestamp: photo.timestamp,
+                projectName: p.name
+            )
+            let oldImageURL = photosDir.appending(path: photo.imageFilename)
+            let newImageURL = photosDir.appending(path: newImageName)
+            try? fileManager.moveItem(at: oldImageURL, to: newImageURL)
+            photo.imageFilename = newImageName
+
+            if let oldThumb = photo.thumbnailFilename {
+                let newThumb = "thumb_\(newImageName)"
+                let oldThumbURL = thumbsDir.appending(path: oldThumb)
+                let newThumbURL = thumbsDir.appending(path: newThumb)
+                try? fileManager.moveItem(at: oldThumbURL, to: newThumbURL)
+                photo.thumbnailFilename = newThumb
+            }
+            photo.sequenceNumber = nextSeq
+            p.photos.append(photo)
+            nextSeq += 1
+        }
+        return save(p)
+    }
+
+    @discardableResult
+    func restorePhoto(_ project: Project, photoID: UUID) -> Project {
+        return restorePhotos(project, photoIDs: [photoID])
+    }
+
+    /// Permanently remove trashed photos: drop them from
+    /// `project.trashedPhotos` and delete their image + thumbnail +
+    /// markup files from disk. Cannot be undone — callers should
+    /// confirm with the user first.
+    @discardableResult
+    func permanentlyDeleteFromTrash(_ project: Project,
+                                      photoIDs: Set<UUID>) -> Project {
+        var p = project
+        guard !photoIDs.isEmpty else { return p }
+        let photosDir = photosFolder(for: p)
+        let thumbsDir = thumbnailsFolder(for: p)
+        let markupsDir = markupsFolder(for: p)
+        let removed = p.trashedPhotos.filter { photoIDs.contains($0.id) }
+        guard !removed.isEmpty else { return p }
+        p.trashedPhotos.removeAll { photoIDs.contains($0.id) }
+        for photo in removed {
+            try? fileManager.removeItem(at: photosDir.appending(path: photo.imageFilename))
+            if let thumb = photo.thumbnailFilename {
+                try? fileManager.removeItem(at: thumbsDir.appending(path: thumb))
+            }
+            if let markup = photo.markupOverlayFilename {
+                try? fileManager.removeItem(at: markupsDir.appending(path: markup))
+            }
+            if let drawing = photo.markupDrawingFilename {
+                try? fileManager.removeItem(at: markupsDir.appending(path: drawing))
+            }
+        }
+        return save(p)
+    }
+
+    @discardableResult
+    func emptyTrash(_ project: Project) -> Project {
+        let ids = Set(project.trashedPhotos.map(\.id))
+        return permanentlyDeleteFromTrash(project, photoIDs: ids)
+    }
+
+    /// Sweep every project for trashed photos older than `maxAge` and
+    /// permanently delete them. Runs once at app launch from
+    /// `loadInitial()` so the trash folder never grows without bound.
+    /// Default age is 30 days, matching the user-facing copy in the UI.
+    func purgeOldTrash(maxAge: TimeInterval = 30 * 86400) {
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        for project in activeProjects + deletedProjects {
+            let ids = Set(project.trashedPhotos
+                .filter { ($0.trashedAt ?? Date.distantFuture) < cutoff }
+                .map(\.id))
+            guard !ids.isEmpty else { continue }
+            _ = permanentlyDeleteFromTrash(project, photoIDs: ids)
+        }
     }
 
     // MARK: - AI instructions
