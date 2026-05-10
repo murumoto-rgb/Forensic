@@ -1,0 +1,153 @@
+import SwiftUI
+
+/// Pre-export options screen for the PDF report. Lets the engineer pick
+/// photos-per-page density, toggle bucket grouping + the metadata table,
+/// and re-order the variable sections (Plan / Contact sheets / Metadata
+/// table). Cover is always page 1 and is rendered as a non-draggable
+/// header for clarity.
+///
+/// State lives in a `@State` mirror so the SwiftUI controls re-render
+/// reliably; the mirror writes back to `@AppStorage` (Codable Data) on
+/// every change so the picks persist across exports and launches.
+struct PDFExportOptionsView: View {
+    let projectID: UUID
+
+    @AppStorage("sitephoto.pdfExportOptions") private var storedData: Data = Data()
+
+    @State private var options: PDFExportOptions = .defaults
+    @State private var loaded: Bool = false
+
+    private let perPageChoices: [Int] = [2, 4, 6]
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Photos per page", selection: $options.perPage) {
+                    ForEach(perPageChoices, id: \.self) { n in
+                        Text("\(n)").tag(n)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Layout")
+            } footer: {
+                Text("2 photos per page = full-width cells, ideal when each photo needs to read large. 6 is the legacy default.")
+            }
+
+            Section {
+                Toggle(isOn: $options.groupByBucket) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Group photos by bucket")
+                        Text("Insert a section divider page before each bucket's contact sheets, in bucket sort order. Photos with no bucket appear last under \"Unbucketed\".")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: $options.includeMetadataTable) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include evidence metadata table")
+                        Text("Append a tabular section listing #, time, bucket, lens/zoom, flash, position source, and plan position for every photo.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Sections")
+            }
+
+            Section {
+                // Cover row is locked — present visually so the engineer
+                // sees the full page sequence, but not draggable.
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Page 1 · Cover")
+                            .font(.body)
+                        Text("Always first; can't be moved or removed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                ForEach(options.sectionOrder) { section in
+                    sectionRow(section)
+                }
+                .onMove { source, destination in
+                    options.sectionOrder.move(fromOffsets: source,
+                                                toOffset: destination)
+                }
+            } header: {
+                HStack {
+                    Text("Section order")
+                    Spacer()
+                    EditButton()
+                        .font(.caption)
+                        .textCase(nil)
+                }
+            } footer: {
+                Text("Drag the rows to change the order sections appear after the cover. Sections without data (e.g. no floor plan) are skipped silently.")
+            }
+
+            Section {
+                NavigationLink {
+                    PDFExportRunner(projectID: projectID, options: options)
+                } label: {
+                    Label("Start Export", systemImage: "play.fill")
+                        .font(.headline)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+        }
+        .navigationTitle("PDF Report")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { loadIfNeeded() }
+        .onChange(of: options) { _, newValue in
+            // Persist on every change so the next export sees the same
+            // picks without an explicit save action.
+            storedData = newValue.jsonData()
+        }
+    }
+
+    @ViewBuilder
+    private func sectionRow(_ section: PDFExportOptions.Section) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon(for: section))
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(section.displayName)
+                Text(detail(for: section))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private func icon(for section: PDFExportOptions.Section) -> String {
+        switch section {
+        case .plan:           return "map"
+        case .contactSheets:  return "rectangle.grid.2x2"
+        case .metadataTable:  return "tablecells"
+        }
+    }
+
+    private func detail(for section: PDFExportOptions.Section) -> String {
+        switch section {
+        case .plan:           return "Annotated floor plan with photo bubbles. Skipped if no plan is set."
+        case .contactSheets:  return options.groupByBucket
+            ? "One header page + contact sheets per bucket."
+            : "All photos in a single \(options.perPage)-up grid."
+        case .metadataTable:  return options.includeMetadataTable
+            ? "Tabular metadata for every photo."
+            : "Off — toggle above to enable."
+        }
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        options = PDFExportOptions.from(jsonData: storedData)
+        loaded = true
+    }
+}

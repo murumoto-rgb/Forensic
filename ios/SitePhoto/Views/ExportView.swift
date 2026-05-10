@@ -17,12 +17,12 @@ struct ExportView: View {
             List {
                 Section("Export options") {
                     NavigationLink {
-                        PDFExportRunner(projectID: projectID)
+                        PDFExportOptionsView(projectID: projectID)
                     } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("PDF report")
-                                Text("Cover page, floor plan with bubbles, and a 2×3 contact sheet of every photo.")
+                                Text("Pick layout density, bucket grouping, and section order, then build the report.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -67,10 +67,12 @@ struct ExportView: View {
     }
 }
 
-/// Builds + offers the existing PDF report. Same flow as before — kept as
-/// its own view so the export chooser stays small.
-private struct PDFExportRunner: View {
+/// Builds the PDF report using the options the engineer picked in the
+/// preceding `PDFExportOptionsView`. Kept as its own view so the export
+/// chooser stays small.
+struct PDFExportRunner: View {
     let projectID: UUID
+    let options: PDFExportOptions
     @Environment(ProjectStore.self) private var store
     @Environment(ToastCenter.self) private var toastCenter
 
@@ -134,7 +136,7 @@ private struct PDFExportRunner: View {
         guard !proj.photos.isEmpty else {
             failed = true; status = "No photos to export."; return
         }
-        let service = PDFExportService(project: proj, store: store)
+        let service = PDFExportService(project: proj, store: store, options: options)
         let url = await service.buildPDF { msg in
             Task { @MainActor in status = msg }
         }

@@ -5,11 +5,23 @@ import CoreLocation
 struct PDFExportService {
     let project: Project
     let store: ProjectStore
+    /// User preferences for layout (photos-per-page, section order,
+    /// bucket grouping, metadata table). Defaults preserve the previous
+    /// fixed layout so callers that don't pass options keep their old
+    /// output shape.
+    var options: PDFExportOptions = .defaults
 
-    /// Build a PDF that matches the web-app export layout:
-    ///   Page 1 – Cover (project info + map)
-    ///   Page 2 – Annotated floor plan (if set)
-    ///   Pages 3+ – 2-column × 3-row photo contact sheet
+    /// Approximate rows that fit on a Letter-page metadata table after
+    /// chrome (header line + column header row + footer). Used by the
+    /// pre-pass page counter and the renderer alike — keep in sync with
+    /// `drawMetadataTable`.
+    private static let metadataRowsPerPage: Int = 28
+
+    /// Build a PDF that matches the web-app export layout. Page 1 is
+    /// always the cover; remaining sections render in
+    /// `options.sectionOrder`, skipping sections whose data is absent
+    /// or whose toggle is off. Page numbers are computed in a pre-pass
+    /// so the footer "Page N of M" is accurate without re-rendering.
     /// Returns a URL to a temp file, or nil on failure.
     func buildPDF(onProgress: @escaping @Sendable (String) -> Void) async -> URL? {
         let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)  // Letter at 72 dpi
@@ -49,34 +61,93 @@ struct PDFExportService {
                                         sizePt: CGSize(width: mapW, height: pageRect.height - 130 - margin))
         }
 
-        // ── 2. Render synchronously with UIGraphicsPDFRenderer ─────────────────
+        // ── 2. Pre-pass: count pages so footers can read "Page N of M" ─────────
+
+        let contactSheetGroups = makeContactSheetGroups(loaded: loaded)
+        let totalPages = countPages(
+            planAvailable: planImage != nil && project.floorPlan != nil,
+            contactSheetGroups: contactSheetGroups,
+            metadataPhotoCount: sortedPhotos.count
+        )
+
+        // ── 3. Render synchronously with UIGraphicsPDFRenderer ─────────────────
 
         onProgress("Building PDF…")
         let branding = store.reportBranding
         let logo = store.brandingLogoImage()
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        var pageIndex = 0
         let pdfData = renderer.pdfData { ctx in
+            // Cover is always page 1 — locked in the user-chosen
+            // section order so it can't be moved or removed.
             ctx.beginPage()
+            pageIndex += 1
             drawCover(ctx.cgContext, pageRect: pageRect, margin: margin,
                       mapSnap: mapSnap, branding: branding)
-            drawLogo(logo, pageRect: pageRect, margin: margin)
-            drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
+            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                            pageRect: pageRect, margin: margin,
+                            pageIndex: pageIndex, total: totalPages)
 
-            if let img = planImage, project.floorPlan != nil {
-                ctx.beginPage()
-                drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin, planImage: img)
-                drawLogo(logo, pageRect: pageRect, margin: margin)
-                drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
-            }
-
-            let perPage = 6
-            for start in stride(from: 0, to: loaded.count, by: perPage) {
-                ctx.beginPage()
-                let slice = Array(loaded[start..<min(start + perPage, loaded.count)])
-                drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
-                                 photos: slice, rangeStart: start, total: loaded.count)
-                drawLogo(logo, pageRect: pageRect, margin: margin)
-                drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
+            for section in options.sectionOrder {
+                switch section {
+                case .plan:
+                    guard let img = planImage, project.floorPlan != nil else { continue }
+                    ctx.beginPage()
+                    pageIndex += 1
+                    drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin, planImage: img)
+                    drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                    pageRect: pageRect, margin: margin,
+                                    pageIndex: pageIndex, total: totalPages)
+                case .contactSheets:
+                    for group in contactSheetGroups {
+                        if let header = group.header {
+                            ctx.beginPage()
+                            pageIndex += 1
+                            drawBucketHeader(ctx.cgContext,
+                                              name: header.name,
+                                              color: header.color,
+                                              photoCount: group.items.count,
+                                              pageRect: pageRect, margin: margin)
+                            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                            pageRect: pageRect, margin: margin,
+                                            pageIndex: pageIndex, total: totalPages)
+                        }
+                        for start in stride(from: 0, to: group.items.count, by: options.perPage) {
+                            ctx.beginPage()
+                            pageIndex += 1
+                            let slice = Array(
+                                group.items[start..<min(start + options.perPage, group.items.count)]
+                            )
+                            drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
+                                             photos: slice,
+                                             rangeStart: start,
+                                             total: group.items.count,
+                                             perPage: options.perPage,
+                                             groupName: group.header?.name)
+                            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                            pageRect: pageRect, margin: margin,
+                                            pageIndex: pageIndex, total: totalPages)
+                        }
+                    }
+                case .metadataTable:
+                    guard options.includeMetadataTable, !sortedPhotos.isEmpty else { continue }
+                    let pages = Int((Double(sortedPhotos.count)
+                                      / Double(Self.metadataRowsPerPage)).rounded(.up))
+                    for p in 0..<pages {
+                        ctx.beginPage()
+                        pageIndex += 1
+                        let start = p * Self.metadataRowsPerPage
+                        let end = min(start + Self.metadataRowsPerPage, sortedPhotos.count)
+                        drawMetadataTable(ctx.cgContext,
+                                           photos: Array(sortedPhotos[start..<end]),
+                                           pageRect: pageRect, margin: margin,
+                                           rangeStart: start,
+                                           total: sortedPhotos.count)
+                        drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                        pageRect: pageRect, margin: margin,
+                                        pageIndex: pageIndex, total: totalPages)
+                    }
+                }
             }
         }
 
@@ -88,6 +159,84 @@ struct PDFExportService {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - Pre-pass: page counting + bucket grouping
+
+    /// One contiguous run of contact-sheet items, optionally introduced
+    /// by a bucket header page. `header == nil` means the run renders
+    /// without a divider — used both for the un-grouped path (single
+    /// run spanning every loaded photo) and the Unbucketed sentinel
+    /// when `groupByBucket` is on.
+    private struct ContactSheetGroup {
+        let header: (name: String, color: UIColor)?
+        let items: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+    }
+
+    private func makeContactSheetGroups(
+        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+    ) -> [ContactSheetGroup] {
+        guard options.groupByBucket else {
+            return loaded.isEmpty ? [] : [ContactSheetGroup(header: nil, items: loaded)]
+        }
+        let sortedBuckets = project.buckets.sorted { $0.sortOrder < $1.sortOrder }
+        var groups: [ContactSheetGroup] = []
+        for bucket in sortedBuckets {
+            let items = loaded.filter { $0.photo.bucketID == bucket.id }
+            guard !items.isEmpty else { continue }
+            let color = uiColor(fromHex: bucket.colorHex) ?? .systemGray
+            groups.append(ContactSheetGroup(
+                header: (name: bucket.name, color: color),
+                items: items
+            ))
+        }
+        let unbucketed = loaded.filter { $0.photo.bucketID == nil }
+        if !unbucketed.isEmpty {
+            groups.append(ContactSheetGroup(
+                header: (name: "Unbucketed", color: .systemGray),
+                items: unbucketed
+            ))
+        }
+        return groups
+    }
+
+    private func countPages(planAvailable: Bool,
+                              contactSheetGroups: [ContactSheetGroup],
+                              metadataPhotoCount: Int) -> Int {
+        var pages = 1  // cover
+        for section in options.sectionOrder {
+            switch section {
+            case .plan:
+                if planAvailable { pages += 1 }
+            case .contactSheets:
+                for group in contactSheetGroups {
+                    if group.header != nil { pages += 1 }
+                    pages += Int((Double(group.items.count)
+                                   / Double(options.perPage)).rounded(.up))
+                }
+            case .metadataTable:
+                guard options.includeMetadataTable, metadataPhotoCount > 0 else { continue }
+                pages += Int((Double(metadataPhotoCount)
+                               / Double(Self.metadataRowsPerPage)).rounded(.up))
+            }
+        }
+        return pages
+    }
+
+    /// Convenience that draws every "always present" piece of page
+    /// chrome — logo, branding footer text, and the new page number.
+    /// Keeps each render-site to one line.
+    private func drawPageChrome(_ ctx: CGContext,
+                                  logo: UIImage?,
+                                  branding: ReportBranding,
+                                  pageRect: CGRect,
+                                  margin: CGFloat,
+                                  pageIndex: Int,
+                                  total: Int) {
+        drawLogo(logo, pageRect: pageRect, margin: margin)
+        drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
+        drawPageNumber(ctx, pageIndex: pageIndex, total: total,
+                        pageRect: pageRect, margin: margin)
     }
 
     // MARK: - Cover page
@@ -225,15 +374,27 @@ struct PDFExportService {
 
     private func drawContactSheet(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat,
                                    photos: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
-                                   rangeStart: Int, total: Int) {
+                                   rangeStart: Int, total: Int,
+                                   perPage: Int,
+                                   groupName: String?) {
         let end = rangeStart + photos.count
-        drawText("\(project.name) · Photos \(rangeStart + 1)–\(end) of \(total)",
+        let prefix = groupName ?? project.name
+        drawText("\(prefix) · Photos \(rangeStart + 1)–\(end) of \(total)",
                  at: CGPoint(x: margin, y: margin),
                  font: .boldSystemFont(ofSize: 11), color: .black)
 
         let contentW = pageRect.width - 2 * margin
         let headerH: CGFloat = 24
-        let cols = 2; let rows = 3
+        // Grid shape per the user-picked density:
+        //   2 → 1 col × 2 rows (tall cells, full-width photos)
+        //   4 → 2 cols × 2 rows
+        //   6 → 2 cols × 3 rows (legacy default)
+        let (cols, rows): (Int, Int)
+        switch perPage {
+        case 2:  (cols, rows) = (1, 2)
+        case 4:  (cols, rows) = (2, 2)
+        default: (cols, rows) = (2, 3)
+        }
         let cellW = contentW / CGFloat(cols)
         let cellH = (pageRect.height - 2 * margin - headerH) / CGFloat(rows)
         let pad: CGFloat = 4
@@ -614,6 +775,209 @@ struct PDFExportService {
             width: targetW, height: targetH
         )
         logo.draw(in: rect)
+    }
+
+    // MARK: - Bucket header page
+
+    /// Full-page section divider for a single bucket. Reuses the
+    /// contact-sheet chrome (margins, logo, footer, page number — drawn
+    /// separately by the caller) and adds a coloured band carrying the
+    /// bucket name in large type, plus a photo-count subtitle. Visual
+    /// intent: feel like a chapter break, not a different document.
+    private func drawBucketHeader(_ ctx: CGContext,
+                                    name: String,
+                                    color: UIColor,
+                                    photoCount: Int,
+                                    pageRect: CGRect,
+                                    margin: CGFloat) {
+        let contentW = pageRect.width - 2 * margin
+        // Band sits at vertical centre so the page reads as a chapter
+        // divider rather than a header floating at the top.
+        let bandH: CGFloat = 110
+        let bandY = (pageRect.height - bandH) / 2
+        let bandRect = CGRect(x: margin, y: bandY,
+                               width: contentW, height: bandH)
+
+        ctx.saveGState()
+        ctx.setFillColor(color.cgColor)
+        ctx.fill(bandRect)
+        ctx.restoreGState()
+
+        // Name in large white type — wrap if it overflows.
+        let titleFont = UIFont.systemFont(ofSize: 30, weight: .bold)
+        _ = drawWrapped(name,
+                         x: margin + 18,
+                         y: bandY + 22,
+                         maxW: contentW - 36,
+                         font: titleFont,
+                         color: .white,
+                         lineH: 34)
+
+        // Photo-count subtitle in a slightly transparent white so it
+        // sits visually under the title.
+        let subFont = UIFont.systemFont(ofSize: 13, weight: .medium)
+        let subtitle = "\(photoCount) photo\(photoCount == 1 ? "" : "s")"
+        drawText(subtitle,
+                  at: CGPoint(x: margin + 18, y: bandY + bandH - 26),
+                  font: subFont,
+                  color: UIColor(white: 1, alpha: 0.85))
+    }
+
+    // MARK: - Metadata table
+
+    /// Single-page slice of the evidence metadata table. The caller
+    /// strides through `photos` in `metadataRowsPerPage` chunks and
+    /// hands each chunk here; we draw the title, column headers, then
+    /// rows. Columns are tuned for portrait Letter @ 540pt content
+    /// width (612 page − 36 × 2 margin).
+    private func drawMetadataTable(_ ctx: CGContext,
+                                     photos: [Photo],
+                                     pageRect: CGRect,
+                                     margin: CGFloat,
+                                     rangeStart: Int,
+                                     total: Int) {
+        let end = rangeStart + photos.count
+        drawText("\(project.name) · Evidence Metadata · \(rangeStart + 1)–\(end) of \(total)",
+                  at: CGPoint(x: margin, y: margin),
+                  font: .boldSystemFont(ofSize: 11), color: .black)
+
+        // Column widths sum to 540 (= 612 − 2×36 margin) — keep this
+        // invariant when tweaking individual columns.
+        let columns: [(title: String, width: CGFloat)] = [
+            ("#",       22),
+            ("Time",    92),
+            ("Bucket",  70),
+            ("Lens/Zoom", 80),
+            ("Flash",   50),
+            ("Source",  60),
+            ("Position", 166)
+        ]
+        let rowH: CGFloat = 22
+        let headerRowY = margin + 24
+        let headerFont = UIFont.boldSystemFont(ofSize: 9)
+        let bodyFont   = UIFont.systemFont(ofSize: 9)
+        let mutedColor = UIColor(white: 0.35, alpha: 1)
+
+        // Header row background — subtle gray so the header sticks out.
+        ctx.saveGState()
+        ctx.setFillColor(UIColor(white: 0.92, alpha: 1).cgColor)
+        ctx.fill(CGRect(x: margin, y: headerRowY,
+                         width: pageRect.width - 2 * margin, height: rowH))
+        ctx.restoreGState()
+
+        var x = margin
+        for col in columns {
+            drawText(col.title,
+                      at: CGPoint(x: x + 4, y: headerRowY + 6),
+                      font: headerFont, color: .black)
+            x += col.width
+        }
+
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let bucketByID: [UUID: Bucket] = Dictionary(
+            uniqueKeysWithValues: project.buckets.map { ($0.id, $0) }
+        )
+
+        for (i, photo) in photos.enumerated() {
+            let rowY = headerRowY + rowH + CGFloat(i) * rowH
+
+            // Faint divider line between rows.
+            ctx.saveGState()
+            ctx.setStrokeColor(UIColor(white: 0.85, alpha: 1).cgColor)
+            ctx.setLineWidth(0.4)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: margin, y: rowY))
+            ctx.addLine(to: CGPoint(x: pageRect.width - margin, y: rowY))
+            ctx.strokePath()
+            ctx.restoreGState()
+
+            let bucketName = photo.bucketID.flatMap { bucketByID[$0]?.name } ?? "—"
+            let lensZoom: String = {
+                let lens = photo.lensName ?? "wide"
+                let zoom = String(format: "%g×", photo.cameraZoom)
+                return "\(lens) \(zoom)"
+            }()
+            let flash: String
+            switch photo.flashMode {
+            case .auto: flash = "auto"
+            case .on:   flash = "on"
+            case .off:  flash = "off"
+            }
+            let source: String
+            switch photo.positionSource {
+            case .manual: source = "manual"
+            case .gps:    source = "gps"
+            case .none:   source = "—"
+            }
+            // Photos store no per-photo GPS — that lives on the project
+            // (covered on page 1). Use this column for the plan-relative
+            // position so the table is still useful when a plan is set.
+            let gps: String = {
+                if let lx = photo.localXFeet, let ly = photo.localYFeet {
+                    return String(format: "x=%.1fft y=%.1fft", lx, ly)
+                }
+                if let px = photo.planPixelX, let py = photo.planPixelY {
+                    return String(format: "plan px=%.0f,%.0f", px, py)
+                }
+                return "—"
+            }()
+
+            let values: [String] = [
+                "\(photo.sequenceNumber)",
+                timeFmt.string(from: photo.timestamp),
+                bucketName,
+                lensZoom,
+                flash,
+                source,
+                gps
+            ]
+
+            x = margin
+            for (idx, col) in columns.enumerated() {
+                drawTruncatedText(values[idx],
+                                   at: CGPoint(x: x + 4, y: rowY + 6),
+                                   maxWidth: col.width - 8,
+                                   font: bodyFont, color: mutedColor)
+                x += col.width
+            }
+        }
+    }
+
+    // MARK: - Page number footer
+
+    /// "Page N of M" centred just above the branding-footer line. Drawn
+    /// on every page including the cover so the reader can always
+    /// orient. Sits left of `drawFooter`'s baseline so the two don't
+    /// collide when both are present.
+    private func drawPageNumber(_ ctx: CGContext,
+                                  pageIndex: Int,
+                                  total: Int,
+                                  pageRect: CGRect,
+                                  margin: CGFloat) {
+        let text = "Page \(pageIndex) of \(total)"
+        let font = UIFont.systemFont(ofSize: 8)
+        let color = UIColor(white: 0.35, alpha: 1)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let size = (text as NSString).size(withAttributes: attrs)
+        let x = pageRect.maxX - margin - size.width
+        let y = pageRect.height - margin / 2 - size.height
+        (text as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
+    }
+
+    /// Parse "#RRGGBB" into a UIColor with explicit RGB components, so
+    /// we go through Core Graphics' RGB color space directly rather than
+    /// SwiftUI's `Color` (which can introduce surprises around
+    /// extended-sRGB on iOS 17+).
+    private func uiColor(fromHex hex: String) -> UIColor? {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let rgb = UInt32(s, radix: 16) else { return nil }
+        let r = CGFloat((rgb >> 16) & 0xFF) / 255.0
+        let g = CGFloat((rgb >>  8) & 0xFF) / 255.0
+        let b = CGFloat( rgb        & 0xFF) / 255.0
+        return UIColor(red: r, green: g, blue: b, alpha: 1)
     }
 
     private func safeFilename(_ name: String) -> String {
