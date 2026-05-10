@@ -113,6 +113,13 @@ struct FolderExportService {
                              fileManager: FileManager) async {
         for photo in photos {
             let src = photosFolder.appending(path: photo.imageFilename)
+            // Photos live in iCloud Drive when iCloud is enabled — `copyItem`
+            // on an undownloaded placeholder silently writes nothing. Pull
+            // the file to this device before touching it. This mirrors what
+            // PDFExportService does via `loadFileBytes` and is the difference
+            // between an export of N JPGs and an empty bucket folder + a
+            // `captions.txt`.
+            await store.ensureDownloaded(src)
             guard fileManager.fileExists(atPath: src.path()) else { continue }
             // Reuse the source filename — already sequence-prefixed by
             // ProjectStore.makePhotoFilename, so engineers can sort
@@ -138,6 +145,7 @@ struct FolderExportService {
             // marked copy (it's re-encoded after compositing) but the
             // clean copy preserves it (when not stamping).
             if let markupURL = store.markupOverlayURL(for: photo, in: project) {
+                await store.ensureDownloaded(markupURL)
                 let markedURL = destination.appending(
                     path: Self.markedFilename(for: photo.imageFilename)
                 )

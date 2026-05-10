@@ -1022,7 +1022,16 @@ struct ProjectDetailView: View {
             Button {
                 showingExport = true
             } label: {
-                Label("Export PDF", systemImage: "doc.richtext")
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Export Project")
+                        Text("Choose PDF report or folder by bucket")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "square.and.arrow.up")
+                }
             }
             .disabled(project.photos.isEmpty)
         }
