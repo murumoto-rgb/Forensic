@@ -52,17 +52,21 @@ struct PDFExportService {
         // ── 2. Render synchronously with UIGraphicsPDFRenderer ─────────────────
 
         onProgress("Building PDF…")
-        let logo = UIImage(named: "BaykalLogo")
+        let branding = store.reportBranding
+        let logo = store.brandingLogoImage()
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
         let pdfData = renderer.pdfData { ctx in
             ctx.beginPage()
-            drawCover(ctx.cgContext, pageRect: pageRect, margin: margin, mapSnap: mapSnap)
+            drawCover(ctx.cgContext, pageRect: pageRect, margin: margin,
+                      mapSnap: mapSnap, branding: branding)
             drawLogo(logo, pageRect: pageRect, margin: margin)
+            drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
 
             if let img = planImage, project.floorPlan != nil {
                 ctx.beginPage()
                 drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin, planImage: img)
                 drawLogo(logo, pageRect: pageRect, margin: margin)
+                drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
             }
 
             let perPage = 6
@@ -72,6 +76,7 @@ struct PDFExportService {
                 drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
                                  photos: slice, rangeStart: start, total: loaded.count)
                 drawLogo(logo, pageRect: pageRect, margin: margin)
+                drawFooter(branding.footerText, pageRect: pageRect, margin: margin)
             }
         }
 
@@ -94,9 +99,25 @@ struct PDFExportService {
         let starPointInImage: CGPoint
     }
 
-    private func drawCover(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat, mapSnap: MapSnap?) {
+    private func drawCover(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat,
+                            mapSnap: MapSnap?, branding: ReportBranding) {
         let contentW = pageRect.width - 2 * margin
         var y = margin
+
+        // Branded cover title sits above the project name when set — e.g.
+        // firm name on top, project name underneath.
+        if let title = branding.coverTitle, !title.isEmpty {
+            drawText(title, at: CGPoint(x: margin, y: y),
+                     font: .boldSystemFont(ofSize: 16), color: .black)
+            y += 24
+        }
+        if let subtitle = branding.coverSubtitle, !subtitle.isEmpty {
+            y = drawWrapped(subtitle, x: margin, y: y, maxW: contentW,
+                            font: .systemFont(ofSize: 10),
+                            color: UIColor(white: 0.25, alpha: 1),
+                            lineH: 13)
+            y += 6
+        }
 
         // Project name
         drawText(project.name, at: CGPoint(x: margin, y: y),
@@ -562,6 +583,21 @@ struct PDFExportService {
             in: CGRect(x: x, y: y, width: maxW, height: bounds.height + 2),
             withAttributes: attrs)
         return y + bounds.height + 2
+    }
+
+    /// Single-line footer drawn at the bottom margin of every page. Used
+    /// for firm phone / website / disclaimer when `ReportBranding.footerText`
+    /// is set. No-op when the text is nil or empty so unbranded PDFs still
+    /// keep their clean bottom edge.
+    private func drawFooter(_ text: String?, pageRect: CGRect, margin: CGFloat) {
+        guard let text, !text.isEmpty else { return }
+        let font = UIFont.systemFont(ofSize: 8)
+        let color = UIColor(white: 0.35, alpha: 1)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let size = (text as NSString).size(withAttributes: attrs)
+        let x = (pageRect.width - size.width) / 2
+        let y = pageRect.height - margin / 2 - size.height
+        drawText(text, at: CGPoint(x: x, y: y), font: font, color: color)
     }
 
     /// Draws the Baykal Consulting logo in the top-right corner of the page.

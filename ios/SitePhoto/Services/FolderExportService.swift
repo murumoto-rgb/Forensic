@@ -14,6 +14,11 @@ import UIKit
 struct FolderExportService {
     let project: Project
     let store: ProjectStore
+    /// When true, every exported JPG (clean + marked) is re-encoded with
+    /// a bottom-right stamp showing the capture timestamp and the project's
+    /// GPS coordinates. EXIF metadata is lost on stamped copies since
+    /// stamping requires a decode/encode round trip.
+    var burnInTimestampAndGPS: Bool = false
 
     /// Build the tree and return the root folder URL on success, or nil on
     /// failure. `progress` is invoked on the main actor with human-readable
@@ -111,23 +116,36 @@ struct FolderExportService {
             guard fileManager.fileExists(atPath: src.path()) else { continue }
             // Reuse the source filename — already sequence-prefixed by
             // ProjectStore.makePhotoFilename, so engineers can sort
-            // alphabetically and get sequence order. Always byte-copy the
-            // original so EXIF (date / GPS) is preserved on the clean
-            // copy regardless of whether markup exists.
+            // alphabetically and get sequence order. Byte-copy the original
+            // when no stamp is requested so EXIF (date / GPS) is preserved;
+            // re-encode with the stamp otherwise.
             let dst = destination.appending(path: photo.imageFilename)
-            try? fileManager.copyItem(at: src, to: dst)
+            if burnInTimestampAndGPS {
+                let stamped = EXIFStamp.stamp(srcURL: src,
+                                                dstURL: dst,
+                                                photo: photo,
+                                                gps: project.projectGPS,
+                                                address: project.projectAddress)
+                if !stamped {
+                    try? fileManager.copyItem(at: src, to: dst)
+                }
+            } else {
+                try? fileManager.copyItem(at: src, to: dst)
+            }
             // When the photo has a PencilKit markup overlay, ALSO write
             // a `<stem>_marked.jpg` next to the clean copy so the report
             // can show both versions side-by-side. EXIF is lost on the
             // marked copy (it's re-encoded after compositing) but the
-            // clean copy preserves it.
+            // clean copy preserves it (when not stamping).
             if let markupURL = store.markupOverlayURL(for: photo, in: project) {
                 let markedURL = destination.appending(
                     path: Self.markedFilename(for: photo.imageFilename)
                 )
                 _ = compositeMarkup(photoURL: src,
                                      markupURL: markupURL,
-                                     dst: markedURL)
+                                     dst: markedURL,
+                                     burnIn: burnInTimestampAndGPS,
+                                     photo: photo)
             }
         }
     }
@@ -145,9 +163,13 @@ struct FolderExportService {
     /// Render the source JPG + PencilKit overlay PNG into a single JPG at
     /// the destination. Returns false (so the caller falls back to byte
     /// copy) if either image fails to load or encoding produces nothing.
+    /// When `burnIn` is true, the EXIF stamp (timestamp + GPS) is drawn
+    /// after the markup so it shows up on top of any strokes.
     private func compositeMarkup(photoURL: URL,
                                   markupURL: URL,
-                                  dst: URL) -> Bool {
+                                  dst: URL,
+                                  burnIn: Bool,
+                                  photo: Photo) -> Bool {
         guard let photoData = try? Data(contentsOf: photoURL),
               let photoImage = UIImage(data: photoData),
               let markupData = try? Data(contentsOf: markupURL),
@@ -165,9 +187,16 @@ struct FolderExportService {
                 return f
             }()
         )
-        let composited = renderer.image { _ in
+        let composited = renderer.image { ctx in
             photoImage.draw(in: CGRect(origin: .zero, size: size))
             markupImage.draw(in: CGRect(origin: .zero, size: size))
+            if burnIn {
+                EXIFStamp.stamp(intoContext: ctx.cgContext,
+                                  imageSize: size,
+                                  photo: photo,
+                                  gps: project.projectGPS,
+                                  address: project.projectAddress)
+            }
         }
         guard let jpeg = composited.jpegData(compressionQuality: 0.92) else {
             return false

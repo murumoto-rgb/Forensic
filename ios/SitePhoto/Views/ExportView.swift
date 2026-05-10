@@ -156,6 +156,8 @@ private struct FolderExportRunner: View {
     @State private var status = "Preparing…"
     @State private var folderURL: URL?
     @State private var failed = false
+    @State private var running = false
+    @State private var burnInTimestampAndGPS = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -201,7 +203,7 @@ private struct FolderExportRunner: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-            } else {
+            } else if running {
                 ProgressView()
                     .controlSize(.large)
                 Text(status)
@@ -209,12 +211,32 @@ private struct FolderExportRunner: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+            } else {
+                // Pre-export options screen — pick burn-in then tap Start.
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle(isOn: $burnInTimestampAndGPS) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Burn timestamp + GPS into JPGs")
+                            Text("Adds a visible date / coordinates label in the bottom-right corner of each exported photo. Useful for litigation-grade evidence; loses EXIF metadata on stamped copies.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button {
+                        Task { await runExport() }
+                    } label: {
+                        Label("Start Export", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+                .padding(.horizontal, 20)
             }
             Spacer()
         }
         .navigationTitle("Folder by Bucket")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await runExport() }
     }
 
     private var projectName: String {
@@ -228,10 +250,17 @@ private struct FolderExportRunner: View {
         guard !proj.photos.isEmpty else {
             failed = true; status = "No photos to export."; return
         }
-        let service = FolderExportService(project: proj, store: store)
+        running = true
+        status = "Preparing…"
+        let service = FolderExportService(
+            project: proj,
+            store: store,
+            burnInTimestampAndGPS: burnInTimestampAndGPS
+        )
         let url = await service.export { msg in
             Task { @MainActor in status = msg }
         }
+        running = false
         if let url {
             folderURL = url
         } else {

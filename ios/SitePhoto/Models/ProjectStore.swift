@@ -1,6 +1,7 @@
 import Foundation
 import ImageIO
 import Observation
+import UIKit
 import UniformTypeIdentifiers
 
 @Observable
@@ -10,6 +11,10 @@ final class ProjectStore {
     private(set) var usingICloud: Bool = false
     /// Human-readable explanation for why iCloud isn't being used (nil when it is).
     private(set) var iCloudUnavailableReason: String?
+    /// App-wide report branding (cover text + logo + footer). Loaded once
+    /// during `loadInitial()` and saved back to disk on every mutation
+    /// through `updateBranding(_:)` / `setBrandingLogo(_:)`.
+    private(set) var reportBranding: ReportBranding = .empty
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -97,6 +102,7 @@ final class ProjectStore {
         }
 
         load()
+        loadBrandingFromDisk()
         isReady = true
     }
 
@@ -242,6 +248,101 @@ final class ProjectStore {
 
     func manifestURL(for project: Project) -> URL {
         projectURL(project).appending(path: "manifest.json")
+    }
+
+    // MARK: - Report branding (app-wide)
+
+    /// Where the firm-level branding JSON lives. Sibling of `Active/` and
+    /// `Deleted/` under the storage root so it survives the iCloud
+    /// promotion path and isn't tied to any one project.
+    private var brandingURL: URL {
+        storageRoot.appending(path: "branding.json")
+    }
+
+    /// Where the optional custom logo lives. Stored as PNG with a stable
+    /// filename so re-imports overwrite the same file (rather than
+    /// accumulating orphan logos).
+    var brandingLogoURL: URL? {
+        let url = storageRoot.appending(path: "branding-logo.png")
+        return fileManager.fileExists(atPath: url.path()) ? url : nil
+    }
+
+    /// Read the branding JSON from disk into `reportBranding`. Called
+    /// during `loadInitial()` — silent no-op when the file doesn't exist
+    /// (fresh install or user hasn't customised yet).
+    fileprivate func loadBrandingFromDisk() {
+        guard let data = try? Data(contentsOf: brandingURL),
+              let decoded = try? decoder().decode(ReportBranding.self, from: data) else {
+            reportBranding = .empty
+            return
+        }
+        reportBranding = decoded
+    }
+
+    /// Persist `branding` to disk and publish it as the observable state.
+    @discardableResult
+    func updateBranding(_ branding: ReportBranding) -> ReportBranding {
+        var resolved = branding
+        // If the user cleared the logo filename, scrub the file too so
+        // the on-disk state matches the model.
+        if resolved.logoFilename == nil,
+           let url = brandingLogoURL {
+            try? fileManager.removeItem(at: url)
+        }
+        if let data = try? encoder().encode(resolved) {
+            try? data.write(to: brandingURL, options: .atomic)
+        }
+        reportBranding = resolved
+        return resolved
+    }
+
+    /// Save a fresh logo image (downsampled to a sensible size — PDF
+    /// cover renders at ~75pt wide, so 300px on the long edge is plenty)
+    /// and update the branding manifest with the relative filename.
+    @discardableResult
+    func setBrandingLogo(_ image: UIImage?) -> ReportBranding {
+        var branding = reportBranding
+        if let image, let resized = Self.resizeForLogo(image),
+           let data = resized.pngData() {
+            let url = storageRoot.appending(path: "branding-logo.png")
+            try? data.write(to: url, options: .atomic)
+            branding.logoFilename = "branding-logo.png"
+        } else {
+            if let url = brandingLogoURL {
+                try? fileManager.removeItem(at: url)
+            }
+            branding.logoFilename = nil
+        }
+        return updateBranding(branding)
+    }
+
+    /// Resolve the branding logo to a UIImage. Falls back to the bundled
+    /// `BaykalLogo` asset when no custom logo has been uploaded so existing
+    /// installs keep the same cover look until customised.
+    func brandingLogoImage() -> UIImage? {
+        if let url = brandingLogoURL,
+           let data = try? Data(contentsOf: url),
+           let image = UIImage(data: data) {
+            return image
+        }
+        return UIImage(named: "BaykalLogo")
+    }
+
+    private static func resizeForLogo(_ image: UIImage) -> UIImage? {
+        let maxSide: CGFloat = 600
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let longSide = max(size.width, size.height)
+        guard longSide > maxSide else { return image }
+        let scale = maxSide / longSide
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = false
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 
     private func decoder() -> JSONDecoder {

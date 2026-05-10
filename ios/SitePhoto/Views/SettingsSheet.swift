@@ -9,6 +9,7 @@ struct SettingsSheet: View {
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
     @State private var saved: Bool = false
+    @State private var showingBranding: Bool = false
 
     /// Concurrency cap for the AI batch-tagging task group. Tier 1 Anthropic
     /// accounts have a 30k input-tokens/min cap, which 3 in flight stays
@@ -91,6 +92,36 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    Button {
+                        showingBranding = true
+                    } label: {
+                        HStack {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Report Branding")
+                                    Text(store.reportBranding.hasContent
+                                         ? "Customised"
+                                         : "Using bundled Baykal logo + project name")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "doc.richtext.fill")
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Reports")
+                } footer: {
+                    Text("Customise the cover title / subtitle, footer line, and logo that appear on every exported PDF.")
+                }
+
+                Section {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
                             .foregroundStyle(store.usingICloud ? .blue : .orange)
@@ -130,6 +161,9 @@ struct SettingsSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showingBranding) {
+                ReportBrandingSheet().environment(store)
             }
             .onAppear { reload() }
         }
