@@ -80,6 +80,16 @@ struct ProjectDetailView: View {
     @State private var batchTagSummary: String?
     @State private var batchTagFailureReport: BatchTagFailureReport?
     @State private var batchBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    /// Toggles the spreadsheet-style Photo Sheet view. Reuses the current
+    /// `filteredPhotos` set so search / chip filters carry over.
+    @State private var showingPhotoSheet: Bool = false
+    /// Comparison-view anchor — when non-nil, the comparison sheet opens
+    /// for this photo's reshoot lineage.
+    @State private var comparingPhoto: PhotoTarget?
+    /// When the user taps "Reshoot This Photo" we stash the original here
+    /// and open the camera. On capture, the resulting photo inherits
+    /// location/bearing/bucket/tags from this original and links back.
+    @State private var reshootingFromOriginal: Photo?
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
@@ -112,7 +122,14 @@ struct ProjectDetailView: View {
                             handleCapture(captured)
                             showingCamera = false
                         },
-                        onCancel: { showingCamera = false }
+                        onCancel: {
+                            showingCamera = false
+                            // Make sure a cancelled reshoot doesn't leak its
+                            // anchor into the next regular capture, which
+                            // would silently reshoot whatever the engineer
+                            // photographed next.
+                            reshootingFromOriginal = nil
+                        }
                     )
                 }
                 .sheet(isPresented: $showingFloorPlanSetup) {
@@ -193,6 +210,16 @@ struct ProjectDetailView: View {
                         }
                     )
                     .environment(store)
+                }
+                .sheet(isPresented: $showingPhotoSheet) {
+                    PhotoSheetView(projectID: projectID,
+                                    photos: filteredPhotos(project))
+                        .environment(store)
+                }
+                .sheet(item: $comparingPhoto) { target in
+                    PhotoComparisonView(projectID: projectID,
+                                          anchorPhotoID: target.id)
+                        .environment(store)
                 }
                 .sheet(item: $batchTagFailureReport) { report in
                     BatchTagSummarySheet(
@@ -336,6 +363,22 @@ struct ProjectDetailView: View {
 
     private func handleCapture(_ captured: CapturedPhoto) {
         guard let project = store.project(withID: projectID) else { return }
+        // Reshoot path: inherit the original's location + bearing + bucket
+        // + tags directly, skip the Locate sheet entirely. The engineer
+        // can still re-locate via the relocate sheet afterwards.
+        if let original = reshootingFromOriginal {
+            reshootingFromOriginal = nil
+            do {
+                let updated = try savedReshoot(captured: captured,
+                                                 in: project,
+                                                 original: original)
+                _ = updated
+                captureError = nil
+            } catch {
+                captureError = "Could not save reshoot: \(error.localizedDescription)"
+            }
+            return
+        }
         if project.floorPlan != nil {
             // Plan-equipped: queue for locate flow.
             pendingPhotos.append(captured)
@@ -350,6 +393,37 @@ struct ProjectDetailView: View {
         } catch {
             captureError = "Could not save photo: \(error.localizedDescription)"
         }
+    }
+
+    /// Persist a freshly-captured reshoot, inheriting the original's plan
+    /// location / heading (when present) plus bucket and confirmed tags
+    /// via `ProjectStore.applyReshoot`. Returns the updated project so
+    /// the caller can keep its hot copy in sync.
+    @discardableResult
+    private func savedReshoot(captured: CapturedPhoto,
+                               in project: Project,
+                               original: Photo) throws -> Project {
+        var location: ProjectStore.PhotoLocation?
+        if let px = original.planPixelX, let py = original.planPixelY,
+           let lx = original.localXFeet, let ly = original.localYFeet {
+            location = ProjectStore.PhotoLocation(
+                planPixelX: px, planPixelY: py,
+                localXFeet: lx, localYFeet: ly,
+                headingDegrees: original.headingDegrees,
+                groupID: nil,
+                isPrimary: true
+            )
+        }
+        var current = try store.addPhoto(to: project,
+                                          captured: captured,
+                                          location: location)
+        // Newly-added photo is the last one in the array.
+        if let new = current.photos.last {
+            current = store.applyReshoot(to: current,
+                                          newPhotoID: new.id,
+                                          from: original)
+        }
+        return current
     }
 
     @ViewBuilder
@@ -664,6 +738,13 @@ struct ProjectDetailView: View {
                                 _ = store.setFavorite(project,
                                                        photoID: photo.id,
                                                        isFavorite: !photo.isFavorite)
+                            },
+                            onReshoot: {
+                                reshootingFromOriginal = photo
+                                showingCamera = true
+                            },
+                            onCompare: {
+                                comparingPhoto = PhotoTarget(id: photo.id)
                             }
                         )
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -717,6 +798,13 @@ struct ProjectDetailView: View {
                 }
                 Spacer()
                 if !project.photos.isEmpty {
+                    Button {
+                        showingPhotoSheet = true
+                    } label: {
+                        Label("Sheet", systemImage: "tablecells")
+                    }
+                    .textCase(nil)
+                    .font(.caption)
                     Button("Select") {
                         selectionMode = true
                     }
@@ -1521,6 +1609,8 @@ private struct PhotoRow: View {
     var onLocate: (() -> Void)? = nil
     var onTag: (() -> Void)? = nil
     var onToggleFavorite: (() -> Void)? = nil
+    var onReshoot: (() -> Void)? = nil
+    var onCompare: (() -> Void)? = nil
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
 
@@ -1630,8 +1720,48 @@ private struct PhotoRow: View {
                     .tint(.blue)
                     .accessibilityLabel(isUnlocated ? "Add Location" : "Change Location")
                 }
+                if onReshoot != nil || onCompare != nil {
+                    rowOverflowMenu
+                }
             }
         }
+    }
+
+    /// Tiny `…` menu sitting under the per-row action stack. Keeps the
+    /// reshoot / comparison entry points discoverable without crowding
+    /// the row with two more icon buttons.
+    @ViewBuilder
+    private var rowOverflowMenu: some View {
+        Menu {
+            if let onReshoot {
+                Button {
+                    onReshoot()
+                } label: {
+                    Label("Reshoot This Photo", systemImage: "camera.rotate")
+                }
+            }
+            if let onCompare, hasReshootLineage {
+                Button {
+                    onCompare()
+                } label: {
+                    Label("Compare with Reshoots", systemImage: "rectangle.on.rectangle.angled")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(.secondary)
+        .accessibilityLabel("More actions")
+    }
+
+    /// True when the photo is the root of a reshoot lineage *or* is itself
+    /// a reshoot of something else — either way the compare view has more
+    /// than one frame to show.
+    private var hasReshootLineage: Bool {
+        if photo.reshootsPhotoID != nil { return true }
+        return project.photos.contains(where: { $0.reshootsPhotoID == photo.id })
     }
 
     @ViewBuilder

@@ -61,6 +61,11 @@ struct Photo: Identifiable, Codable, Hashable {
     /// the PNG). Preserved so the user can re-edit existing markup; the PNG
     /// alone would lose stroke structure. nil when no markup exists.
     var markupDrawingFilename: String?
+    /// When this photo is a re-shoot of an earlier photo at the same spot,
+    /// points at the original's `id`. The comparison view follows this chain
+    /// to render before/after spreads. nil means this photo is itself a
+    /// "root" (or has no reshoots associated yet).
+    var reshootsPhotoID: UUID?
     /// User flag for "include this in the headline figures of the report".
     /// Drives a star icon in the photo row and the "Favorites only" chip
     /// in the filter bar. Optional in the export pipelines later.
@@ -104,6 +109,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.userObservation = nil
         self.markupOverlayFilename = nil
         self.markupDrawingFilename = nil
+        self.reshootsPhotoID = nil
     }
 
     /// Tolerate manifests written before tags existed — decode the new fields
@@ -157,6 +163,8 @@ struct Photo: Identifiable, Codable, Hashable {
                                                             forKey: .markupOverlayFilename)
         self.markupDrawingFilename = try c.decodeIfPresent(String.self,
                                                             forKey: .markupDrawingFilename)
+        self.reshootsPhotoID       = try c.decodeIfPresent(UUID.self,
+                                                            forKey: .reshootsPhotoID)
     }
 
     /// Caption to show in exports / report surfaces. Prefers the user's

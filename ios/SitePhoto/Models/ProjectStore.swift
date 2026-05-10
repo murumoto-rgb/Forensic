@@ -228,6 +228,56 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - Re-shoot relationships
+
+    /// Stamp a freshly-captured photo as a re-shoot of `original`, copying
+    /// the inheritable fields (bucket + confirmed tags) onto the new photo
+    /// and writing the `reshootsPhotoID` linkage. Location/bearing are
+    /// inherited separately via the `PhotoLocation` passed to `addPhoto`,
+    /// so callers do that *and* call this helper to finish the wiring.
+    @discardableResult
+    func applyReshoot(to project: Project,
+                       newPhotoID: UUID,
+                       from original: Photo) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == newPhotoID }) else { return p }
+        p.photos[idx].reshootsPhotoID = original.id
+        p.photos[idx].bucketID = original.bucketID
+        // Inherit confirmed tags only; pending suggestions belong to the
+        // original's frame and have to be re-run on the new content.
+        p.photos[idx].tags = original.tags
+        return save(p)
+    }
+
+    /// Resolve the chain of photos that participate in a reshoot lineage:
+    /// the root original first, then every reshoot in capture order
+    /// (oldest → newest). Used by `PhotoComparisonView` to render the
+    /// before/after spread. Returns `[photo]` (just the photo itself) when
+    /// nothing else links to it.
+    func reshootChain(for photo: Photo, in project: Project) -> [Photo] {
+        // Walk back to the root.
+        var root = photo
+        var visited: Set<UUID> = [photo.id]
+        while let parentID = root.reshootsPhotoID,
+              let parent = project.photos.first(where: { $0.id == parentID }),
+              !visited.contains(parent.id) {
+            root = parent
+            visited.insert(parent.id)
+        }
+        // Walk forward from the root, sorting reshoots by sequence number.
+        var chain: [Photo] = [root]
+        var frontier: [Photo] = [root]
+        while !frontier.isEmpty {
+            let next = project.photos
+                .filter { $0.reshootsPhotoID == frontier[0].id }
+                .sorted { $0.sequenceNumber < $1.sequenceNumber }
+            chain.append(contentsOf: next)
+            frontier.removeFirst()
+            frontier.append(contentsOf: next)
+        }
+        return chain
+    }
+
     /// Drop the markup overlay + drawing file from disk and clear the
     /// references on `photoID`.
     @discardableResult
