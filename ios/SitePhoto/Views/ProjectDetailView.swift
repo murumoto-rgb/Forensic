@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ProjectDetailView: View {
     @Environment(ProjectStore.self) private var store
     @Environment(LocationService.self) private var location
+    @Environment(ToastCenter.self) private var toastCenter
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
     let projectID: UUID
@@ -116,6 +117,12 @@ struct ProjectDetailView: View {
                             prompt: "Search photos by tag, caption, or #")
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        AutoSaveIndicator()
+                            .environment(store)
+                    }
+                }
                 .fullScreenCover(isPresented: $showingCamera) {
                     CameraView(
                         onCapture: { captured in
@@ -323,10 +330,16 @@ struct ProjectDetailView: View {
 
     private func deletePhoto(_ photo: Photo) {
         guard let project = store.project(withID: projectID) else { return }
+        let seq = photo.sequenceNumber
         do {
             _ = try store.deletePhoto(project, photoID: photo.id)
+            Haptics.confirm()
+            toastCenter.post("Photo #\(seq) deleted", kind: .success)
         } catch {
             captureError = "Could not delete photo: \(error.localizedDescription)"
+            Haptics.error()
+            toastCenter.post("Could not delete photo: \(error.localizedDescription)",
+                              kind: .error)
         }
     }
 
@@ -735,9 +748,11 @@ struct ProjectDetailView: View {
                                 taggingPhoto = PhotoTarget(id: photo.id)
                             },
                             onToggleFavorite: {
+                                let next = !photo.isFavorite
                                 _ = store.setFavorite(project,
                                                        photoID: photo.id,
-                                                       isFavorite: !photo.isFavorite)
+                                                       isFavorite: next)
+                                Haptics.tap()
                             },
                             onReshoot: {
                                 reshootingFromOriginal = photo
@@ -894,11 +909,18 @@ struct ProjectDetailView: View {
         guard let project = store.project(withID: projectID) else { return }
         let ids = selectedPhotoIDs
         guard !ids.isEmpty else { return }
+        let count = ids.count
         do {
             _ = try store.deletePhotos(project, photoIDs: ids)
             exitSelectionMode()
+            Haptics.confirm()
+            toastCenter.post("Deleted \(count) photo\(count == 1 ? "" : "s")",
+                              kind: .success)
         } catch {
             captureError = "Could not delete photos: \(error.localizedDescription)"
+            Haptics.error()
+            toastCenter.post("Could not delete photos: \(error.localizedDescription)",
+                              kind: .error)
         }
     }
 

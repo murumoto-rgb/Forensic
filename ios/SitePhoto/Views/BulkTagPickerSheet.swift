@@ -12,6 +12,7 @@ struct BulkTagPickerSheet: View {
     let onApplied: () -> Void
 
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var lastAppliedLabel: String?
@@ -158,5 +159,9 @@ struct BulkTagPickerSheet: View {
         }
         lastAppliedLabel = parent.map { "\($0) / \(trimmed)" } ?? trimmed
         lastAppliedAt = Date()
+        Haptics.tap()
+        let count = photoIDs.count
+        toastCenter.post("Tagged \(count) photo\(count == 1 ? "" : "s") with \(lastAppliedLabel ?? trimmed)",
+                          kind: .success)
     }
 }

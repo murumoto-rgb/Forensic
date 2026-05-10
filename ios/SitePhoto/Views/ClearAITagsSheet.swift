@@ -13,6 +13,7 @@ struct ClearAITagsSheet: View {
     let projectID: UUID
 
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var photoSelection: Set<UUID> = []
@@ -379,10 +380,15 @@ struct ClearAITagsSheet: View {
 
     private func runClear() {
         guard let project else { return }
+        let photoCount = photoSelection.count
+        let tagCount = tagSelectors.count
         _ = store.removeTags(project,
                              photoIDs: photoSelection,
                              selectors: tagSelectors)
         photoSelection.removeAll()
+        Haptics.confirm()
+        toastCenter.post("Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s") from \(photoCount) photo\(photoCount == 1 ? "" : "s")",
+                          kind: .success)
     }
 
     /// True when a tag with these (parent, label) coordinates would be

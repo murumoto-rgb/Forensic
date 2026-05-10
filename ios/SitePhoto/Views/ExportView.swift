@@ -72,6 +72,7 @@ struct ExportView: View {
 private struct PDFExportRunner: View {
     let projectID: UUID
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
 
     @State private var status = "Preparing…"
     @State private var exportURL: URL?
@@ -139,9 +140,13 @@ private struct PDFExportRunner: View {
         }
         if let url {
             exportURL = url
+            Haptics.success()
+            toastCenter.post("PDF ready", kind: .success)
         } else {
             failed = true
             status = "Could not build the PDF. Check that photos are accessible."
+            Haptics.error()
+            toastCenter.post("PDF export failed", kind: .error)
         }
     }
 }
@@ -152,6 +157,7 @@ private struct PDFExportRunner: View {
 private struct FolderExportRunner: View {
     let projectID: UUID
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
 
     @State private var status = "Preparing…"
     @State private var folderURL: URL?
@@ -263,9 +269,13 @@ private struct FolderExportRunner: View {
         running = false
         if let url {
             folderURL = url
+            Haptics.success()
+            toastCenter.post("Folder export complete", kind: .success)
         } else {
             failed = true
             status = "Could not build the folder export. Check that the photo files are accessible."
+            Haptics.error()
+            toastCenter.post("Folder export failed", kind: .error)
         }
     }
 

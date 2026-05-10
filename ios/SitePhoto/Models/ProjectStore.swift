@@ -15,6 +15,19 @@ final class ProjectStore {
     /// during `loadInitial()` and saved back to disk on every mutation
     /// through `updateBranding(_:)` / `setBrandingLogo(_:)`.
     private(set) var reportBranding: ReportBranding = .empty
+    /// True while a `save(_:)` call is writing to disk. Bound to the
+    /// auto-save indicator chip in ProjectDetailView so the engineer
+    /// can spot a stuck or slow save (e.g. iCloud throttling) at a
+    /// glance.
+    private(set) var isSaving: Bool = false
+    /// Timestamp of the last successful project save. The save indicator
+    /// pulses "Saved" briefly after each write, then fades out.
+    private(set) var lastSavedAt: Date?
+    /// Loose-coupled hook for surfacing toasts from the store layer
+    /// (iCloud conflicts, sync failures). The hosting app wires the
+    /// ToastCenter into this slot during init — `nil` is a perfectly
+    /// valid state (e.g. unit tests, previews).
+    var toastCenter: ToastCenter?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -448,12 +461,18 @@ final class ProjectStore {
 
     @discardableResult
     func save(_ project: Project) -> Project {
+        isSaving = true
+        defer {
+            isSaving = false
+            lastSavedAt = Date()
+        }
         let dir = projectURL(project)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: photosFolder(for: project), withIntermediateDirectories: true)
+        let manifest = manifestURL(for: project)
         do {
             let data = try encoder().encode(project)
-            try data.write(to: manifestURL(for: project), options: .atomic)
+            try data.write(to: manifest, options: .atomic)
         } catch {
             #if DEBUG
             print("Failed to save project: \(error)")
@@ -468,7 +487,31 @@ final class ProjectStore {
         } else {
             activeProjects.insert(project, at: 0)
         }
+        checkForUnresolvedConflicts(at: manifest, projectName: project.name)
         return project
+    }
+
+    /// Surface a toast when iCloud reports the project manifest has been
+    /// edited from two devices since the last sync. Auto-resolution
+    /// (`removeOtherVersionsOfItem`) is offered as the toast's action —
+    /// iCloud always preserves the winning local copy, so accepting just
+    /// clears the conflict markers and keeps what's on this device.
+    private func checkForUnresolvedConflicts(at url: URL, projectName: String) {
+        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+              !conflicts.isEmpty,
+              let toast = toastCenter else { return }
+        let count = conflicts.count
+        let message = count == 1
+            ? "iCloud detected another edit of \"\(projectName)\" from a different device. The local version is shown."
+            : "iCloud detected \(count) other edits of \"\(projectName)\" from different devices. The local version is shown."
+        toast.post(message,
+                    kind: .warning,
+                    actionTitle: "Keep Local") {
+            for version in conflicts {
+                version.isResolved = true
+            }
+            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+        }
     }
 
     /// Soft delete: move the project's folder from "Active Projects" to

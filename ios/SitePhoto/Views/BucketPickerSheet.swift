@@ -12,6 +12,7 @@ struct BucketPickerSheet: View {
     let onAssigned: () -> Void
 
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var newBucketName: String = ""
@@ -120,6 +121,14 @@ struct BucketPickerSheet: View {
     private func assign(to bucketID: UUID?) {
         guard let project else { return }
         _ = store.setBucket(project, photoIDs: photoIDs, bucketID: bucketID)
+        let count = photoIDs.count
+        let bucketName = bucketID.flatMap { id in
+            project.buckets.first(where: { $0.id == id })?.name
+        }
+        let target = bucketName ?? "Unbucketed"
+        Haptics.confirm()
+        toastCenter.post("Moved \(count) photo\(count == 1 ? "" : "s") to \(target)",
+                          kind: .success)
         onAssigned()
         dismiss()
     }
@@ -135,7 +144,11 @@ struct BucketPickerSheet: View {
             return
         }
         _ = store.setBucket(updated, photoIDs: photoIDs, bucketID: newBucket.id)
+        let count = photoIDs.count
         isCreating = false
+        Haptics.confirm()
+        toastCenter.post("Created \"\(newBucket.name)\" and moved \(count) photo\(count == 1 ? "" : "s") into it",
+                          kind: .success)
         onAssigned()
         dismiss()
     }

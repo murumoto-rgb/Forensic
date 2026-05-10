@@ -2,8 +2,17 @@ import SwiftUI
 
 @main
 struct SitePhotoApp: App {
-    @State private var store = ProjectStore()
+    @State private var store: ProjectStore
     @State private var location = LocationService()
+    @State private var toastCenter = ToastCenter()
+
+    init() {
+        let toast = ToastCenter()
+        let store = ProjectStore()
+        store.toastCenter = toast
+        _toastCenter = State(initialValue: toast)
+        _store = State(initialValue: store)
+    }
 
     /// True once the white splash screen has faded out.
     @State private var splashDone = false
@@ -22,6 +31,7 @@ struct SitePhotoApp: App {
             ContentView(atRoot: $atRoot)
                 .environment(store)
                 .environment(location)
+                .environment(toastCenter)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
                         FooterLogoBar()
@@ -32,6 +42,10 @@ struct SitePhotoApp: App {
                         SplashScreen()
                             .transition(.opacity)
                     }
+                }
+                .overlay(alignment: .top) {
+                    ToastBanner()
+                        .environment(toastCenter)
                 }
                 .animation(.easeInOut(duration: 0.5), value: splashDone)
                 .task {

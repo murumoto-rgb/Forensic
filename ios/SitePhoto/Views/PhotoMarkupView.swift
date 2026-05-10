@@ -13,6 +13,7 @@ struct PhotoMarkupView: View {
     let photoID: UUID
 
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var photoImage: UIImage?
@@ -125,6 +126,8 @@ struct PhotoMarkupView: View {
             // Empty drawing → treat as a clear. Otherwise we'd leave the
             // old overlay on disk because we don't render an empty PNG.
             _ = store.clearMarkup(project, photoID: photoID)
+            Haptics.confirm()
+            toastCenter.post("Markup cleared", kind: .success)
             dismiss()
             return
         }
@@ -140,6 +143,8 @@ struct PhotoMarkupView: View {
                               photoID: photoID,
                               pngData: pngData,
                               drawingData: drawingData)
+        Haptics.success()
+        toastCenter.post("Markup saved", kind: .success)
         dismiss()
     }
 
