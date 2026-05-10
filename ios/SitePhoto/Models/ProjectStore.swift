@@ -282,18 +282,17 @@ final class ProjectStore {
     /// Persist `branding` to disk and publish it as the observable state.
     @discardableResult
     func updateBranding(_ branding: ReportBranding) -> ReportBranding {
-        var resolved = branding
         // If the user cleared the logo filename, scrub the file too so
         // the on-disk state matches the model.
-        if resolved.logoFilename == nil,
+        if branding.logoFilename == nil,
            let url = brandingLogoURL {
             try? fileManager.removeItem(at: url)
         }
-        if let data = try? encoder().encode(resolved) {
+        if let data = try? encoder().encode(branding) {
             try? data.write(to: brandingURL, options: .atomic)
         }
-        reportBranding = resolved
-        return resolved
+        reportBranding = branding
+        return branding
     }
 
     /// Save a fresh logo image (downsampled to a sensible size — PDF
