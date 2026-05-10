@@ -81,12 +81,11 @@ struct PhotoSheetView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if photos.isEmpty {
-                    ContentUnavailableView(
-                        "No photos match the current filters",
-                        systemImage: "tablecells",
-                        description: Text("Adjust the filter chips in the Photos list and reopen the Photo Sheet.")
+                    EmptyStateView(
+                        icon: "tablecells",
+                        title: "No photos match",
+                        message: "Adjust the filter chips in the Photos list and reopen the Photo Sheet."
                     )
-                    .frame(maxHeight: .infinity)
                 } else {
                     ScrollView([.horizontal, .vertical]) {
                         VStack(alignment: .leading, spacing: 0) {

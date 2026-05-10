@@ -28,11 +28,12 @@ struct BucketManagerSheet: View {
                 createSection
                 if buckets.isEmpty {
                     Section {
-                        ContentUnavailableView(
-                            "No buckets yet",
-                            systemImage: "folder.badge.plus",
-                            description: Text("Create buckets to group photos for report sections, then drop selected photos into them via the photos list.")
+                        EmptyStateView(
+                            icon: "folder.badge.plus",
+                            title: "No buckets yet",
+                            message: "Create buckets to group photos for report sections, then drop selected photos into them via the photos list."
                         )
+                        .listRowBackground(Color.clear)
                     }
                 } else {
                     Section("Buckets · \(buckets.count)") {

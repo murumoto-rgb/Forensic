@@ -26,12 +26,22 @@ struct SitePhotoApp: App {
     /// is already warm and loadInitial finishes in milliseconds.
     private let minSplashDuration: TimeInterval = 1.0
 
+    /// User-selected accent hex (palette curated in `AppearanceSettings`).
+    /// Bound through `@AppStorage` so the tint live-updates everywhere
+    /// the moment the user picks a new colour in Settings.
+    @AppStorage(AppearanceSettings.accentColorKey)
+    private var accentHex: String = AppearanceSettings.defaultAccentHex
+    private var accent: Color {
+        Color(bucketHex: accentHex) ?? Color(bucketHex: AppearanceSettings.defaultAccentHex)!
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView(atRoot: $atRoot)
                 .environment(store)
                 .environment(location)
                 .environment(toastCenter)
+                .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
                         FooterLogoBar()

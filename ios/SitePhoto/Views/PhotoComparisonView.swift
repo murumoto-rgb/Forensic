@@ -32,12 +32,11 @@ struct PhotoComparisonView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if chain.isEmpty {
-                    ContentUnavailableView(
-                        "No reshoots yet",
-                        systemImage: "rectangle.on.rectangle",
-                        description: Text("Tap \"Reshoot This Photo\" from a photo's menu to capture a follow-up at the same location.")
+                    EmptyStateView(
+                        icon: "rectangle.on.rectangle",
+                        title: "No reshoots yet",
+                        message: "Tap \"Reshoot This Photo\" from a photo's menu to capture a follow-up at the same location."
                     )
-                    .frame(maxHeight: .infinity)
                 } else {
                     carousel
                     captionPanel

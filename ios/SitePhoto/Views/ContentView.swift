@@ -194,13 +194,16 @@ private struct EmptyProjectsView: View {
     let onCreate: () -> Void
 
     var body: some View {
-        ContentUnavailableView {
-            Label("No projects yet", systemImage: "folder.badge.plus")
-        } description: {
-            Text("Create a project to start documenting a site. Each project tracks its own photos and floor plan.")
-        } actions: {
+        VStack(spacing: 20) {
+            EmptyStateView(
+                icon: "folder.badge.plus",
+                title: "No projects yet",
+                message: "Create a project to start documenting a site. Each project tracks its own photos and floor plan."
+            )
             Button("New Project", action: onCreate)
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.bottom, 40)
         }
     }
 }

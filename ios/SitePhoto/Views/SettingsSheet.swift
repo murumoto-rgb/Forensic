@@ -11,6 +11,14 @@ struct SettingsSheet: View {
     @State private var saved: Bool = false
     @State private var showingBranding: Bool = false
 
+    /// Picker-bound accent hex. Drives the global tint via the matching
+    /// `@AppStorage` binding in `SitePhotoApp`, so a change here ripples
+    /// out to every screen instantly.
+    @AppStorage(AppearanceSettings.accentColorKey)
+    private var accentHex: String = AppearanceSettings.defaultAccentHex
+    @AppStorage(AppearanceSettings.alternateIconKey)
+    private var alternateIconName: String = ""
+
     /// Concurrency cap for the AI batch-tagging task group. Tier 1 Anthropic
     /// accounts have a 30k input-tokens/min cap, which 3 in flight stays
     /// under on sustained batches; higher tiers can go higher.
@@ -122,6 +130,27 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Accent Color")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        accentPicker
+                    }
+                    if !AppearanceSettings.alternateIcons.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("App Icon")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            iconPicker
+                        }
+                    }
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("Accent color tints buttons, chips, selected markers, and other interactive elements. Restart not required.\(AppearanceSettings.alternateIcons.isEmpty ? "" : " Alternate app icons appear on the home screen once chosen.")")
+                }
+
+                Section {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
                             .foregroundStyle(store.usingICloud ? .blue : .orange)
@@ -180,6 +209,101 @@ struct SettingsSheet: View {
             hasStoredKey = false
         }
         saved = false
+    }
+
+    /// Curated colour palette rendered as a wrapping row of round swatches.
+    /// Tapping a swatch updates the @AppStorage-backed `accentHex`, which
+    /// re-renders the tint at the app root in `SitePhotoApp.body`.
+    @ViewBuilder
+    private var accentPicker: some View {
+        FlowLayout(spacing: 10) {
+            ForEach(AppearanceSettings.accentPalette, id: \.hex) { entry in
+                let isSelected = accentHex.lowercased() == entry.hex.lowercased()
+                let color = Color(bucketHex: entry.hex) ?? .accentColor
+                Button {
+                    accentHex = entry.hex
+                    Haptics.tap()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Circle().stroke(
+                                    isSelected ? Color.primary : Color.primary.opacity(0.15),
+                                    lineWidth: isSelected ? 2.5 : 0.5
+                                )
+                            )
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(entry.name)
+            }
+        }
+    }
+
+    /// Alternate-icon swatches. Only shown when `AppearanceSettings.alternateIcons`
+    /// is non-empty — i.e. when icon PNGs have actually been registered in
+    /// the bundle. Picking one calls `setAlternateIconName` via
+    /// `AppearanceSettings.setAlternateIcon(_:)`.
+    @ViewBuilder
+    private var iconPicker: some View {
+        HStack(spacing: 12) {
+            iconChoice(name: nil, displayName: "Default")
+            ForEach(AppearanceSettings.alternateIcons, id: \.name) { entry in
+                iconChoice(name: entry.name, displayName: entry.displayName)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func iconChoice(name: String?, displayName: String) -> some View {
+        let storedName: String? = alternateIconName.isEmpty ? nil : alternateIconName
+        let isSelected = storedName == name
+        Button {
+            Task {
+                await AppearanceSettings.setAlternateIcon(name)
+                alternateIconName = name ?? ""
+                Haptics.tap()
+            }
+        } label: {
+            VStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        // Show the bundled image (or "Default" placeholder
+                        // glyph) so the user sees what they're picking.
+                        Group {
+                            if let name = name {
+                                Image(name)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .padding(6)
+                            } else {
+                                Image("BaykalLogo")
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .padding(6)
+                            }
+                        }
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(isSelected ? Color.accentColor : Color.clear,
+                                     lineWidth: 2.5)
+                    )
+                Text(displayName)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func save() {

@@ -70,12 +70,11 @@ struct ClearAITagsSheet: View {
                 infoBanner
                 Divider()
                 if aiTagGroups.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing to clear",
-                        systemImage: "checkmark.seal",
-                        description: Text("No photo in this project has AI tags or pending suggestions.")
+                    EmptyStateView(
+                        icon: "checkmark.seal",
+                        title: "Nothing to clear",
+                        message: "No photo in this project has AI tags or pending suggestions."
                     )
-                    .frame(maxHeight: .infinity)
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {

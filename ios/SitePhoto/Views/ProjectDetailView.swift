@@ -316,10 +316,10 @@ struct ProjectDetailView: View {
                     onCancel: cancelBatchTagging
                 ))
             } else {
-                ContentUnavailableView(
-                    "Project not found",
-                    systemImage: "questionmark.folder",
-                    description: Text("This project may have been deleted.")
+                EmptyStateView(
+                    icon: "questionmark.folder",
+                    title: "Project not found",
+                    message: "This project may have been deleted."
                 )
             }
         }
