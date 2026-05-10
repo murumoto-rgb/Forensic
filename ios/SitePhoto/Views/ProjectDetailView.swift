@@ -848,6 +848,10 @@ struct ProjectDetailView: View {
                                 comparingPhoto = PhotoTarget(id: photo.id)
                             }
                         )
+                        .draggable(PhotoTransferable(
+                            url: store.imageURL(for: photo, in: project),
+                            suggestedName: photo.imageFilename
+                        ))
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 pendingPhotoDelete = photo

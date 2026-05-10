@@ -92,7 +92,7 @@ struct PhotoSheetView: View {
                             headerRow
                             Divider()
                             ForEach(sorted) { photo in
-                                photoRow(photo)
+                                photoRowDraggable(photo)
                                 Divider()
                             }
                         }
@@ -146,6 +146,25 @@ struct PhotoSheetView: View {
             }
         }
         .background(Color(.secondarySystemBackground))
+    }
+
+    /// Wraps `photoRow` with a `.draggable` modifier so engineers on
+    /// iPad (or recent iPhone iOS) can drag a JPG straight out of the
+    /// sheet into another app. We attach it here rather than inside
+    /// `photoRow` so the gesture interacts with the row's tap target,
+    /// not its `Button` label, which keeps the system tap-vs-drag
+    /// disambiguation working correctly.
+    @ViewBuilder
+    private func photoRowDraggable(_ photo: Photo) -> some View {
+        if let project = store.project(withID: projectID) {
+            photoRow(photo)
+                .draggable(PhotoTransferable(
+                    url: store.imageURL(for: photo, in: project),
+                    suggestedName: photo.imageFilename
+                ))
+        } else {
+            photoRow(photo)
+        }
     }
 
     @ViewBuilder

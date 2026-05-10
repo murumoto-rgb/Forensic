@@ -179,6 +179,39 @@ final class CameraController: NSObject {
         }
     }
 
+    /// Apply tap-to-focus + tap-to-expose at a device-space point.
+    /// `devicePoint` is normalized [0,1] in the active capture device's
+    /// coordinate system — call sites obtain it from
+    /// `AVCaptureVideoPreviewLayer.captureDevicePointConverted(fromLayerPoint:)`.
+    /// Silently no-ops if the device doesn't support the operation
+    /// (front cameras without focus, e.g.). Errors lock-for-configure
+    /// are also swallowed — the gesture is best-effort, not critical.
+    func setFocusAndExposure(at devicePoint: CGPoint) {
+        guard let device = currentDevice else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.isFocusPointOfInterestSupported,
+               device.isFocusModeSupported(.autoFocus) {
+                device.focusPointOfInterest = devicePoint
+                device.focusMode = .autoFocus
+            }
+            if device.isExposurePointOfInterestSupported,
+               device.isExposureModeSupported(.autoExpose) {
+                device.exposurePointOfInterest = devicePoint
+                device.exposureMode = .autoExpose
+            }
+            // Re-enable continuous AF / AE after the user moves on so we
+            // don't stay frozen on whatever they tapped if the scene
+            // changes. The system automatically smooths the transition.
+            device.isSubjectAreaChangeMonitoringEnabled = true
+        } catch {
+            #if DEBUG
+            print("Failed to set focus/exposure: \(error)")
+            #endif
+        }
+    }
+
     /// Capture one photo and return the encoded data (JPEG/HEIC).
     func capture() async throws -> Data {
         guard configured else { throw CameraError.notConfigured }
