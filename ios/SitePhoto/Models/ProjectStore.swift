@@ -981,6 +981,44 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Toggle the photo's favorite flag. Used by the star icon in the
+    /// photo row.
+    @discardableResult
+    func setFavorite(_ project: Project,
+                      photoID: UUID,
+                      isFavorite: Bool) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].isFavorite = isFavorite
+        return save(p)
+    }
+
+    /// Set or clear the user's caption override for a photo. Empty / blank
+    /// strings revert to nil so the AI's `captionDraft` is used again.
+    @discardableResult
+    func setUserCaption(_ project: Project,
+                         photoID: UUID,
+                         _ text: String?) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.photos[idx].userCaption = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        return save(p)
+    }
+
+    /// Set or clear the user's observation override for a photo. Same
+    /// nil/empty semantics as `setUserCaption`.
+    @discardableResult
+    func setUserObservation(_ project: Project,
+                             photoID: UUID,
+                             _ text: String?) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.photos[idx].userObservation = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        return save(p)
+    }
+
     // MARK: - Tags
 
     /// Identity key for a Tag in the dedup pipelines: case-insensitive

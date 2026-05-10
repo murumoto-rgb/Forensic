@@ -127,16 +127,21 @@ struct FolderExportService {
             lines.append("--- Photo #\(photo.sequenceNumber) ---")
             lines.append("File: \(photo.imageFilename)")
             lines.append("Captured: \(photo.timestamp.formatted(date: .abbreviated, time: .standard))")
-            if let analysis = photo.aiAnalysis, !analysis.parseFailed {
-                if !analysis.locationInferred.isEmpty {
-                    lines.append("Location: \(analysis.locationInferred)")
-                }
-                if !analysis.captionDraft.isEmpty {
-                    lines.append("Caption: \(analysis.captionDraft)")
-                }
-                if !analysis.summaryObservation.isEmpty {
-                    lines.append("Observation: \(analysis.summaryObservation)")
-                }
+            if photo.isFavorite {
+                lines.append("Favorite: ★")
+            }
+            if let analysis = photo.aiAnalysis,
+               !analysis.parseFailed,
+               !analysis.locationInferred.isEmpty {
+                lines.append("Location: \(analysis.locationInferred)")
+            }
+            if let caption = photo.effectiveCaption {
+                let tag = (photo.userCaption?.isEmpty == false) ? "(user)" : "(AI)"
+                lines.append("Caption \(tag): \(caption)")
+            }
+            if let observation = photo.effectiveObservation {
+                let tag = (photo.userObservation?.isEmpty == false) ? "(user)" : "(AI)"
+                lines.append("Observation \(tag): \(observation)")
             }
             let confirmedTags = photo.tags
                 .filter { $0.confidence >= 0.5 }

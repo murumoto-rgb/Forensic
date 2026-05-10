@@ -17,6 +17,13 @@ struct PhotoTagEditorSheet: View {
     @State private var input: String = ""
     @State private var aiRunning: Bool = false
     @State private var aiError: String?
+    /// Local editing buffers for the caption / observation overrides. They
+    /// mirror the photo's `userCaption` / `userObservation` while the sheet
+    /// is open and get flushed back to the store on focus loss + on submit.
+    @State private var captionDraft: String = ""
+    @State private var observationDraft: String = ""
+    @FocusState private var captionFocused: Bool
+    @FocusState private var observationFocused: Bool
 
     private var project: Project? { store.project(withID: projectID) }
     private var photo: Photo? {
@@ -53,6 +60,7 @@ struct PhotoTagEditorSheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     photoPreview
                     aiMetadataSection
+                    userOverridesSection
                     confirmedTagsSection
                     inputSection
                     suggestionsSection
@@ -64,11 +72,115 @@ struct PhotoTagEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        flushOverrides()
+                        dismiss()
+                    }
                 }
             }
             .task(id: photoID) { await loadImage() }
+            .onAppear { loadOverrideDrafts() }
+            .onChange(of: photoID) { _, _ in loadOverrideDrafts() }
+            .onChange(of: captionFocused) { _, focused in
+                if !focused { flushCaptionOverride() }
+            }
+            .onChange(of: observationFocused) { _, focused in
+                if !focused { flushObservationOverride() }
+            }
         }
+    }
+
+    // MARK: - Engineer overrides
+
+    /// Editable caption + observation that live alongside the AI's draft.
+    /// Saving on focus loss keeps disk writes off the keystroke path; the
+    /// Done button does a final flush before dismissal so the sheet always
+    /// closes with the latest text persisted.
+    @ViewBuilder
+    private var userOverridesSection: some View {
+        let aiCaption = photo?.aiAnalysis?.captionDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let aiObservation = photo?.aiAnalysis?.summaryObservation
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Engineer's Overrides", systemImage: "pencil")
+                .font(.headline)
+            Text("Edits below replace the AI's draft in PDF and folder exports. Leave a field blank to keep the AI version.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Caption")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField(
+                    aiCaption.isEmpty
+                        ? "Short caption for the report figure"
+                        : aiCaption,
+                    text: $captionDraft,
+                    axis: .vertical
+                )
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+                .focused($captionFocused)
+                .submitLabel(.done)
+                .onSubmit { flushCaptionOverride() }
+                if !aiCaption.isEmpty && captionDraft.isEmpty {
+                    Text("AI: \u{201C}\(aiCaption)\u{201D}")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Summary Observation")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField(
+                    aiObservation.isEmpty
+                        ? "One sentence using cautious language"
+                        : aiObservation,
+                    text: $observationDraft,
+                    axis: .vertical
+                )
+                .lineLimit(1...6)
+                .textFieldStyle(.roundedBorder)
+                .focused($observationFocused)
+                .submitLabel(.done)
+                .onSubmit { flushObservationOverride() }
+                if !aiObservation.isEmpty && observationDraft.isEmpty {
+                    Text("AI: \(aiObservation)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            Color(.secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+    }
+
+    private func loadOverrideDrafts() {
+        captionDraft = photo?.userCaption ?? ""
+        observationDraft = photo?.userObservation ?? ""
+    }
+
+    private func flushCaptionOverride() {
+        guard let project else { return }
+        _ = store.setUserCaption(project, photoID: photoID, captionDraft)
+    }
+
+    private func flushObservationOverride() {
+        guard let project else { return }
+        _ = store.setUserObservation(project, photoID: photoID, observationDraft)
+    }
+
+    private func flushOverrides() {
+        flushCaptionOverride()
+        flushObservationOverride()
     }
 
     // MARK: - Photo preview

@@ -45,6 +45,13 @@ struct ProjectDetailView: View {
     /// no bucket filter. OR semantics across selected buckets, ANDed with
     /// the existing tag and recommended-use filters.
     @State private var activeBucketFilter: Set<UUID> = []
+    /// Text in the search field. Empty = no text filter. Matched against
+    /// photo sequence number, location, caption (user or AI), observation
+    /// (user or AI), and tag labels. ANDed with the other filters.
+    @State private var searchText: String = ""
+    /// True when the "Favorites only" chip is on. Surfaces only photos
+    /// where `isFavorite == true`. ANDed with the other filters.
+    @State private var favoritesOnly: Bool = false
     @State private var showingAddressEditor = false
     @State private var addressUpdating = false
     @State private var taggingPhoto: PhotoTarget?
@@ -94,6 +101,9 @@ struct ProjectDetailView: View {
                     exportSection(project)
                     photosSection(project)
                 }
+                .searchable(text: $searchText,
+                            placement: .navigationBarDrawer(displayMode: .automatic),
+                            prompt: "Search photos by tag, caption, or #")
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
                 .fullScreenCover(isPresented: $showingCamera) {
@@ -649,6 +659,11 @@ struct ProjectDetailView: View {
                             },
                             onTag: {
                                 taggingPhoto = PhotoTarget(id: photo.id)
+                            },
+                            onToggleFavorite: {
+                                _ = store.setFavorite(project,
+                                                       photoID: photo.id,
+                                                       isFavorite: !photo.isFavorite)
                             }
                         )
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -694,7 +709,9 @@ struct ProjectDetailView: View {
                 if !activeTagFilters.isEmpty
                     || !recommendedUseFilter.isEmpty
                     || !activeBucketFilter.isEmpty
-                    || showOnlyNeedsReview {
+                    || showOnlyNeedsReview
+                    || favoritesOnly
+                    || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
                 }
@@ -801,10 +818,14 @@ struct ProjectDetailView: View {
         let tagFilterActive = !activeTagFilters.isEmpty
         let useFilterActive = !recommendedUseFilter.isEmpty
         let bucketFilterActive = !activeBucketFilter.isEmpty
-        if !tagFilterActive && !useFilterActive && !bucketFilterActive && !showOnlyNeedsReview {
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searchActive = !trimmedSearch.isEmpty
+        if !tagFilterActive && !useFilterActive && !bucketFilterActive
+            && !showOnlyNeedsReview && !favoritesOnly && !searchActive {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
+        let lcSearch = trimmedSearch.lowercased()
         return project.photos.filter { photo in
             if tagFilterActive {
                 let photoLC = Set(photo.tags
@@ -823,8 +844,35 @@ struct ProjectDetailView: View {
             if showOnlyNeedsReview {
                 if !needsReview(photo) { return false }
             }
+            if favoritesOnly && !photo.isFavorite {
+                return false
+            }
+            if searchActive && !photoMatchesSearch(photo, lcSearch: lcSearch) {
+                return false
+            }
             return true
         }
+    }
+
+    /// Check whether `photo` contains `lcSearch` (already lowercased) in
+    /// any of the searchable fields: sequence number, location, caption,
+    /// observation, tag labels. Substring match — no fuzzy matching.
+    private func photoMatchesSearch(_ photo: Photo, lcSearch: String) -> Bool {
+        if "#\(photo.sequenceNumber)".contains(lcSearch) { return true }
+        if "\(photo.sequenceNumber)" == lcSearch { return true }
+        if let analysis = photo.aiAnalysis {
+            if analysis.locationInferred.lowercased().contains(lcSearch) { return true }
+        }
+        if let caption = photo.effectiveCaption?.lowercased(),
+           caption.contains(lcSearch) { return true }
+        if let observation = photo.effectiveObservation?.lowercased(),
+           observation.contains(lcSearch) { return true }
+        for tag in photo.tags {
+            if tag.label.lowercased().contains(lcSearch) { return true }
+            if let parent = tag.parentTag?.lowercased(),
+               parent.contains(lcSearch) { return true }
+        }
+        return false
     }
 
     /// True when this photo warrants the engineer's attention before
@@ -853,21 +901,36 @@ struct ProjectDetailView: View {
 
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                let favoritesCount = store.project(withID: projectID)?.photos.filter { $0.isFavorite }.count ?? 0
                 if !activeTagFilters.isEmpty
                     || !recommendedUseFilter.isEmpty
                     || !activeBucketFilter.isEmpty
-                    || showOnlyNeedsReview {
+                    || showOnlyNeedsReview
+                    || favoritesOnly {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
                         activeBucketFilter.removeAll()
                         showOnlyNeedsReview = false
+                        favoritesOnly = false
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
+                if favoritesCount > 0 {
+                    Button {
+                        favoritesOnly.toggle()
+                    } label: {
+                        Label("Favorites · \(favoritesCount)",
+                              systemImage: "star.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(favoritesOnly ? .yellow : .secondary)
                 }
                 if needsReviewCount > 0 {
                     Button {
@@ -1448,6 +1511,7 @@ private struct PhotoRow: View {
     let store: ProjectStore
     var onLocate: (() -> Void)? = nil
     var onTag: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
 
@@ -1519,6 +1583,19 @@ private struct PhotoRow: View {
             }
             Spacer()
             VStack(spacing: 6) {
+                if let onToggleFavorite {
+                    Button {
+                        onToggleFavorite()
+                    } label: {
+                        Image(systemName: photo.isFavorite ? "star.fill" : "star")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(photo.isFavorite ? .yellow : .secondary)
+                    .accessibilityLabel(photo.isFavorite
+                                         ? "Remove from favorites"
+                                         : "Add to favorites")
+                }
                 if let onTag {
                     Button {
                         onTag()

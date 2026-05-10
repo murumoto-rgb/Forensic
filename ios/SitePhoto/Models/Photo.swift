@@ -52,6 +52,18 @@ struct Photo: Identifiable, Codable, Hashable {
     /// means the photo hasn't been categorized; folder export drops those
     /// into a fallback "Unbucketed" folder.
     var bucketID: UUID?
+    /// User flag for "include this in the headline figures of the report".
+    /// Drives a star icon in the photo row and the "Favorites only" chip
+    /// in the filter bar. Optional in the export pipelines later.
+    var isFavorite: Bool
+    /// User-typed caption that overrides `aiAnalysis.captionDraft` when set.
+    /// nil = use the AI's draft; empty string = use the AI's draft (treated
+    /// the same as nil so deleting all the text reverts to the AI version).
+    /// PDF and folder exports prefer this over the AI version when present.
+    var userCaption: String?
+    /// User-typed observation that overrides `aiAnalysis.summaryObservation`
+    /// when set. Same nil/empty semantics as `userCaption`.
+    var userObservation: String?
 
     init(id: UUID = UUID(), sequenceNumber: Int, imageFilename: String) {
         self.id = id
@@ -78,6 +90,9 @@ struct Photo: Identifiable, Codable, Hashable {
         self.tags = []
         self.pendingSuggestions = []
         self.bucketID = nil
+        self.isFavorite = false
+        self.userCaption = nil
+        self.userObservation = nil
     }
 
     /// Tolerate manifests written before tags existed — decode the new fields
@@ -121,6 +136,34 @@ struct Photo: Identifiable, Codable, Hashable {
                                                         forKey: .pendingSuggestions) ?? []
         self.bucketID           = try c.decodeIfPresent(UUID.self,
                                                          forKey: .bucketID)
+        self.isFavorite         = try c.decodeIfPresent(Bool.self,
+                                                         forKey: .isFavorite) ?? false
+        self.userCaption        = try c.decodeIfPresent(String.self,
+                                                         forKey: .userCaption)
+        self.userObservation    = try c.decodeIfPresent(String.self,
+                                                         forKey: .userObservation)
+    }
+
+    /// Caption to show in exports / report surfaces. Prefers the user's
+    /// override when set, falls back to the AI's draft, and returns nil
+    /// when neither is available.
+    var effectiveCaption: String? {
+        if let u = userCaption?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            return u
+        }
+        let ai = aiAnalysis?.captionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (ai?.isEmpty ?? true) ? nil : ai
+    }
+
+    /// Observation sentence to show in exports / report surfaces. Prefers
+    /// the user's override when set, falls back to the AI's
+    /// `summaryObservation`, and returns nil when neither is available.
+    var effectiveObservation: String? {
+        if let u = userObservation?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            return u
+        }
+        let ai = aiAnalysis?.summaryObservation.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (ai?.isEmpty ?? true) ? nil : ai
     }
 }
 
