@@ -18,13 +18,18 @@ struct PDFExportService {
         // ── 1. Pre-load everything asynchronously ──────────────────────────────
 
         let sortedPhotos = project.photos.sorted { $0.sequenceNumber < $1.sequenceNumber }
-        var loaded: [(photo: Photo, image: UIImage)] = []
+        var loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []
         for (i, photo) in sortedPhotos.enumerated() {
             onProgress("Loading photo \(i + 1) of \(sortedPhotos.count)…")
             let url = store.imageURL(for: photo, in: project)
             if let data = await store.loadFileBytes(at: url),
                let img = downsample(data: data, maxPixel: 900) {
-                loaded.append((photo, img))
+                // Clean copy first so the engineer can compare side-by-side
+                // in the contact sheet (clean cell, then marked cell).
+                loaded.append((photo, img, false))
+                if photo.markupOverlayFilename != nil {
+                    loaded.append((photo, img, true))
+                }
             }
         }
 
@@ -198,7 +203,7 @@ struct PDFExportService {
     // MARK: - Contact sheet page
 
     private func drawContactSheet(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat,
-                                   photos: [(photo: Photo, image: UIImage)],
+                                   photos: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
                                    rangeStart: Int, total: Int) {
         let end = rangeStart + photos.count
         drawText("\(project.name) · Photos \(rangeStart + 1)–\(end) of \(total)",
@@ -234,21 +239,32 @@ struct PDFExportService {
             let ox = cx + pad
             let oy = cy + pad + (innerH - dH) / 2
             item.image.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
-            // Composite the PencilKit markup overlay (if any) on top of
-            // the photo, scaled to the same destination rect.
-            if let markupURL = store.markupOverlayURL(for: item.photo, in: project),
+            // Composite the PencilKit markup overlay only when this cell
+            // is the "marked" copy. Photos with markup land in the contact
+            // sheet twice — once clean (this branch off), once marked (on).
+            if item.includeMarkup,
+               let markupURL = store.markupOverlayURL(for: item.photo, in: project),
                let markupData = try? Data(contentsOf: markupURL),
                let markupImage = UIImage(data: markupData) {
                 markupImage.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
             }
 
             let captionY = cy + cellH - captionH + 4
-            drawText("#\(item.photo.sequenceNumber)",
+            let seqLabel = item.includeMarkup
+                ? "#\(item.photo.sequenceNumber) (marked)"
+                : "#\(item.photo.sequenceNumber)"
+            drawText(seqLabel,
                      at: CGPoint(x: cx + pad, y: captionY),
                      font: .boldSystemFont(ofSize: 9), color: .black)
-            drawText(dateFmt.string(from: item.photo.timestamp),
-                     at: CGPoint(x: cx + pad + 30, y: captionY + 1),
-                     font: .systemFont(ofSize: 7.5), color: UIColor(white: 0.35, alpha: 1))
+            // Marked cells live next to their clean partner which already
+            // shows the date — skip it on the marked one so the wider
+            // "(marked)" label has room and the row stays uncluttered.
+            if !item.includeMarkup {
+                drawText(dateFmt.string(from: item.photo.timestamp),
+                         at: CGPoint(x: cx + pad + 30, y: captionY + 1),
+                         font: .systemFont(ofSize: 7.5),
+                         color: UIColor(white: 0.35, alpha: 1))
+            }
 
             // Match the on-screen threshold so the PDF and the app agree on
             // which tags are "active" for this photo.

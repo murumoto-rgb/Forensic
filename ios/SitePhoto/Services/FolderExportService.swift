@@ -111,17 +111,35 @@ struct FolderExportService {
             guard fileManager.fileExists(atPath: src.path()) else { continue }
             // Reuse the source filename — already sequence-prefixed by
             // ProjectStore.makePhotoFilename, so engineers can sort
-            // alphabetically and get sequence order.
+            // alphabetically and get sequence order. Always byte-copy the
+            // original so EXIF (date / GPS) is preserved on the clean
+            // copy regardless of whether markup exists.
             let dst = destination.appending(path: photo.imageFilename)
-            // If the photo has a PencilKit markup overlay, composite it
-            // onto a fresh JPG copy (EXIF lost; markup is the point of
-            // the export). Otherwise byte-copy to preserve metadata.
-            if let markupURL = store.markupOverlayURL(for: photo, in: project),
-               compositeMarkup(photoURL: src, markupURL: markupURL, dst: dst) {
-                continue
-            }
             try? fileManager.copyItem(at: src, to: dst)
+            // When the photo has a PencilKit markup overlay, ALSO write
+            // a `<stem>_marked.jpg` next to the clean copy so the report
+            // can show both versions side-by-side. EXIF is lost on the
+            // marked copy (it's re-encoded after compositing) but the
+            // clean copy preserves it.
+            if let markupURL = store.markupOverlayURL(for: photo, in: project) {
+                let markedURL = destination.appending(
+                    path: Self.markedFilename(for: photo.imageFilename)
+                )
+                _ = compositeMarkup(photoURL: src,
+                                     markupURL: markupURL,
+                                     dst: markedURL)
+            }
         }
+    }
+
+    /// Build the filename for the marked twin of a photo. Inserts `_marked`
+    /// before the extension so `Foo - 5 - 260509.jpg` becomes
+    /// `Foo - 5 - 260509_marked.jpg` — sorts alphabetically right after
+    /// the clean original so a Finder listing reads clean → marked.
+    private static func markedFilename(for original: String) -> String {
+        let stem = (original as NSString).deletingPathExtension
+        let ext = (original as NSString).pathExtension
+        return ext.isEmpty ? "\(stem)_marked" : "\(stem)_marked.\(ext)"
     }
 
     /// Render the source JPG + PencilKit overlay PNG into a single JPG at
@@ -172,6 +190,9 @@ struct FolderExportService {
         for photo in photos {
             lines.append("--- Photo #\(photo.sequenceNumber) ---")
             lines.append("File: \(photo.imageFilename)")
+            if photo.markupOverlayFilename != nil {
+                lines.append("Marked copy: \(Self.markedFilename(for: photo.imageFilename))")
+            }
             lines.append("Captured: \(photo.timestamp.formatted(date: .abbreviated, time: .standard))")
             if photo.isFavorite {
                 lines.append("Favorite: ★")
