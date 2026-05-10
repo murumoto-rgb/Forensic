@@ -15,6 +15,11 @@ final class ProjectStore {
     /// during `loadInitial()` and saved back to disk on every mutation
     /// through `updateBranding(_:)` / `setBrandingLogo(_:)`.
     private(set) var reportBranding: ReportBranding = .empty
+    /// App-wide "standard bucket lists" — reusable starter packs the
+    /// engineer can apply to any project. Loaded during `loadInitial()`
+    /// (with default seeds on first launch) and saved back to disk on
+    /// every mutation. Manipulated through `addBucketTemplate(...)` etc.
+    private(set) var bucketTemplates: [BucketTemplate] = []
     /// True while a `save(_:)` call is writing to disk. Bound to the
     /// auto-save indicator chip in ProjectDetailView so the engineer
     /// can spot a stuck or slow save (e.g. iCloud throttling) at a
@@ -116,6 +121,7 @@ final class ProjectStore {
 
         load()
         loadBrandingFromDisk()
+        loadBucketTemplatesFromDisk()
         isReady = true
     }
 
@@ -388,6 +394,109 @@ final class ProjectStore {
             return image
         }
         return UIImage(named: "BaykalLogo")
+    }
+
+    // MARK: - Bucket templates (app-wide)
+
+    /// Where the bucket-templates JSON lives. Sibling of branding.json
+    /// under the storage root — survives iCloud promotion the same way.
+    private var bucketTemplatesURL: URL {
+        storageRoot.appending(path: "bucketTemplates.json")
+    }
+
+    /// Read templates from disk. On the very first launch the file
+    /// doesn't exist yet — seed `BucketTemplate.defaultSeeds` so the
+    /// feature surfaces a useful starter list rather than empty state.
+    fileprivate func loadBucketTemplatesFromDisk() {
+        if let data = try? Data(contentsOf: bucketTemplatesURL),
+           let decoded = try? decoder().decode([BucketTemplate].self, from: data) {
+            bucketTemplates = decoded
+            return
+        }
+        bucketTemplates = BucketTemplate.defaultSeeds
+        persistBucketTemplates()
+    }
+
+    private func persistBucketTemplates() {
+        if let data = try? encoder().encode(bucketTemplates) {
+            try? data.write(to: bucketTemplatesURL, options: .atomic)
+        }
+    }
+
+    /// Save a fresh template captured from a project's current bucket
+    /// list. Returns the new template (with assigned UUID) so the caller
+    /// can immediately reference it.
+    @discardableResult
+    func addBucketTemplate(name rawName: String,
+                            fromBuckets buckets: [Bucket]) -> BucketTemplate? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let sorted = buckets.sorted { $0.sortOrder < $1.sortOrder }
+        let entries = sorted.map { BucketTemplate.Entry(name: $0.name,
+                                                          colorHex: $0.colorHex) }
+        let template = BucketTemplate(name: name, entries: entries)
+        bucketTemplates.append(template)
+        persistBucketTemplates()
+        return template
+    }
+
+    @discardableResult
+    func renameBucketTemplate(_ id: UUID, to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let idx = bucketTemplates.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        bucketTemplates[idx].name = name
+        persistBucketTemplates()
+        return true
+    }
+
+    @discardableResult
+    func deleteBucketTemplate(_ id: UUID) -> Bool {
+        let before = bucketTemplates.count
+        bucketTemplates.removeAll { $0.id == id }
+        let changed = bucketTemplates.count != before
+        if changed { persistBucketTemplates() }
+        return changed
+    }
+
+    /// Replace an existing template (e.g. after the user re-saves over
+    /// its slot). No-op if the id isn't present.
+    @discardableResult
+    func updateBucketTemplate(_ updated: BucketTemplate) -> Bool {
+        guard let idx = bucketTemplates.firstIndex(where: { $0.id == updated.id }) else {
+            return false
+        }
+        bucketTemplates[idx] = updated
+        persistBucketTemplates()
+        return true
+    }
+
+    /// Apply `template` to `project` using the chosen mode. `replace`
+    /// wipes existing buckets (and clears `Photo.bucketID` on every
+    /// photo that pointed at them) before adding the template's buckets;
+    /// `append` simply tacks on the template's buckets at the end so
+    /// nothing on existing photos is disturbed. Returns the updated
+    /// project so the caller can keep its hot copy in sync.
+    @discardableResult
+    func applyBucketTemplate(_ template: BucketTemplate,
+                              to project: Project,
+                              mode: BucketTemplate.ApplyMode) -> Project {
+        var current = project
+        if mode == .replace {
+            for bucket in current.buckets {
+                current = deleteBucket(current, bucketID: bucket.id)
+            }
+        }
+        let baseOrder = current.buckets.map(\.sortOrder).max().map { $0 + 1 } ?? 0
+        var p = current
+        for (offset, entry) in template.entries.enumerated() {
+            p.buckets.append(Bucket(name: entry.name,
+                                     colorHex: entry.colorHex,
+                                     sortOrder: baseOrder + offset))
+        }
+        return save(p)
     }
 
     private static func resizeForLogo(_ image: UIImage) -> UIImage? {

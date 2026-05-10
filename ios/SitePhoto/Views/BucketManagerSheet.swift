@@ -9,6 +9,7 @@ struct BucketManagerSheet: View {
     let projectID: UUID
 
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var newBucketName: String = ""
@@ -16,6 +17,10 @@ struct BucketManagerSheet: View {
     @State private var pendingDelete: Bucket?
     @State private var renamingBucketID: UUID?
     @State private var renameDraft: String = ""
+    @State private var showingSaveTemplatePrompt: Bool = false
+    @State private var saveTemplateName: String = ""
+    @State private var showingTemplatePicker: Bool = false
+    @State private var showingTemplateManager: Bool = false
 
     private var project: Project? { store.project(withID: projectID) }
     private var buckets: [Bucket] {
@@ -50,11 +55,37 @@ struct BucketManagerSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
                 }
-                if !buckets.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        EditButton()
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack {
+                        templatesMenu
+                        if !buckets.isEmpty {
+                            EditButton()
+                        }
                     }
                 }
+            }
+            .alert("Save current buckets as a template",
+                   isPresented: $showingSaveTemplatePrompt) {
+                TextField("Template name", text: $saveTemplateName)
+                    .textInputAutocapitalization(.words)
+                Button("Save") { saveAsTemplate() }
+                    .disabled(saveTemplateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel", role: .cancel) {
+                    saveTemplateName = ""
+                }
+            } message: {
+                Text("The current bucket list (names + colors + order) will be saved as a reusable template you can load into other projects.")
+            }
+            .sheet(isPresented: $showingTemplatePicker) {
+                BucketTemplatePickerSheet(projectID: projectID,
+                                            onApplied: {})
+                    .environment(store)
+                    .environment(toastCenter)
+            }
+            .sheet(isPresented: $showingTemplateManager) {
+                BucketTemplateManagerSheet()
+                    .environment(store)
+                    .environment(toastCenter)
             }
             .alert(
                 "Delete bucket \"\(pendingDelete?.name ?? "")\"?",
@@ -202,6 +233,48 @@ struct BucketManagerSheet: View {
         guard let project else { return }
         _ = store.addBucket(project, name: trimmedNew, colorHex: newBucketColor)
         newBucketName = ""
+    }
+
+    /// Toolbar menu offering the three template entry points. Hidden
+    /// "Save as Template…" when there are no buckets to capture; the
+    /// other two are always available so a fresh project can load a
+    /// starter pack right away.
+    @ViewBuilder
+    private var templatesMenu: some View {
+        Menu {
+            Button {
+                showingTemplatePicker = true
+            } label: {
+                Label("Load from Template…", systemImage: "tray.and.arrow.down")
+            }
+            if !buckets.isEmpty {
+                Button {
+                    saveTemplateName = ""
+                    showingSaveTemplatePrompt = true
+                } label: {
+                    Label("Save as Template…", systemImage: "square.and.arrow.down")
+                }
+            }
+            Divider()
+            Button {
+                showingTemplateManager = true
+            } label: {
+                Label("Manage Templates…", systemImage: "list.bullet.rectangle")
+            }
+        } label: {
+            Image(systemName: "rectangle.stack")
+        }
+        .accessibilityLabel("Bucket Templates")
+    }
+
+    private func saveAsTemplate() {
+        guard let template = store.addBucketTemplate(name: saveTemplateName,
+                                                        fromBuckets: buckets) else {
+            return
+        }
+        Haptics.success()
+        toastCenter.post("Saved template \"\(template.name)\"", kind: .success)
+        saveTemplateName = ""
     }
 
     private func delete(_ bucket: Bucket) {
