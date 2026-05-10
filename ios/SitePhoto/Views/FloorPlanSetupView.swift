@@ -1,9 +1,11 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FloorPlanSetupView: View {
     let projectID: UUID
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var pickerItem: PhotosPickerItem?
@@ -14,6 +16,8 @@ struct FloorPlanSetupView: View {
     @State private var distanceFeetText = ""
     @State private var saving = false
     @State private var error: String?
+    @State private var showingPDFImporter: Bool = false
+    @State private var loadingPDF: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -101,12 +105,74 @@ struct FloorPlanSetupView: View {
             }
             .buttonStyle(.borderedProminent)
             .padding(.top, 8)
+            // Second source: PDF picked through the system document
+            // browser, which reaches every Files-app location (iCloud
+            // Drive, On My iPhone, Dropbox, Google Drive, OneDrive,
+            // Box, network shares, …) without per-provider opt-in.
+            Button {
+                showingPDFImporter = true
+            } label: {
+                if loadingPDF {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Rendering PDF…")
+                    }
+                } else {
+                    Label("Pick a PDF…", systemImage: "doc.fill")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(loadingPDF)
             Spacer()
             if let err = error {
                 Text(err).foregroundStyle(.red).font(.caption).padding(.bottom)
             }
         }
         .padding()
+        .fileImporter(isPresented: $showingPDFImporter,
+                       allowedContentTypes: [UTType.pdf]) { result in
+            handlePDFPick(result)
+        }
+    }
+
+    /// Hand the picked PDF off to the rasteriser. We hop to a detached
+    /// task so the rendering work doesn't stall the picker dismiss
+    /// animation, then bounce back to MainActor to update the @State
+    /// fields the calibration UI consumes.
+    private func handlePDFPick(_ result: Result<URL, Error>) {
+        switch result {
+        case .failure(let err):
+            error = "Could not open the PDF: \(err.localizedDescription)"
+            toastCenter.post(error ?? "Could not open the PDF", kind: .error)
+        case .success(let url):
+            loadingPDF = true
+            error = nil
+            Task.detached(priority: .userInitiated) {
+                do {
+                    let jpeg = try FloorPlanPDFImport.renderFirstPageToJPEG(from: url)
+                    let img = UIImage(data: jpeg)
+                    await MainActor.run {
+                        loadingPDF = false
+                        guard let img else {
+                            error = "Rendered PDF page was unreadable."
+                            toastCenter.post("Rendered PDF page was unreadable.",
+                                              kind: .error)
+                            return
+                        }
+                        image = img
+                        imageData = jpeg
+                    }
+                } catch {
+                    await MainActor.run {
+                        loadingPDF = false
+                        let message = (error as? FloorPlanPDFImportError)?
+                            .errorDescription ?? error.localizedDescription
+                        self.error = message
+                        toastCenter.post(message, kind: .error)
+                    }
+                }
+            }
+        }
     }
 
     private var distanceEntry: some View {
