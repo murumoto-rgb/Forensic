@@ -362,23 +362,9 @@ struct PlanViewerView: View {
 
     @ViewBuilder
     private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
-        let isSelected = marker.photo.id == selectedPhotoID
-        // Selected always wins (red) so the user can spot the active marker
-        // regardless of the color mode. Unselected markers come from the
-        // shared `PlanMarkerColors` resolver so on-screen and PDF stay in sync.
-        let fill: Color
-        if isSelected {
-            fill = Color(red: 0.92, green: 0.27, blue: 0.20)
-        } else if let project = store.project(withID: projectID) {
-            fill = PlanMarkerColors.color(for: marker.photo,
-                                            mode: planColorMode,
-                                            project: project)
-        } else {
-            fill = .green
-        }
         ZStack {
             Circle()
-                .fill(fill)
+                .fill(fillColor(for: marker))
                 .frame(width: radius * 2, height: radius * 2)
             Text("\(marker.photo.sequenceNumber)")
                 .font(.system(size: radius * 1.1, weight: .bold, design: .rounded))
@@ -387,6 +373,25 @@ struct PlanViewerView: View {
                 .lineLimit(1)
                 .frame(width: radius * 1.6, height: radius * 1.6)
         }
+    }
+
+    /// Resolve the bubble fill colour. Selected always wins (red) so the
+    /// user can spot the active marker regardless of the colour mode.
+    /// Unselected markers come from the shared `PlanMarkerColors` resolver
+    /// so on-screen and PDF stay in sync. Pulled out of the `@ViewBuilder`
+    /// body so the `if/else` branches don't trip "type '()' cannot conform
+    /// to 'View'" — view builders interpret every statement as a candidate
+    /// view, and a `let fill: Color` assignment is `Void`.
+    private func fillColor(for marker: PlanMarker) -> Color {
+        if marker.photo.id == selectedPhotoID {
+            return Color(red: 0.92, green: 0.27, blue: 0.20)
+        }
+        if let project = store.project(withID: projectID) {
+            return PlanMarkerColors.color(for: marker.photo,
+                                            mode: planColorMode,
+                                            project: project)
+        }
+        return .green
     }
 
     // MARK: - Selection / centering
