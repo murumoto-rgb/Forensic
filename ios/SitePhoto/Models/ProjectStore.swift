@@ -504,13 +504,18 @@ final class ProjectStore {
         let message = count == 1
             ? "iCloud detected another edit of \"\(projectName)\" from a different device. The local version is shown."
             : "iCloud detected \(count) other edits of \"\(projectName)\" from different devices. The local version is shown."
-        toast.post(message,
-                    kind: .warning,
-                    actionTitle: "Keep Local") {
-            for version in conflicts {
-                version.isResolved = true
+        // ToastCenter is `@MainActor`; the surrounding save path is not.
+        // Hop explicitly so the actor-isolation check is satisfied and the
+        // toast renders on the right thread.
+        Task { @MainActor in
+            toast.post(message,
+                       kind: .warning,
+                       actionTitle: "Keep Local") {
+                for version in conflicts {
+                    version.isResolved = true
+                }
+                try? NSFileVersion.removeOtherVersionsOfItem(at: url)
             }
-            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
         }
     }
 
