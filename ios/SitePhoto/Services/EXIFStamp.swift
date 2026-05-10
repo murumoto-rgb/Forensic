@@ -28,19 +28,17 @@ enum EXIFStamp {
                    lines: labelLines(photo: photo, gps: gps, address: address))
     }
 
-    /// Render `srcURL` with a date / GPS label into `dstURL`. Returns true
-    /// on success. `gps` and `address` are optional context the caller can
-    /// hand in from the project (each photo doesn't currently carry its
-    /// own GPS, so we use the project's recorded coordinates as the next-
-    /// best stamp).
+    /// Render `srcBytes` (a JPEG already loaded from disk — caller is
+    /// responsible for using `ProjectStore.loadFileBytes(at:)` so iCloud
+    /// placeholders are downloaded first) with a date / GPS label into
+    /// `dstURL`. Returns true on success.
     @discardableResult
-    static func stamp(srcURL: URL,
+    static func stamp(srcBytes: Data,
                        dstURL: URL,
                        photo: Photo,
                        gps: ProjectGPS?,
                        address: String?) -> Bool {
-        guard let srcData = try? Data(contentsOf: srcURL),
-              let src = UIImage(data: srcData) else { return false }
+        guard let src = UIImage(data: srcBytes) else { return false }
         let size = src.size
         guard size.width > 0, size.height > 0 else { return false }
 

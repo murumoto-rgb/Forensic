@@ -113,44 +113,40 @@ struct FolderExportService {
                              fileManager: FileManager) async {
         for photo in photos {
             let src = photosFolder.appending(path: photo.imageFilename)
-            // Photos live in iCloud Drive when iCloud is enabled — `copyItem`
-            // on an undownloaded placeholder silently writes nothing. Pull
-            // the file to this device before touching it. This mirrors what
-            // PDFExportService does via `loadFileBytes` and is the difference
-            // between an export of N JPGs and an empty bucket folder + a
-            // `captions.txt`.
-            await store.ensureDownloaded(src)
-            guard fileManager.fileExists(atPath: src.path()) else { continue }
-            // Reuse the source filename — already sequence-prefixed by
-            // ProjectStore.makePhotoFilename, so engineers can sort
-            // alphabetically and get sequence order. Byte-copy the original
-            // when no stamp is requested so EXIF (date / GPS) is preserved;
-            // re-encode with the stamp otherwise.
+            // `FileManager.copyItem` doesn't auto-trigger an iCloud download
+            // the way `Data(contentsOf:)` does — when the source is still a
+            // placeholder it silently produces nothing. Read the bytes via
+            // `loadFileBytes`, which both downloads and validates, then
+            // write them out. EXIF is preserved bit-for-bit because we
+            // round-trip the original JPEG bytes (no decode/encode).
+            guard let srcBytes = await store.loadFileBytes(at: src) else {
+                continue
+            }
             let dst = destination.appending(path: photo.imageFilename)
             if burnInTimestampAndGPS {
-                let stamped = EXIFStamp.stamp(srcURL: src,
+                let stamped = EXIFStamp.stamp(srcBytes: srcBytes,
                                                 dstURL: dst,
                                                 photo: photo,
                                                 gps: project.projectGPS,
                                                 address: project.projectAddress)
                 if !stamped {
-                    try? fileManager.copyItem(at: src, to: dst)
+                    try? srcBytes.write(to: dst, options: .atomic)
                 }
             } else {
-                try? fileManager.copyItem(at: src, to: dst)
+                try? srcBytes.write(to: dst, options: .atomic)
             }
             // When the photo has a PencilKit markup overlay, ALSO write
             // a `<stem>_marked.jpg` next to the clean copy so the report
             // can show both versions side-by-side. EXIF is lost on the
             // marked copy (it's re-encoded after compositing) but the
             // clean copy preserves it (when not stamping).
-            if let markupURL = store.markupOverlayURL(for: photo, in: project) {
-                await store.ensureDownloaded(markupURL)
+            if let markupURL = store.markupOverlayURL(for: photo, in: project),
+               let markupBytes = await store.loadFileBytes(at: markupURL) {
                 let markedURL = destination.appending(
                     path: Self.markedFilename(for: photo.imageFilename)
                 )
-                _ = compositeMarkup(photoURL: src,
-                                     markupURL: markupURL,
+                _ = compositeMarkup(photoBytes: srcBytes,
+                                     markupBytes: markupBytes,
                                      dst: markedURL,
                                      burnIn: burnInTimestampAndGPS,
                                      photo: photo)
@@ -170,18 +166,16 @@ struct FolderExportService {
 
     /// Render the source JPG + PencilKit overlay PNG into a single JPG at
     /// the destination. Returns false (so the caller falls back to byte
-    /// copy) if either image fails to load or encoding produces nothing.
+    /// copy) if either image fails to decode or encoding produces nothing.
     /// When `burnIn` is true, the EXIF stamp (timestamp + GPS) is drawn
     /// after the markup so it shows up on top of any strokes.
-    private func compositeMarkup(photoURL: URL,
-                                  markupURL: URL,
+    private func compositeMarkup(photoBytes: Data,
+                                  markupBytes: Data,
                                   dst: URL,
                                   burnIn: Bool,
                                   photo: Photo) -> Bool {
-        guard let photoData = try? Data(contentsOf: photoURL),
-              let photoImage = UIImage(data: photoData),
-              let markupData = try? Data(contentsOf: markupURL),
-              let markupImage = UIImage(data: markupData) else {
+        guard let photoImage = UIImage(data: photoBytes),
+              let markupImage = UIImage(data: markupBytes) else {
             return false
         }
         let size = photoImage.size
