@@ -25,7 +25,14 @@ struct SettingsSheet: View {
     /// Concurrency cap for the AI batch-tagging task group. Tier 1 Anthropic
     /// accounts have a 30k input-tokens/min cap, which 3 in flight stays
     /// under on sustained batches; higher tiers can go higher.
-    @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 3
+    @AppStorage("sitephoto.aiConcurrency") private var aiConcurrency: Int = 5
+
+    /// Bound to `AITaggingModel.userDefaultsKey` so the picker, the
+    /// batch runner, and `PhotoTagEditorSheet` all read the same value.
+    /// Stored as the enum's `rawValue` for compatibility with
+    /// `@AppStorage` (which doesn't accept arbitrary enums directly).
+    @AppStorage(AITaggingModel.userDefaultsKey)
+    private var aiModelRaw: String = AITaggingModel.sonnet.rawValue
 
     /// Minimum confidence required for a tag to render on the photo row,
     /// in the filter bar, in the tag-filter screen, and in the PDF. Tags
@@ -71,6 +78,14 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    Picker("Tagging model", selection: $aiModelRaw) {
+                        ForEach(AITaggingModel.allCases) { model in
+                            Text(model.displayName).tag(model.rawValue)
+                        }
+                    }
+                    Text(currentModelSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Stepper(value: $aiConcurrency, in: 1...20) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Parallel AI requests")
@@ -80,9 +95,9 @@ struct SettingsSheet: View {
                         }
                     }
                 } header: {
-                    Text("AI Batch Tagging Speed")
+                    Text("AI Tagging Speed")
                 } footer: {
-                    Text("Number of photos processed in parallel during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 3 (safe for Tier 1 accounts, which cap at 30,000 input tokens / minute). Bump higher if you have a Tier 2+ account; the app retries with backoff on rate-limit responses.")
+                    Text("Tagging model: Sonnet is the careful default; Haiku is roughly 2× faster and 3–4× cheaper but may produce shorter captions and miss subtle distress.\n\nParallel requests: photos processed in flight during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts on warm-cache batches, which run at ~10% of the uncached input cost). The app retries with backoff on rate-limit responses.")
                 }
 
                 Section {
@@ -271,6 +286,11 @@ struct SettingsSheet: View {
         return trimmed == defaultTrimmed
             ? "Using bundled default"
             : "Customised"
+    }
+
+    private var currentModelSubtitle: String {
+        let model = AITaggingModel(rawValue: aiModelRaw) ?? .sonnet
+        return model.subtitle
     }
 
     private var tagLibrarySubtitle: String {

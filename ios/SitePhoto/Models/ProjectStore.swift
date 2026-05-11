@@ -2643,8 +2643,15 @@ extension ProjectStore {
         // once the system message is cached), 3 in flight stays under the
         // limit on sustained batches. Users on higher tiers can dial it up
         // in Settings.
+        // Default concurrency is 5: with multi-block prompt caching the
+        // first photo of a batch carries the full prompt cost and every
+        // subsequent photo hits the cached prefix at ~10× discount, so
+        // 5 in-flight requests stay safely within Tier 1's 30k input
+        // tokens/min rate cap on warm batches. Engineers can dial up to
+        // 20 in Settings if they're on a higher tier. `raw == 0` means
+        // "never set" — UserDefaults returns 0 for missing keys.
         let raw = UserDefaults.standard.integer(forKey: "sitephoto.aiConcurrency")
-        let maxConcurrent = max(1, min(20, raw == 0 ? 3 : raw))
+        let maxConcurrent = max(1, min(20, raw == 0 ? 5 : raw))
 
         // Pre-compute the per-photo work list on the main actor so the
         // task closures don't have to call back into `self` for URLs —
@@ -2692,6 +2699,7 @@ extension ProjectStore {
                 let fname = item.filename
                 let promptBlocks = compiled.blocks
                 let vocab = compiled.vocabulary
+                let modelID = AITaggingModel.current.modelIdentifier
                 group.addTask {
                     await Self.ensureDownloadedStatic(at: url)
                     do {
@@ -2699,7 +2707,8 @@ extension ProjectStore {
                             imageURL: url,
                             photoID: fname,
                             systemBlocks: promptBlocks,
-                            vocabulary: vocab
+                            vocabulary: vocab,
+                            model: modelID
                         )
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
                                               outcome: .success(r))

@@ -898,7 +898,8 @@ struct PhotoTagEditorSheet: View {
                 imageURL: url,
                 photoID: photo.imageFilename,
                 systemBlocks: compiled.blocks,
-                vocabulary: compiled.vocabulary
+                vocabulary: compiled.vocabulary,
+                model: AITaggingModel.current.modelIdentifier
             )
             // Merge with existing pending suggestions rather than
             // overwriting. Also persist the full structured analysis so

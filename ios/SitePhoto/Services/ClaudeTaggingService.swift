@@ -35,7 +35,9 @@ enum ClaudeTaggingService {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let apiVersion = "2023-06-01"
-    private static let model = "claude-sonnet-4-6"
+    /// Default model. Overridable per call so callers can honour the
+    /// user's "Tagging model" Settings pick (see `AITaggingModel`).
+    private static let defaultModel = AITaggingModel.sonnet.modelIdentifier
     /// 1024 px on the longest side keeps image-token cost in the $0.003–
     /// $0.005 range while preserving enough detail for damage recognition.
     private static let maxImageDimension: CGFloat = 1024
@@ -69,7 +71,8 @@ enum ClaudeTaggingService {
     static func tag(imageURL: URL,
                     photoID: String = "",
                     systemBlocks: [PromptCompiler.Block],
-                    vocabulary: ValidationVocabulary = .fallback) async throws -> Result {
+                    vocabulary: ValidationVocabulary = .fallback,
+                    model: String? = nil) async throws -> Result {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
         }
@@ -97,7 +100,7 @@ enum ClaudeTaggingService {
         }
 
         let body: [String: Any] = [
-            "model":      model,
+            "model":      model ?? defaultModel,
             "max_tokens": 1500,
             "system":     systemBlocksJSON,
             "messages": [
