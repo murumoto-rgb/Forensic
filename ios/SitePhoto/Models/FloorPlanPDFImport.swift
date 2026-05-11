@@ -34,27 +34,44 @@ enum FloorPlanPDFImportError: Error, LocalizedError {
 }
 
 enum FloorPlanPDFImport {
-    /// Render page 1 of the PDF at `url` to JPEG data.
+    /// Lightweight introspection used to decide whether to show the
+    /// page-picker sheet. Cheap — just opens the document and reads
+    /// `pageCount`. Throws `.locked` for encrypted PDFs (same as the
+    /// renderer) so the caller can surface the error before the user
+    /// sees a "0 pages" picker.
+    static func pageCount(at url: URL) throws -> Int {
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        guard let document = PDFDocument(url: url) else {
+            throw FloorPlanPDFImportError.renderFailed
+        }
+        if document.isLocked || document.isEncrypted {
+            throw FloorPlanPDFImportError.locked
+        }
+        return document.pageCount
+    }
+
+    /// Render a specific page of the PDF at `url` to JPEG data.
+    /// Page indices are 0-based — page 1 in a UI corresponds to
+    /// `pageIndex: 0`.
     ///
     /// - Parameters:
-    ///   - url: source URL — handled inside a security-scoped block so
-    ///     files outside the sandbox (Files providers, iCloud) work.
+    ///   - pageIndex: which page to rasterise.
+    ///   - url: source URL — handled inside a security-scoped block.
     ///   - maxDimension: hard cap on the longest edge in pixels so a
-    ///     huge architectural sheet doesn't OOM the device. Default
-    ///     4000 px ≈ 50 MP raw, well within iPhone limits.
+    ///     huge architectural sheet doesn't OOM the device.
     ///   - targetDPI: rasterisation density in pixels per inch on the
-    ///     PDF's media box. 200 DPI is the threshold where annotations
-    ///     and small text remain legible; we trade memory above that
-    ///     for marginal sharpness.
-    ///   - jpegQuality: passed through to `UIImage.jpegData`. 0.9
-    ///     matches the existing image-import path.
-    /// - Returns: encoded JPEG bytes ready to feed into the existing
-    ///   `store.saveFloorPlan(...)` / `store.replaceFloorPlan(...)`
-    ///   call sites.
-    static func renderFirstPageToJPEG(from url: URL,
-                                       maxDimension: CGFloat = 4000,
-                                       targetDPI: CGFloat = 200,
-                                       jpegQuality: CGFloat = 0.9) throws -> Data {
+    ///     PDF's media box.
+    ///   - jpegQuality: passed through to `UIImage.jpegData`.
+    /// - Returns: encoded JPEG bytes ready to feed into the floor-plan
+    ///   import pipeline.
+    static func renderPage(at pageIndex: Int,
+                            from url: URL,
+                            maxDimension: CGFloat = 4000,
+                            targetDPI: CGFloat = 200,
+                            jpegQuality: CGFloat = 0.9) throws -> Data {
         let didStartAccess = url.startAccessingSecurityScopedResource()
         defer {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
@@ -66,7 +83,8 @@ enum FloorPlanPDFImport {
         if document.isLocked || document.isEncrypted {
             throw FloorPlanPDFImportError.locked
         }
-        guard let page = document.page(at: 0) else {
+        guard pageIndex >= 0, pageIndex < document.pageCount,
+              let page = document.page(at: pageIndex) else {
             throw FloorPlanPDFImportError.empty
         }
 
@@ -75,10 +93,6 @@ enum FloorPlanPDFImport {
             throw FloorPlanPDFImportError.renderFailed
         }
 
-        // Compute the desired pixel size: targetDPI × (size in inches),
-        // where 1pt = 1/72in. Clamp the longest edge to maxDimension so
-        // E-size sheets (36×48in) cap out instead of pushing 240MB into
-        // the renderer.
         var pixelSize = CGSize(width: mediaBoxSize.width  * (targetDPI / 72),
                                 height: mediaBoxSize.height * (targetDPI / 72))
         let longest = max(pixelSize.width, pixelSize.height)
@@ -93,19 +107,11 @@ enum FloorPlanPDFImport {
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
 
-        // autoreleasepool keeps the rasterised UIImage alive only long
-        // enough to JPEG-encode; the encoded Data is what we return.
         let jpeg: Data? = autoreleasepool {
             let image = renderer.image { ctx in
                 let cg = ctx.cgContext
-                // White background — most CAD PDFs use a transparent
-                // canvas; rendering directly to a transparent context
-                // would produce a JPEG with black pixels.
                 cg.setFillColor(UIColor.white.cgColor)
                 cg.fill(CGRect(origin: .zero, size: pixelSize))
-                // PDF coordinates are origin-bottom-left; UIKit is
-                // origin-top-left. Flip vertically so the page renders
-                // upright.
                 cg.translateBy(x: 0, y: pixelSize.height)
                 cg.scaleBy(x: 1, y: -1)
                 let pageBounds = page.bounds(for: .mediaBox)
@@ -118,5 +124,40 @@ enum FloorPlanPDFImport {
         }
         guard let data = jpeg else { throw FloorPlanPDFImportError.renderFailed }
         return data
+    }
+
+    /// Backward-compat shim — the old single-page-only helper used by
+    /// any caller that hasn't migrated to the page-aware API. Just
+    /// renders page 0 with the same defaults.
+    static func renderFirstPageToJPEG(from url: URL,
+                                       maxDimension: CGFloat = 4000,
+                                       targetDPI: CGFloat = 200,
+                                       jpegQuality: CGFloat = 0.9) throws -> Data {
+        try renderPage(at: 0,
+                        from: url,
+                        maxDimension: maxDimension,
+                        targetDPI: targetDPI,
+                        jpegQuality: jpegQuality)
+    }
+
+    /// Generate a small thumbnail for `pageIndex` suitable for a grid
+    /// page picker. Returns nil on any failure rather than throwing —
+    /// the picker tolerates a few missing thumbnails (rendered as a
+    /// generic placeholder) more gracefully than an aborted load.
+    static func pageThumbnail(at pageIndex: Int,
+                                from url: URL,
+                                size: CGSize = CGSize(width: 150, height: 200)) -> UIImage? {
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        guard let document = PDFDocument(url: url),
+              !document.isLocked,
+              !document.isEncrypted,
+              pageIndex >= 0, pageIndex < document.pageCount,
+              let page = document.page(at: pageIndex) else {
+            return nil
+        }
+        return page.thumbnail(of: size, for: .mediaBox)
     }
 }

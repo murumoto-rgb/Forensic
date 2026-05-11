@@ -18,6 +18,14 @@ struct FloorPlanSetupView: View {
     @State private var error: String?
     @State private var showingPDFImporter: Bool = false
     @State private var loadingPDF: Bool = false
+    /// Source URL of a multi-page PDF the engineer just picked, held
+    /// while `PDFPagePickerSheet` is up. Cleared once a page is chosen
+    /// (or cancel).
+    @State private var pendingPDFURL: URL?
+    @State private var pendingPDFPageCount: Int = 0
+    /// Source bytes (image or rasterised PDF page) waiting on the
+    /// crop step. When non-nil, `FloorPlanCropperView` is presented.
+    @State private var pendingCropData: Data?
 
     var body: some View {
         NavigationStack {
@@ -133,46 +141,104 @@ struct FloorPlanSetupView: View {
                        allowedContentTypes: [UTType.pdf]) { result in
             handlePDFPick(result)
         }
+        .sheet(isPresented: Binding(
+            get: { pendingPDFURL != nil && pendingPDFPageCount > 1 },
+            set: { if !$0 { pendingPDFURL = nil; pendingPDFPageCount = 0 } }
+        )) {
+            if let url = pendingPDFURL {
+                PDFPagePickerSheet(
+                    url: url,
+                    pageCount: pendingPDFPageCount,
+                    onPick: { pageIndex in
+                        renderPickedPDFPage(url: url, pageIndex: pageIndex)
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingCropData != nil },
+            set: { if !$0 { pendingCropData = nil } }
+        )) {
+            if let data = pendingCropData {
+                FloorPlanCropperView(
+                    imageData: data,
+                    onUse: { final in
+                        applyFinalImage(final)
+                    },
+                    onCancel: {
+                        pendingCropData = nil
+                    }
+                )
+            }
+        }
     }
 
-    /// Hand the picked PDF off to the rasteriser. We hop to a detached
-    /// task so the rendering work doesn't stall the picker dismiss
-    /// animation, then bounce back to MainActor to update the @State
-    /// fields the calibration UI consumes.
+    /// First step of the PDF flow: open the document, count pages, and
+    /// either route to the page picker (multi-page) or straight to
+    /// `renderPickedPDFPage` for page 0 (single-page). Either way the
+    /// rendered bytes feed into the crop step before calibration.
     private func handlePDFPick(_ result: Result<URL, Error>) {
         switch result {
         case .failure(let err):
             error = "Could not open the PDF: \(err.localizedDescription)"
             toastCenter.post(error ?? "Could not open the PDF", kind: .error)
         case .success(let url):
-            loadingPDF = true
             error = nil
-            Task.detached(priority: .userInitiated) {
-                do {
-                    let jpeg = try FloorPlanPDFImport.renderFirstPageToJPEG(from: url)
-                    let img = UIImage(data: jpeg)
-                    await MainActor.run {
-                        loadingPDF = false
-                        guard let img else {
-                            error = "Rendered PDF page was unreadable."
-                            toastCenter.post("Rendered PDF page was unreadable.",
-                                              kind: .error)
-                            return
-                        }
-                        image = img
-                        imageData = jpeg
-                    }
-                } catch {
-                    await MainActor.run {
-                        loadingPDF = false
-                        let message = (error as? FloorPlanPDFImportError)?
-                            .errorDescription ?? error.localizedDescription
-                        self.error = message
-                        toastCenter.post(message, kind: .error)
-                    }
+            do {
+                let pageCount = try FloorPlanPDFImport.pageCount(at: url)
+                if pageCount > 1 {
+                    pendingPDFURL = url
+                    pendingPDFPageCount = pageCount
+                } else {
+                    renderPickedPDFPage(url: url, pageIndex: 0)
+                }
+            } catch {
+                let message = (error as? FloorPlanPDFImportError)?
+                    .errorDescription ?? error.localizedDescription
+                self.error = message
+                toastCenter.post(message, kind: .error)
+            }
+        }
+    }
+
+    /// Rasterise the chosen PDF page to JPEG bytes, then route through
+    /// the cropper. Runs on a detached task so the page picker can
+    /// dismiss promptly even on big sheets.
+    private func renderPickedPDFPage(url: URL, pageIndex: Int) {
+        pendingPDFURL = nil
+        pendingPDFPageCount = 0
+        loadingPDF = true
+        Task.detached(priority: .userInitiated) {
+            do {
+                let jpeg = try FloorPlanPDFImport.renderPage(at: pageIndex, from: url)
+                await MainActor.run {
+                    loadingPDF = false
+                    pendingCropData = jpeg
+                }
+            } catch {
+                await MainActor.run {
+                    loadingPDF = false
+                    let message = (error as? FloorPlanPDFImportError)?
+                        .errorDescription ?? error.localizedDescription
+                    self.error = message
+                    toastCenter.post(message, kind: .error)
                 }
             }
         }
+    }
+
+    /// Final step — receives bytes from the cropper (or the source as-is
+    /// if the engineer skipped cropping) and hands them to the
+    /// calibration canvas via the existing `image`/`imageData` state.
+    private func applyFinalImage(_ data: Data) {
+        pendingCropData = nil
+        guard let img = UIImage(data: data) else {
+            error = "Cropped image was unreadable."
+            toastCenter.post("Cropped image was unreadable.", kind: .error)
+            return
+        }
+        image = img
+        imageData = data
     }
 
     private var distanceEntry: some View {
@@ -227,14 +293,13 @@ struct FloorPlanSetupView: View {
                 error = "Could not load that image."
                 return
             }
-            image = img
-            // Re-encode as JPEG so we control format and size on disk.
-            if let jpeg = img.jpegData(compressionQuality: 0.9) {
-                imageData = jpeg
-            } else {
-                imageData = data
-            }
+            // Re-encode as JPEG so we control format and size on disk,
+            // then route through the cropper (skippable). The crop
+            // step's onUse callback writes back to image/imageData and
+            // proceeds to calibration.
+            let jpeg = img.jpegData(compressionQuality: 0.9) ?? data
             error = nil
+            pendingCropData = jpeg
         } catch {
             self.error = "Could not load image: \(error.localizedDescription)"
         }

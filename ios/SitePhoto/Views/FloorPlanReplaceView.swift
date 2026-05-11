@@ -19,6 +19,9 @@ struct FloorPlanReplaceView: View {
     @State private var error: String?
     @State private var showingPDFImporter: Bool = false
     @State private var loadingPDF: Bool = false
+    @State private var pendingPDFURL: URL?
+    @State private var pendingPDFPageCount: Int = 0
+    @State private var pendingCropData: Data?
 
     private enum Step { case pickImage, calibrate, distance, origin }
 
@@ -160,45 +163,94 @@ struct FloorPlanReplaceView: View {
                        allowedContentTypes: [UTType.pdf]) { result in
             handlePDFPick(result)
         }
+        .sheet(isPresented: Binding(
+            get: { pendingPDFURL != nil && pendingPDFPageCount > 1 },
+            set: { if !$0 { pendingPDFURL = nil; pendingPDFPageCount = 0 } }
+        )) {
+            if let url = pendingPDFURL {
+                PDFPagePickerSheet(
+                    url: url,
+                    pageCount: pendingPDFPageCount,
+                    onPick: { pageIndex in
+                        renderPickedPDFPage(url: url, pageIndex: pageIndex)
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingCropData != nil },
+            set: { if !$0 { pendingCropData = nil } }
+        )) {
+            if let data = pendingCropData {
+                FloorPlanCropperView(
+                    imageData: data,
+                    onUse: { final in
+                        applyFinalImage(final)
+                    },
+                    onCancel: {
+                        pendingCropData = nil
+                    }
+                )
+            }
+        }
     }
 
-    /// Hand the picked PDF off to the rasteriser. Off-main-actor so the
-    /// picker dismiss animation doesn't stall, then bounce back to the
-    /// main actor to update the @State the calibration UI reads.
     private func handlePDFPick(_ result: Result<URL, Error>) {
         switch result {
         case .failure(let err):
             error = "Could not open the PDF: \(err.localizedDescription)"
             toastCenter.post(error ?? "Could not open the PDF", kind: .error)
         case .success(let url):
-            loadingPDF = true
             error = nil
-            Task.detached(priority: .userInitiated) {
-                do {
-                    let jpeg = try FloorPlanPDFImport.renderFirstPageToJPEG(from: url)
-                    let img = UIImage(data: jpeg)
-                    await MainActor.run {
-                        loadingPDF = false
-                        guard let img else {
-                            error = "Rendered PDF page was unreadable."
-                            toastCenter.post("Rendered PDF page was unreadable.",
-                                              kind: .error)
-                            return
-                        }
-                        image = img
-                        imageData = jpeg
-                    }
-                } catch {
-                    await MainActor.run {
-                        loadingPDF = false
-                        let message = (error as? FloorPlanPDFImportError)?
-                            .errorDescription ?? error.localizedDescription
-                        self.error = message
-                        toastCenter.post(message, kind: .error)
-                    }
+            do {
+                let pageCount = try FloorPlanPDFImport.pageCount(at: url)
+                if pageCount > 1 {
+                    pendingPDFURL = url
+                    pendingPDFPageCount = pageCount
+                } else {
+                    renderPickedPDFPage(url: url, pageIndex: 0)
+                }
+            } catch {
+                let message = (error as? FloorPlanPDFImportError)?
+                    .errorDescription ?? error.localizedDescription
+                self.error = message
+                toastCenter.post(message, kind: .error)
+            }
+        }
+    }
+
+    private func renderPickedPDFPage(url: URL, pageIndex: Int) {
+        pendingPDFURL = nil
+        pendingPDFPageCount = 0
+        loadingPDF = true
+        Task.detached(priority: .userInitiated) {
+            do {
+                let jpeg = try FloorPlanPDFImport.renderPage(at: pageIndex, from: url)
+                await MainActor.run {
+                    loadingPDF = false
+                    pendingCropData = jpeg
+                }
+            } catch {
+                await MainActor.run {
+                    loadingPDF = false
+                    let message = (error as? FloorPlanPDFImportError)?
+                        .errorDescription ?? error.localizedDescription
+                    self.error = message
+                    toastCenter.post(message, kind: .error)
                 }
             }
         }
+    }
+
+    private func applyFinalImage(_ data: Data) {
+        pendingCropData = nil
+        guard let img = UIImage(data: data) else {
+            error = "Cropped image was unreadable."
+            toastCenter.post("Cropped image was unreadable.", kind: .error)
+            return
+        }
+        image = img
+        imageData = data
     }
 
     private var distancePanel: some View {
@@ -235,9 +287,12 @@ struct FloorPlanReplaceView: View {
                 error = "Could not load that image."
                 return
             }
-            image = img
-            imageData = img.jpegData(compressionQuality: 0.9) ?? data
+            // Route through the cropper (skippable). Re-encode as JPEG
+            // first so the cropper, calibration view, and on-disk file
+            // all share the same format.
+            let jpeg = img.jpegData(compressionQuality: 0.9) ?? data
             error = nil
+            pendingCropData = jpeg
         } catch {
             self.error = "Could not load image: \(error.localizedDescription)"
         }
