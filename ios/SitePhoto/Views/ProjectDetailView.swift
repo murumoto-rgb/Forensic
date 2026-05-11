@@ -1037,49 +1037,51 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // FlowLayout wraps to the next row when the four bordered
-            // buttons + their `.borderedProminent` Delete sibling don't
-            // fit. Without it the HStack runs out of horizontal width
-            // on smaller-than-iPhone-17-Pro-Max devices and SwiftUI's
-            // bordered style starts wrapping the labels letter-by-letter.
-            // The selected count is already shown in the row above
-            // ("N selected"), so the button labels drop the dynamic
-            // count to keep them short and predictable.
-            FlowLayout(spacing: 8) {
-                Button {
-                    showingBucketPicker = true
-                } label: {
-                    Label("Bucket", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-                .tint(.accentColor)
-                .disabled(selectedPhotoIDs.isEmpty)
-                Button {
-                    showingBulkTagPicker = true
-                } label: {
-                    Label("Tag", systemImage: "tag")
-                }
-                .buttonStyle(.bordered)
-                .tint(.purple)
-                .disabled(selectedPhotoIDs.isEmpty)
-                Button {
-                    presentSelectedAITagPrompt()
-                } label: {
-                    Label("AI Tag", systemImage: "wand.and.sparkles")
-                }
-                .buttonStyle(.bordered)
-                .tint(.blue)
-                .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
-                Button(role: .destructive) {
-                    confirmingBatchDelete = true
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .disabled(selectedPhotoIDs.isEmpty)
+        // FlowLayout wraps to the next row when the four bordered
+        // buttons don't fit horizontally — so a wide iPhone shows them
+        // all in one row, while a narrow one wraps to 2–4 rows. Each
+        // button is wrapped in `.fixedSize()` so it advertises its
+        // natural intrinsic width (icon + text + bordered padding) to
+        // FlowLayout; without that the `.unspecified` size proposal
+        // FlowLayout uses causes the `.bordered` style to collapse the
+        // text and render icon-only ovals.
+        FlowLayout(spacing: 8) {
+            Button {
+                showingBucketPicker = true
+            } label: {
+                Label("Move to Bucket", systemImage: "folder")
             }
+            .buttonStyle(.bordered)
+            .tint(.accentColor)
+            .disabled(selectedPhotoIDs.isEmpty)
+            .fixedSize()
+            Button {
+                showingBulkTagPicker = true
+            } label: {
+                Label("Apply Tag", systemImage: "tag")
+            }
+            .buttonStyle(.bordered)
+            .tint(.purple)
+            .disabled(selectedPhotoIDs.isEmpty)
+            .fixedSize()
+            Button {
+                presentSelectedAITagPrompt()
+            } label: {
+                Label("Tag with AI", systemImage: "wand.and.sparkles")
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
+            .fixedSize()
+            Button(role: .destructive) {
+                confirmingBatchDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(selectedPhotoIDs.isEmpty)
+            .fixedSize()
         }
     }
 
