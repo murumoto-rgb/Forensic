@@ -6,6 +6,15 @@ struct Photo: Identifiable, Codable, Hashable {
     var timestamp: Date
     var imageFilename: String
     var thumbnailFilename: String?
+    /// When the photo is placed on a project floor plan, this points at
+    /// the `FloorPlan.id` it lives on. `nil` means either:
+    ///   * the photo has never been placed (fresh capture / fresh
+    ///     import), or
+    ///   * the floor plan it used to live on was deleted — in that
+    ///     case we deliberately preserve `localXFeet/Y` so a future
+    ///     plan with origin + scale can re-derive `planPixelX/Y` and
+    ///     drop the photo back at the same real-world spot.
+    var floorPlanID: UUID?
     var localXFeet: Double?
     var localYFeet: Double?
     var planPixelX: Double?
@@ -90,6 +99,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.timestamp = Date()
         self.imageFilename = imageFilename
         self.thumbnailFilename = nil
+        self.floorPlanID = nil
         self.localXFeet = nil
         self.localYFeet = nil
         self.planPixelX = nil
@@ -127,6 +137,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.timestamp          = try c.decode(Date.self,              forKey: .timestamp)
         self.imageFilename      = try c.decode(String.self,            forKey: .imageFilename)
         self.thumbnailFilename  = try c.decodeIfPresent(String.self,   forKey: .thumbnailFilename)
+        self.floorPlanID        = try c.decodeIfPresent(UUID.self,     forKey: .floorPlanID)
         self.localXFeet         = try c.decodeIfPresent(Double.self,   forKey: .localXFeet)
         self.localYFeet         = try c.decodeIfPresent(Double.self,   forKey: .localYFeet)
         self.planPixelX         = try c.decodeIfPresent(Double.self,   forKey: .planPixelX)

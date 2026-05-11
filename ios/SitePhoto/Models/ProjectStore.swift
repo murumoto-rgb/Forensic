@@ -977,6 +977,7 @@ final class ProjectStore {
                 if project.folderName != actualName {
                     project.folderName = actualName
                 }
+                migrateLegacyFloorPlanIfNeeded(in: &project, projectDir: dir)
                 loaded.append(project)
             } catch {
                 #if DEBUG
@@ -985,6 +986,63 @@ final class ProjectStore {
             }
         }
         return loaded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// One-shot, idempotent migration: if `project` was loaded from a
+    /// pre-multi-plan manifest (legacy `floorPlan` field decoded into a
+    /// single-element `floorPlans` array via `Project.init(from:)`),
+    /// rename the on-disk image from the legacy `plan.jpg` to the new
+    /// `plan-<uuidPrefix>.jpg` and stamp every photo with placement
+    /// data with the migrated `floorPlanID`. Manifest is re-saved if
+    /// anything changes; running again is a no-op.
+    private func migrateLegacyFloorPlanIfNeeded(in project: inout Project,
+                                                  projectDir: URL) {
+        guard project.floorPlans.count == 1,
+              let plan = project.floorPlans.first,
+              plan.imageFilename == "plan.jpg" else {
+            return
+        }
+        let legacyURL = projectDir.appending(path: "plan.jpg")
+        let newFilename = Self.floorPlanImageFilename(for: plan.id)
+        let newURL = projectDir.appending(path: newFilename)
+        let legacyExists = fileManager.fileExists(atPath: legacyURL.path())
+        let newExists    = fileManager.fileExists(atPath: newURL.path())
+        if legacyExists {
+            do {
+                try fileManager.moveItem(at: legacyURL, to: newURL)
+            } catch {
+                #if DEBUG
+                print("Floor-plan migration: failed to rename \(legacyURL.lastPathComponent) → \(newFilename): \(error)")
+                #endif
+                return
+            }
+        } else if !newExists {
+            // Manifest claims legacy filename but neither file is on
+            // disk — leave the manifest alone so the user gets a
+            // clearer "missing plan image" error rather than a silent
+            // pointer to a fictional new file.
+            return
+        }
+        project.floorPlans[0].imageFilename = newFilename
+
+        // Stamp photos that already carry placement data with the
+        // migrated plan's ID. Pre-migration photos always belonged to
+        // the singular plan, so floorPlanID == nil + planPixelX/Y != nil
+        // is unambiguous.
+        for i in project.photos.indices {
+            if project.photos[i].floorPlanID == nil
+                && project.photos[i].planPixelX != nil
+                && project.photos[i].planPixelY != nil {
+                project.photos[i].floorPlanID = plan.id
+            }
+        }
+
+        // Persist the updated manifest immediately so the next launch
+        // sees the new shape.
+        let manifest = projectDir.appending(path: "manifest.json")
+        if let data = try? encoder().encode(project) {
+            try? data.write(to: manifest, options: .atomic)
+        }
     }
 
     @discardableResult
@@ -1241,8 +1299,275 @@ final class ProjectStore {
         return save(p)
     }
 
-    // MARK: - Floor plan
+    // MARK: - Floor plans (multi-plan)
 
+    /// Disk filename for a plan's rasterised image. UUID-prefixed so
+    /// multiple plans coexist in one project folder without collision.
+    private static func floorPlanImageFilename(for planID: UUID) -> String {
+        let prefix = planID.uuidString.lowercased().prefix(8)
+        return "plan-\(prefix).jpg"
+    }
+
+    /// Suggest a label for the next plan being added to `project`,
+    /// e.g. "Plan 1" / "Plan 2" / ... Skips numbers already in use so
+    /// reorder + delete don't collide.
+    private func suggestedNextPlanLabel(for project: Project) -> String {
+        let used = Set(project.floorPlans.map { $0.label })
+        for n in 1...999 {
+            let candidate = "Plan \(n)"
+            if !used.contains(candidate) { return candidate }
+        }
+        return "Plan"
+    }
+
+    /// Add a brand-new floor plan to the project. Used by both the
+    /// initial setup flow (when `project.floorPlans` is empty) and the
+    /// "+ Add Floor Plan" affordance in the multi-plan UI (P2).
+    /// The new plan becomes the active plan.
+    @discardableResult
+    func addFloorPlan(
+        to project: Project,
+        label customLabel: String? = nil,
+        imageData: Data,
+        anchorPixelX: Double,
+        anchorPixelY: Double,
+        pixelsPerFoot: Double,
+        calibrationDistanceFeet: Double,
+        northDeg: Double
+    ) throws -> (project: Project, plan: FloorPlan) {
+        var p = project
+        let dir = projectURL(p)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let planID = UUID()
+        let filename = Self.floorPlanImageFilename(for: planID)
+        let url = dir.appending(path: filename)
+        try? fileManager.removeItem(at: url)
+        try imageData.write(to: url, options: .atomic)
+
+        let trimmed = customLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = (trimmed?.isEmpty == false ? trimmed! : suggestedNextPlanLabel(for: p))
+        let plan = FloorPlan(
+            id: planID,
+            label: label,
+            imageFilename: filename,
+            pixelsPerFoot: pixelsPerFoot,
+            calibrationDistanceFeet: calibrationDistanceFeet,
+            anchorPixelX: anchorPixelX,
+            anchorPixelY: anchorPixelY,
+            anchorLocalXFeet: 0,
+            anchorLocalYFeet: 0,
+            northDeg: northDeg
+        )
+        p.floorPlans.append(plan)
+        p.activeFloorPlanID = planID
+
+        // If any photos already carry localXFeet/Y (e.g. they were
+        // orphaned when a previous plan was deleted), project them onto
+        // the new plan so they reappear at the equivalent real-world
+        // spot. Photos without local coords are unaffected.
+        Self.recomputePixelCoords(in: &p, planID: planID, onlyOrphans: true)
+
+        let saved = save(p)
+        return (saved, plan)
+    }
+
+    /// Remove a single plan. Photos whose `floorPlanID == planID` have
+    /// their `floorPlanID` and `planPixelX/Y` cleared, but their
+    /// `localXFeet/Y` is preserved — the engineer's intent (per the
+    /// plan deletion question) is that a future plan added with origin
+    /// + scale should be able to recompute pixel positions automatically.
+    @discardableResult
+    func removeFloorPlan(_ project: Project, planID: UUID) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        let plan = p.floorPlans[idx]
+        let url = projectURL(p).appending(path: plan.imageFilename)
+        try? fileManager.removeItem(at: url)
+        p.floorPlans.remove(at: idx)
+
+        // Detach photos. Keep localXFeet/Y so a future plan can re-derive.
+        for i in p.photos.indices where p.photos[i].floorPlanID == planID {
+            p.photos[i].floorPlanID = nil
+            p.photos[i].planPixelX = nil
+            p.photos[i].planPixelY = nil
+        }
+
+        // If the removed plan was active, fall back to the first
+        // remaining plan (or nil if there are none left).
+        if p.activeFloorPlanID == planID {
+            p.activeFloorPlanID = p.floorPlans.first?.id
+        }
+        return save(p)
+    }
+
+    /// Rename a plan. No-op when `planID` doesn't resolve or the
+    /// trimmed label is empty.
+    @discardableResult
+    func renameFloorPlan(_ project: Project, planID: UUID, label: String) -> Project {
+        var p = project
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].label = trimmed
+        return save(p)
+    }
+
+    func reorderFloorPlans(_ project: Project,
+                            from source: IndexSet,
+                            to destination: Int) -> Project {
+        var p = project
+        p.floorPlans.move(fromOffsets: source, toOffset: destination)
+        return save(p)
+    }
+
+    /// Set the "sticky" active plan. Pass `nil` to clear (falls back to
+    /// the first plan via the `Project.floorPlan` accessor).
+    @discardableResult
+    func setActiveFloorPlan(_ project: Project, planID: UUID?) -> Project {
+        var p = project
+        if let planID, p.floorPlans.contains(where: { $0.id == planID }) {
+            p.activeFloorPlanID = planID
+        } else {
+            p.activeFloorPlanID = nil
+        }
+        return save(p)
+    }
+
+    /// Replace the image of an existing plan. Photo `planPixelX/Y`
+    /// values for photos on this plan are recomputed from their
+    /// `localXFeet/Y` so they land at the same real-world position on
+    /// the new image. Old image file is deleted.
+    @discardableResult
+    func replaceFloorPlan(in project: Project,
+                           planID: UUID,
+                           imageData: Data,
+                           pixelsPerFoot: Double,
+                           calibrationDistanceFeet: Double,
+                           anchorPixelX: Double,
+                           anchorPixelY: Double,
+                           northDeg: Double) throws -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+
+        // Ensure photos on this plan have fresh local coords against
+        // the OLD calibration before we swap calibration.
+        Self.recomputeLocalCoords(in: &p, planID: planID)
+
+        let dir = projectURL(p)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let oldFilename = p.floorPlans[idx].imageFilename
+        let oldURL = dir.appending(path: oldFilename)
+        try? fileManager.removeItem(at: oldURL)
+        let newFilename = Self.floorPlanImageFilename(for: planID)
+        let newURL = dir.appending(path: newFilename)
+        try imageData.write(to: newURL, options: .atomic)
+
+        var plan = p.floorPlans[idx]
+        plan.imageFilename = newFilename
+        plan.pixelsPerFoot = pixelsPerFoot
+        plan.calibrationDistanceFeet = calibrationDistanceFeet
+        plan.anchorPixelX = anchorPixelX
+        plan.anchorPixelY = anchorPixelY
+        plan.anchorLocalXFeet = 0
+        plan.anchorLocalYFeet = 0
+        plan.northDeg = northDeg
+        p.floorPlans[idx] = plan
+
+        // Project photo positions onto the new image.
+        Self.recomputePixelCoords(in: &p, planID: planID)
+        return save(p)
+    }
+
+    /// URL for a specific plan's rasterised image on disk.
+    func floorPlanURL(for project: Project, planID: UUID) -> URL? {
+        guard let plan = project.floorPlan(id: planID) else { return nil }
+        return projectURL(project).appending(path: plan.imageFilename)
+    }
+
+    /// Update calibration on a specific plan. Photo positions on this
+    /// plan have their local coords re-derived so the readouts match.
+    @discardableResult
+    func updateFloorPlanOrigin(_ project: Project,
+                                planID: UUID,
+                                anchorPixelX: Double,
+                                anchorPixelY: Double) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].anchorPixelX = anchorPixelX
+        p.floorPlans[idx].anchorPixelY = anchorPixelY
+        Self.recomputeLocalCoords(in: &p, planID: planID)
+        return save(p)
+    }
+
+    @discardableResult
+    func recalibrateScale(_ project: Project,
+                           planID: UUID,
+                           pixelsPerFoot: Double,
+                           calibrationDistanceFeet: Double) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].pixelsPerFoot = pixelsPerFoot
+        p.floorPlans[idx].calibrationDistanceFeet = calibrationDistanceFeet
+        Self.recomputeLocalCoords(in: &p, planID: planID)
+        return save(p)
+    }
+
+    @discardableResult
+    func updateFloorPlanNorth(_ project: Project,
+                                planID: UUID,
+                                northDeg: Double) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].northDeg = northDeg
+        return save(p)
+    }
+
+    /// Move a photo to a different plan (or detach with `nil`). When
+    /// the new plan has origin + scale and the photo already has saved
+    /// `localXFeet/Y`, pixel coords are derived automatically so the
+    /// photo lands at the equivalent real-world spot without forcing
+    /// the engineer to re-tap. Switching plans intentionally clears
+    /// the previous `planPixelX/Y` (those were plan-specific).
+    @discardableResult
+    func setPhotoFloorPlan(_ project: Project,
+                            photoID: UUID,
+                            planID: UUID?) -> Project {
+        var p = project
+        guard let pIdx = p.photos.firstIndex(where: { $0.id == photoID }) else {
+            return p
+        }
+        p.photos[pIdx].floorPlanID = planID
+        p.photos[pIdx].planPixelX = nil
+        p.photos[pIdx].planPixelY = nil
+        if let planID,
+           let plan = p.floorPlan(id: planID),
+           let lx = p.photos[pIdx].localXFeet,
+           let ly = p.photos[pIdx].localYFeet {
+            p.photos[pIdx].planPixelX = plan.anchorPixelX + lx * plan.pixelsPerFoot
+            p.photos[pIdx].planPixelY = plan.anchorPixelY + ly * plan.pixelsPerFoot
+        }
+        return save(p)
+    }
+
+    // MARK: - Floor plan (backward-compat shims operating on active plan)
+
+    /// Shim — `FloorPlanSetupView`'s "first plan" call path. Adds a new
+    /// plan with the default `"Plan N"` label. Multi-plan UI in P2 uses
+    /// `addFloorPlan(to:label:imageData:…)` directly so the engineer
+    /// can name the plan up front.
     @discardableResult
     func saveFloorPlan(
         to project: Project,
@@ -1253,140 +1578,108 @@ final class ProjectStore {
         calibrationDistanceFeet: Double,
         northDeg: Double
     ) throws -> Project {
-        var p = project
-        let dir = projectURL(p)
-        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        // Replace any existing plan image.
-        let filename = "plan.jpg"
-        let url = dir.appending(path: filename)
-        try? fileManager.removeItem(at: url)
-        try imageData.write(to: url, options: .atomic)
-
-        p.floorPlan = FloorPlan(
-            imageFilename: filename,
-            pixelsPerFoot: pixelsPerFoot,
-            calibrationDistanceFeet: calibrationDistanceFeet,
+        try addFloorPlan(
+            to: project,
+            label: nil,
+            imageData: imageData,
             anchorPixelX: anchorPixelX,
             anchorPixelY: anchorPixelY,
-            anchorLocalXFeet: 0,
-            anchorLocalYFeet: 0,
+            pixelsPerFoot: pixelsPerFoot,
+            calibrationDistanceFeet: calibrationDistanceFeet,
             northDeg: northDeg
-        )
-        // If photos already carry localXFeet/Y from a previous plan
-        // (e.g. user removed the plan, then added a new one), project
-        // them onto the new plan using the new calibration. New projects
-        // with no located photos are unaffected since the helper skips
-        // photos without local coords.
-        Self.recomputePixelCoords(in: &p)
-        return save(p)
+        ).project
     }
 
+    /// Shim — removes the active plan (legacy "there's only one plan"
+    /// behaviour).
     @discardableResult
     func clearFloorPlan(_ project: Project) -> Project {
-        var p = project
-        if let plan = p.floorPlan {
-            let url = projectURL(p).appending(path: plan.imageFilename)
-            try? fileManager.removeItem(at: url)
-        }
-        p.floorPlan = nil
-        return save(p)
+        guard let planID = project.floorPlan?.id else { return project }
+        return removeFloorPlan(project, planID: planID)
     }
 
+    /// Shim — URL for the active plan's image. Returns nil when the
+    /// project has no plans.
     func floorPlanURL(for project: Project) -> URL? {
-        guard let plan = project.floorPlan else { return nil }
-        return projectURL(project).appending(path: plan.imageFilename)
+        guard let planID = project.floorPlan?.id else { return nil }
+        return floorPlanURL(for: project, planID: planID)
     }
 
-    /// Move the origin (anchorPixelX/Y) to a new spot on the current plan image.
-    /// Photo planPixelX/Y stay put (visually nothing changes); localXFeet/Y are
-    /// re-derived against the new origin.
+    /// Shim — operates on the active plan.
     @discardableResult
     func updateFloorPlanOrigin(_ project: Project,
-                               anchorPixelX: Double,
-                               anchorPixelY: Double) -> Project {
-        var p = project
-        guard var plan = p.floorPlan else { return p }
-        plan.anchorPixelX = anchorPixelX
-        plan.anchorPixelY = anchorPixelY
-        p.floorPlan = plan
-        Self.recomputeLocalCoords(in: &p)
-        return save(p)
+                                anchorPixelX: Double,
+                                anchorPixelY: Double) -> Project {
+        guard let planID = project.floorPlan?.id else { return project }
+        return updateFloorPlanOrigin(project,
+                                       planID: planID,
+                                       anchorPixelX: anchorPixelX,
+                                       anchorPixelY: anchorPixelY)
     }
 
-    /// Re-calibrate the scale (pixelsPerFoot / calibrationDistanceFeet) without
-    /// touching the plan image or origin. Photo planPixelX/Y stay put -
-    /// visually nothing changes - and localXFeet/Y are re-derived so the
-    /// readouts match the new scale.
     @discardableResult
     func recalibrateScale(_ project: Project,
-                          pixelsPerFoot: Double,
-                          calibrationDistanceFeet: Double) -> Project {
-        var p = project
-        guard var plan = p.floorPlan else { return p }
-        plan.pixelsPerFoot = pixelsPerFoot
-        plan.calibrationDistanceFeet = calibrationDistanceFeet
-        p.floorPlan = plan
-        Self.recomputeLocalCoords(in: &p)
-        return save(p)
+                           pixelsPerFoot: Double,
+                           calibrationDistanceFeet: Double) -> Project {
+        guard let planID = project.floorPlan?.id else { return project }
+        return recalibrateScale(project,
+                                  planID: planID,
+                                  pixelsPerFoot: pixelsPerFoot,
+                                  calibrationDistanceFeet: calibrationDistanceFeet)
     }
 
-    /// Set the north direction (degrees clockwise from image up).
     @discardableResult
     func updateFloorPlanNorth(_ project: Project, northDeg: Double) -> Project {
-        var p = project
-        guard var plan = p.floorPlan else { return p }
-        plan.northDeg = northDeg
-        p.floorPlan = plan
-        return save(p)
+        guard let planID = project.floorPlan?.id else { return project }
+        return updateFloorPlanNorth(project, planID: planID, northDeg: northDeg)
     }
 
-    /// Replace the plan image with new calibration + origin. Photo planPixelX/Y
-    /// are recomputed from each photo's localXFeet/Y so they land in the same
-    /// physical place on the new image. Old plan image is deleted.
+    /// Shim — replaces the active plan with a new image + calibration.
+    /// `FloorPlanReplaceView` keeps calling this; P2 adds an explicit
+    /// per-plan replace flow when needed.
     @discardableResult
     func replaceFloorPlan(in project: Project,
-                          imageData: Data,
-                          pixelsPerFoot: Double,
-                          calibrationDistanceFeet: Double,
-                          anchorPixelX: Double,
-                          anchorPixelY: Double,
-                          northDeg: Double) throws -> Project {
-        var p = project
-
-        // Make sure local coords are fresh against the OLD calibration before
-        // we swap. If the user never set an origin, this writes whatever the
-        // current anchor implies; it's still self-consistent.
-        Self.recomputeLocalCoords(in: &p)
-
-        let dir = projectURL(p)
-        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        let filename = "plan.jpg"
-        let url = dir.appending(path: filename)
-        try? fileManager.removeItem(at: url)
-        try imageData.write(to: url, options: .atomic)
-
-        p.floorPlan = FloorPlan(
-            imageFilename: filename,
+                           imageData: Data,
+                           pixelsPerFoot: Double,
+                           calibrationDistanceFeet: Double,
+                           anchorPixelX: Double,
+                           anchorPixelY: Double,
+                           northDeg: Double) throws -> Project {
+        guard let planID = project.floorPlan?.id else {
+            // No existing plan to replace — fall through to "add a new
+            // plan" so the existing single-plan replace flow still
+            // works on a project that somehow lost its plans.
+            return try addFloorPlan(
+                to: project,
+                label: nil,
+                imageData: imageData,
+                anchorPixelX: anchorPixelX,
+                anchorPixelY: anchorPixelY,
+                pixelsPerFoot: pixelsPerFoot,
+                calibrationDistanceFeet: calibrationDistanceFeet,
+                northDeg: northDeg
+            ).project
+        }
+        return try replaceFloorPlan(
+            in: project,
+            planID: planID,
+            imageData: imageData,
             pixelsPerFoot: pixelsPerFoot,
             calibrationDistanceFeet: calibrationDistanceFeet,
             anchorPixelX: anchorPixelX,
             anchorPixelY: anchorPixelY,
-            anchorLocalXFeet: 0,
-            anchorLocalYFeet: 0,
             northDeg: northDeg
         )
-
-        // Project photo positions onto the new plan.
-        Self.recomputePixelCoords(in: &p)
-
-        return save(p)
     }
 
-    /// Derive each photo's localXFeet/Y from its planPixelX/Y using the current calibration.
-    private static func recomputeLocalCoords(in project: inout Project) {
-        guard let plan = project.floorPlan else { return }
-        for i in project.photos.indices {
+    // MARK: - Floor plan helpers (private)
+
+    /// Derive `localXFeet/Y` from `planPixelX/Y` for every photo on the
+    /// given plan. Scoped to one plan so re-calibrating one plan
+    /// doesn't disturb photos placed on another plan.
+    private static func recomputeLocalCoords(in project: inout Project, planID: UUID) {
+        guard let plan = project.floorPlan(id: planID) else { return }
+        for i in project.photos.indices where project.photos[i].floorPlanID == planID {
             let photo = project.photos[i]
             guard let px = photo.planPixelX, let py = photo.planPixelY else { continue }
             project.photos[i].localXFeet = (px - plan.anchorPixelX) / plan.pixelsPerFoot
@@ -1394,12 +1687,27 @@ final class ProjectStore {
         }
     }
 
-    /// Derive each photo's planPixelX/Y from its localXFeet/Y using the current calibration.
-    private static func recomputePixelCoords(in project: inout Project) {
-        guard let plan = project.floorPlan else { return }
+    /// Derive `planPixelX/Y` from `localXFeet/Y` for photos on the
+    /// given plan. When `onlyOrphans` is true, also attaches photos
+    /// whose `floorPlanID == nil` AND who have saved `localXFeet/Y` —
+    /// used by `addFloorPlan` so orphaned photos auto-attach to a
+    /// fresh plan with matching real-world geometry.
+    private static func recomputePixelCoords(in project: inout Project,
+                                               planID: UUID,
+                                               onlyOrphans: Bool = false) {
+        guard let plan = project.floorPlan(id: planID) else { return }
         for i in project.photos.indices {
             let photo = project.photos[i]
+            let isOnThisPlan = photo.floorPlanID == planID
+            let isAdoptableOrphan = onlyOrphans
+                && photo.floorPlanID == nil
+                && photo.localXFeet != nil
+                && photo.localYFeet != nil
+            guard isOnThisPlan || isAdoptableOrphan else { continue }
             guard let lx = photo.localXFeet, let ly = photo.localYFeet else { continue }
+            if isAdoptableOrphan {
+                project.photos[i].floorPlanID = planID
+            }
             project.photos[i].planPixelX = plan.anchorPixelX + lx * plan.pixelsPerFoot
             project.photos[i].planPixelY = plan.anchorPixelY + ly * plan.pixelsPerFoot
         }
