@@ -121,10 +121,34 @@ enum ClaudeTaggingService {
         req.httpBody = payload
         req.timeoutInterval = 60
 
+        let startedAt = Date()
         let data = try await sendWithRetry(req)
+        let elapsed = Date().timeIntervalSince(startedAt)
+        logUsageIfDebug(data: data, photoID: photoID, elapsed: elapsed)
         return try parseResult(from: data,
                                 fallbackPhotoID: photoID,
                                 vocabulary: vocabulary)
+    }
+
+    /// Decode the response's `usage` block and write one compact log
+    /// line per photo so the engineer can verify prompt caching is
+    /// working as expected. DEBUG-only so release builds carry no log
+    /// overhead. Failures here are intentionally silent — diagnostics
+    /// must never break the tagging pipeline.
+    private static func logUsageIfDebug(data: Data,
+                                          photoID: String,
+                                          elapsed: TimeInterval) {
+        #if DEBUG
+        guard let envelope = try? JSONDecoder().decode(AnthropicResponse.self, from: data),
+              let usage = envelope.usage else { return }
+        let input  = usage.input_tokens ?? 0
+        let write  = usage.cache_creation_input_tokens ?? 0
+        let read   = usage.cache_read_input_tokens ?? 0
+        let output = usage.output_tokens ?? 0
+        let id     = photoID.isEmpty ? "?" : photoID
+        let dur    = String(format: "%.2fs", elapsed)
+        print("[AI tag] photo=\(id) input=\(input) cache_write=\(write) cache_read=\(read) output=\(output) dur=\(dur)")
+        #endif
     }
 
     /// Send the request, retrying on 429 (rate limit) and 5xx (transient
@@ -211,9 +235,23 @@ enum ClaudeTaggingService {
 
     private struct AnthropicResponse: Decodable {
         let content: [Block]
+        let usage: Usage?
         struct Block: Decodable {
             let type: String
             let text: String?
+        }
+        /// Token-accounting block returned alongside every Anthropic
+        /// response. The cache fields are populated when prompt caching
+        /// is in play — `cache_creation_input_tokens` is the cost of
+        /// writing a new cache entry, `cache_read_input_tokens` is the
+        /// 0.1× discount applied when a subsequent request hits the
+        /// cached prefix. Used by the DEBUG log to verify caching is
+        /// actually working.
+        struct Usage: Decodable {
+            let input_tokens: Int?
+            let cache_creation_input_tokens: Int?
+            let cache_read_input_tokens: Int?
+            let output_tokens: Int?
         }
     }
 
