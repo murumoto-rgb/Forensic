@@ -1061,6 +1061,17 @@ struct ProjectDetailView: View {
                 .buttonStyle(.bordered)
                 .tint(.purple)
                 .disabled(selectedPhotoIDs.isEmpty)
+                Button {
+                    presentSelectedAITagPrompt()
+                } label: {
+                    Label(
+                        "Tag with AI",
+                        systemImage: "wand.and.sparkles"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(.blue)
+                .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
                 Spacer()
             }
             HStack {
@@ -1474,7 +1485,8 @@ struct ProjectDetailView: View {
                     candidateCount: untaggedCount,
                     skippedCount: taggedCount,
                     skipAlreadyTagged: true,
-                    candidatesWithExistingTags: 0
+                    candidatesWithExistingTags: 0,
+                    onlyPhotoIDs: nil
                 )
             } label: {
                 Label {
@@ -1502,7 +1514,8 @@ struct ProjectDetailView: View {
                         candidateCount: project.photos.count,
                         skippedCount: 0,
                         skipAlreadyTagged: false,
-                        candidatesWithExistingTags: taggedCount
+                        candidatesWithExistingTags: taggedCount,
+                        onlyPhotoIDs: nil
                     )
                 } label: {
                     Label("Auto-tag every photo",
@@ -1640,6 +1653,25 @@ struct ProjectDetailView: View {
         return !trimmed.isEmpty
     }
 
+    /// Build a `BatchTagPrompt` for the multi-select "Tag with AI"
+    /// action. `skipAlreadyTagged` is false because the user explicitly
+    /// picked these photos — even if some already carry tags, the
+    /// confirmation dialog surfaces an Add/Overwrite choice so the user
+    /// stays in control of the merge.
+    private func presentSelectedAITagPrompt() {
+        guard !selectedPhotoIDs.isEmpty else { return }
+        guard let project else { return }
+        let selectedPhotos = project.photos.filter { selectedPhotoIDs.contains($0.id) }
+        let existingTaggedCount = selectedPhotos.filter { !$0.tags.isEmpty }.count
+        batchTagConfirm = BatchTagPrompt(
+            candidateCount: selectedPhotos.count,
+            skippedCount: 0,
+            skipAlreadyTagged: false,
+            candidatesWithExistingTags: existingTaggedCount,
+            onlyPhotoIDs: selectedPhotoIDs
+        )
+    }
+
     private func startBatchTagging(_ prompt: BatchTagPrompt,
                                     mode: ProjectStore.BatchTagMode) {
         batchTagError = nil
@@ -1669,6 +1701,14 @@ struct ProjectDetailView: View {
         let pid = projectID
         let skip = prompt.skipAlreadyTagged
         let candidateCount = prompt.candidateCount
+        let onlyIDs = prompt.onlyPhotoIDs
+        // The multi-select "Tag with AI" path passes a specific photo
+        // set; exit selection mode immediately so the user sees the
+        // progress overlay on top of the normal grid rather than the
+        // selection toolbar.
+        if onlyIDs != nil {
+            exitSelectionMode()
+        }
         batchTagTask = Task { @MainActor in
             defer {
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -1679,7 +1719,7 @@ struct ProjectDetailView: View {
                     projectID: pid,
                     skipAlreadyTagged: skip,
                     mode: mode,
-                    onlyPhotoIDs: nil,
+                    onlyPhotoIDs: onlyIDs,
                     onProgress: { current, total, seq in
                         self.batchTagProgressCurrent = current
                         self.batchTagProgressTotal = total
@@ -1806,6 +1846,11 @@ fileprivate struct BatchTagPrompt: Identifiable {
     /// when `skipAlreadyTagged` is true (those photos are filtered out
     /// before the prompt shows).
     let candidatesWithExistingTags: Int
+    /// When set, the batch runs only against these specific photo IDs
+    /// (the multi-select "Tag with AI" path). When nil, the batch
+    /// targets every untagged photo in the project (the project-wide
+    /// "Auto-tag untagged photos with AI" path).
+    let onlyPhotoIDs: Set<UUID>?
 }
 
 /// Bundles the four batch-tagging-related view modifiers (3 alerts + 1
@@ -1880,13 +1925,18 @@ fileprivate struct BatchTagModifiers: ViewModifier {
 
     private var confirmTitle: String {
         let n = confirm?.candidateCount ?? 0
-        return "Run AI tagging on \(n) photo\(n == 1 ? "" : "s")?"
+        let scopeWord = (confirm?.onlyPhotoIDs != nil) ? "selected " : ""
+        return "Run AI tagging on \(n) \(scopeWord)photo\(n == 1 ? "" : "s")?"
     }
 
     private func confirmMessage(for prompt: BatchTagPrompt) -> String {
         let cost = costFor(prompt.candidateCount)
         var lines: [String] = []
-        lines.append("Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost).")
+        if prompt.onlyPhotoIDs != nil {
+            lines.append("Each selected photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost).")
+        } else {
+            lines.append("Each photo is sent to Claude vision and every returned tag is auto-accepted. Estimated cost: ~\(cost).")
+        }
 
         if prompt.skipAlreadyTagged && prompt.skippedCount > 0 {
             lines.append("\(prompt.skippedCount) photo\(prompt.skippedCount == 1 ? "" : "s") with existing tags will be skipped.")

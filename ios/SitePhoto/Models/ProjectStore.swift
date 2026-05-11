@@ -2153,6 +2153,26 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Clear ONLY the saved AI analysis blob (caption draft, summary
+    /// observation, recommended use, confidence, reviewer flag, …) and
+    /// the legacy aiSeverity/aiObservation/aiFollowUp scaffolding on
+    /// each selected photo. Tags and pending suggestions are left
+    /// intact — the granular `ClearAITagsSheet` flow uses this when the
+    /// "Also clear AI analysis" toggle is on so the user can wipe the
+    /// narrative fields without losing manually-typed tags.
+    @discardableResult
+    func clearAIAnalysis(_ project: Project, photoIDs: Set<UUID>) -> Project {
+        var p = project
+        for id in photoIDs {
+            guard let idx = p.photos.firstIndex(where: { $0.id == id }) else { continue }
+            p.photos[idx].aiAnalysis = nil
+            p.photos[idx].aiSeverity = nil
+            p.photos[idx].aiObservation = nil
+            p.photos[idx].aiFollowUp = nil
+        }
+        return save(p)
+    }
+
     /// One unit of "what tag to remove" for the granular clear path. When
     /// `parent` is nil, `label` is treated as a primary — matches the primary
     /// itself (parentTag == nil) AND any secondary whose parentTag matches

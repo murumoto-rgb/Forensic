@@ -6,9 +6,13 @@ import UIKit
 /// previous full-clear behaviour for the tag portion. Selecting a subset
 /// of tags narrows both the photo list (only photos that carry at least
 /// one selected tag remain selectable) and the action (only the selected
-/// tags are removed). Manually-typed tags (confidence 1.0) are preserved,
-/// and the photo's `aiAnalysis` / legacy AI metadata are left intact —
-/// this sheet is now strictly about removing tags.
+/// tags are removed). Manually-typed tags (confidence 1.0) are preserved.
+///
+/// The "Also clear AI analysis" toggle (defaults on) widens the action
+/// to wipe the photo's saved AI narrative fields too — caption draft,
+/// summary observation, recommended use, confidence, reviewer flag, …
+/// — for the same selected photos. Turn it off if you want to keep the
+/// AI's writeup but drop specific tags.
 struct ClearAITagsSheet: View {
     let projectID: UUID
 
@@ -20,6 +24,7 @@ struct ClearAITagsSheet: View {
     @State private var tagSelectors: Set<ProjectStore.TagSelector> = []
     @State private var didInitTagSelectors: Bool = false
     @State private var confirming: Bool = false
+    @State private var alsoClearAnalysis: Bool = true
 
     private var project: Project? { store.project(withID: projectID) }
     private var photos: [Photo] { project?.photos ?? [] }
@@ -103,7 +108,7 @@ struct ClearAITagsSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes the chosen AI tags (and any pending suggestions for those tags) from the selected photos. Manually-typed tags and the photo's saved AI analysis are preserved. This cannot be undone.")
+                Text(confirmAlertMessage)
             }
             .onAppear {
                 if !didInitTagSelectors {
@@ -127,12 +132,21 @@ struct ClearAITagsSheet: View {
 
     @ViewBuilder
     private var infoBanner: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Pick the AI tags to clear, then the photos to clear them from.")
                 .font(.callout)
-            Text("Manually-typed tags are kept. The photo's saved AI analysis (caption, recommended use, etc.) is also preserved — only tags and matching pending suggestions are removed.")
+            Text("Manually-typed tags are always preserved. Use the toggle below to also drop each photo's saved AI narrative (caption, summary observation, recommended use, confidence, reviewer flag).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Toggle(isOn: $alsoClearAnalysis) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Also clear AI analysis")
+                        .font(.callout)
+                    Text("Caption draft, summary observation, recommended use, confidence, confidence note, reviewer flag, location/orientation/scale fields.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -381,13 +395,29 @@ struct ClearAITagsSheet: View {
         guard let project else { return }
         let photoCount = photoSelection.count
         let tagCount = tagSelectors.count
-        _ = store.removeTags(project,
-                             photoIDs: photoSelection,
-                             selectors: tagSelectors)
+        var updated = store.removeTags(project,
+                                         photoIDs: photoSelection,
+                                         selectors: tagSelectors)
+        if alsoClearAnalysis {
+            updated = store.clearAIAnalysis(updated, photoIDs: photoSelection)
+        }
+        _ = updated
         photoSelection.removeAll()
         Haptics.confirm()
-        toastCenter.post("Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s") from \(photoCount) photo\(photoCount == 1 ? "" : "s")",
+        let suffix = alsoClearAnalysis ? " + AI analysis" : ""
+        toastCenter.post("Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s")\(suffix) from \(photoCount) photo\(photoCount == 1 ? "" : "s")",
                           kind: .success)
+    }
+
+    /// Body text for the confirmation alert. Changes when "Also clear
+    /// AI analysis" is on so the user sees exactly what's about to
+    /// happen.
+    private var confirmAlertMessage: String {
+        if alsoClearAnalysis {
+            return "Removes the chosen AI tags AND wipes each selected photo's saved AI analysis (caption draft, summary observation, recommended use, confidence, reviewer flag, …). Manually-typed tags are preserved. This cannot be undone."
+        } else {
+            return "Removes the chosen AI tags (and any pending suggestions for those tags) from the selected photos. Manually-typed tags and the photo's saved AI analysis are preserved. This cannot be undone."
+        }
     }
 
     /// True when a tag with these (parent, label) coordinates would be
