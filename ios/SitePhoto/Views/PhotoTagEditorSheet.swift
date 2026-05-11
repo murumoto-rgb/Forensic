@@ -883,10 +883,22 @@ struct PhotoTagEditorSheet: View {
         await store.ensureDownloaded(url)
 
         do {
+            let compiled: PromptCompiler.Result
+            do {
+                compiled = try PromptCompiler.compile(
+                    rulesTemplate: store.aiRulesTemplate,
+                    tagLibrary: store.tagLibrary,
+                    project: project
+                )
+            } catch let e as PromptCompiler.CompileError {
+                aiError = e.errorDescription
+                return
+            }
             let r = try await ClaudeTaggingService.tag(
                 imageURL: url,
                 photoID: photo.imageFilename,
-                instructions: project.effectiveAIInstructions
+                systemPrompt: compiled.systemPrompt,
+                vocabulary: compiled.vocabulary
             )
             // Merge with existing pending suggestions rather than
             // overwriting. Also persist the full structured analysis so

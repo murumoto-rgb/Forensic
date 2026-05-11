@@ -75,6 +75,7 @@ struct ProjectDetailView: View {
     @State private var showingCustomDateSheet: Bool = false
 
     @State private var showingAIInstructions = false
+    @State private var showingTagSelection = false
     @State private var showingTagFilter = false
     @State private var showingClearAITags = false
     @State private var batchTagConfirm: BatchTagPrompt?
@@ -258,6 +259,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingAIInstructions) {
                     AIInstructionsSheet(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingTagSelection) {
+                    ProjectTagSelectionSheet(projectID: projectID)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingTagFilter) {
@@ -1433,20 +1438,34 @@ struct ProjectDetailView: View {
             .disabled(project.photos.isEmpty)
 
             Button {
-                showingAIInstructions = true
+                showingTagSelection = true
             } label: {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("AI Instructions")
-                        Text(project.hasCustomAIInstructions
-                             ? "Customised for this project"
-                             : "Using bundled forensic-engineering default")
+                        Text("AI Tags")
+                        Text(tagSelectionSubtitle(for: project))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 } icon: {
-                    Image(systemName: project.hasCustomAIInstructions
-                          ? "doc.text.fill" : "doc.text")
+                    Image(systemName: project.tagSelection?.isEmpty == false
+                          ? "tag.fill" : "tag")
+                }
+            }
+
+            Button {
+                showingAIInstructions = true
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI Notes")
+                        Text(aiNotesSubtitle(for: project))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: hasNotes(project)
+                          ? "note.text" : "square.dashed")
                 }
             }
 
@@ -1592,6 +1611,33 @@ struct ProjectDetailView: View {
             return String(format: "%.0f¢", cents)
         }
         return String(format: "$%.2f", cents / 100)
+    }
+
+    /// Subtitle under the "AI Tags" row — surfaces how much vocabulary
+    /// the project has scoped for AI tagging without having to open the
+    /// picker.
+    private func tagSelectionSubtitle(for project: Project) -> String {
+        guard let selection = project.tagSelection, !selection.isEmpty else {
+            return "Not configured — AI tagging is disabled until you pick at least one investigation context."
+        }
+        let ctxCount = selection.contextIDs.count
+        let primaryCount = selection.primariesByContext.values
+            .reduce(0) { $0 + $1.count }
+        return "\(ctxCount) context\(ctxCount == 1 ? "" : "s"), \(primaryCount) primary tag\(primaryCount == 1 ? "" : "s")"
+    }
+
+    /// Subtitle under the "AI Notes" row — shows whether any notes are
+    /// in play, but doesn't expose the full text.
+    private func aiNotesSubtitle(for project: Project) -> String {
+        hasNotes(project)
+            ? "Custom notes appended to the AI prompt for this project"
+            : "Optional one-off guidance appended to the AI prompt"
+    }
+
+    private func hasNotes(_ project: Project) -> Bool {
+        let trimmed = (project.aiInstructions ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty
     }
 
     private func startBatchTagging(_ prompt: BatchTagPrompt,

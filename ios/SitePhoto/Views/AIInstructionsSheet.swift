@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// Editor for a project's AI tagging instructions (`Project.aiInstructions`).
-/// Shows the current prompt in a `TextEditor`, lets the user customise it,
-/// reset to the bundled default, or clear it (which falls back to default).
+/// Editor for a project's optional AI tagging notes
+/// (`Project.aiInstructions`). The notes are appended to the compiled
+/// system prompt as "Additional notes for this project" — use them for
+/// one-off guidance like "focus on the east elevation" or "this
+/// project has a known foundation repair in 2018." The schema lives in
+/// **Settings → AI Tagging Rules**; the vocabulary lives in **AI Tags**.
 struct AIInstructionsSheet: View {
     let projectID: UUID
 
@@ -12,7 +15,6 @@ struct AIInstructionsSheet: View {
 
     @State private var draft: String = ""
     @State private var loaded: Bool = false
-    @State private var confirmingReset: Bool = false
     @State private var showingTemplatePicker: Bool = false
     @State private var showingTemplateManager: Bool = false
     @State private var showingSavePrompt: Bool = false
@@ -23,16 +25,13 @@ struct AIInstructionsSheet: View {
     }
 
     /// True when `draft` differs from what's saved on the project.
+    /// Trim-tolerant so trailing-newline-only edits don't count as dirty.
     private var dirty: Bool {
         guard let project else { return false }
-        return draft != project.effectiveAIInstructions
-    }
-
-    /// True when `draft` is exactly the bundled default — the "Reset" button
-    /// is hidden in that case since there's nothing to reset.
-    private var isAtDefault: Bool {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines)
-            == AIInstructions.defaultText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let saved = (project.aiInstructions ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return saved != current
     }
 
     var body: some View {
@@ -48,7 +47,7 @@ struct AIInstructionsSheet: View {
                 Divider()
                 footer
             }
-            .navigationTitle("AI Instructions")
+            .navigationTitle("AI Notes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -61,15 +60,6 @@ struct AIInstructionsSheet: View {
                             .disabled(!dirty)
                     }
                 }
-            }
-            .alert("Reset to default?",
-                   isPresented: $confirmingReset) {
-                Button("Reset", role: .destructive) {
-                    draft = AIInstructions.defaultText
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Your customised instructions for this project will be replaced with the bundled forensic-engineering default. This can't be undone.")
             }
             .alert("Save as template",
                    isPresented: $showingSavePrompt) {
@@ -139,18 +129,18 @@ struct AIInstructionsSheet: View {
     @ViewBuilder
     private var infoHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("These instructions are sent to Claude as a tagging guide for every photo in this project. Edit the vocabulary, tone, or required fields to match how you write reports.")
+            Text("These notes are appended to the compiled AI prompt as \"Additional notes for this project.\" Use them for one-off guidance like \"focus on the east elevation\" or \"this project has a known foundation repair in 2018.\" Vocabulary lives in **AI Tags**; the schema lives in **Settings → AI Tagging Rules**.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             HStack(spacing: 6) {
-                if let project, project.hasCustomAIInstructions {
-                    Label("Customised", systemImage: "pencil.circle.fill")
-                        .font(.caption.bold())
-                        .foregroundStyle(Color.accentColor)
-                } else {
-                    Label("Using bundled default", systemImage: "doc.text")
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Label("No notes set", systemImage: "square.dashed")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else {
+                    Label("Notes set", systemImage: "note.text")
+                        .font(.caption.bold())
+                        .foregroundStyle(Color.accentColor)
                 }
                 Spacer()
                 Text("\(draft.count) chars")
@@ -164,24 +154,15 @@ struct AIInstructionsSheet: View {
     @ViewBuilder
     private var footer: some View {
         HStack {
-            Button {
-                confirmingReset = true
-            } label: {
-                Label("Reset to default", systemImage: "arrow.uturn.backward")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(isAtDefault)
-
             Spacer()
-
-            if let project, project.hasCustomAIInstructions {
+            if let project,
+               !(project.aiInstructions ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(role: .destructive) {
                     _ = store.setAIInstructions(project, nil)
-                    draft = AIInstructions.defaultText
+                    draft = ""
                     dismiss()
                 } label: {
-                    Label("Clear & use default", systemImage: "xmark.circle")
+                    Label("Clear notes", systemImage: "xmark.circle")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -193,20 +174,20 @@ struct AIInstructionsSheet: View {
 
     private func loadIfNeeded() {
         guard !loaded, let project else { return }
-        draft = project.effectiveAIInstructions
+        // Notes are optional — empty when unset. Notes don't have a
+        // "default" anymore (that role belongs to the app-wide rules
+        // template, edited in Settings), so an empty editor is the
+        // correct presentation when no notes are saved.
+        draft = project.aiInstructions ?? ""
         loaded = true
     }
 
     private func save() {
         guard let project else { return }
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        // If the user's text matches the default exactly, store nil — keeps
-        // the project tracking the bundled default if we ever update it.
-        if trimmed == AIInstructions.defaultText.trimmingCharacters(in: .whitespacesAndNewlines) {
-            _ = store.setAIInstructions(project, nil)
-        } else {
-            _ = store.setAIInstructions(project, draft)
-        }
+        // Empty text → store nil so the project's manifest stays tidy
+        // and the AI Tags row's "no notes" badge is accurate.
+        _ = store.setAIInstructions(project, trimmed.isEmpty ? nil : draft)
         dismiss()
     }
 }

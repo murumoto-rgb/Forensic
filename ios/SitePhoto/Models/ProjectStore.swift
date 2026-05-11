@@ -1764,10 +1764,11 @@ final class ProjectStore {
         }
     }
 
-    // MARK: - AI instructions
+    // MARK: - AI notes (per-project)
 
-    /// Set or clear the project's custom AI tagging guide. Pass `nil` (or
-    /// the empty string) to revert to `AIInstructions.defaultText`.
+    /// Set or clear the project's free-text AI notes (appended to the
+    /// compiled prompt as "Additional notes for this project"). Pass
+    /// `nil` or an all-whitespace string to clear.
     @discardableResult
     func setAIInstructions(_ project: Project, _ text: String?) -> Project {
         var p = project
@@ -2542,7 +2543,29 @@ final class ProjectStore {
             skippedCount = project.photos.count - candidates.count
         }
         let total = candidates.count
-        let instructions = project.effectiveAIInstructions
+        // Compose the system prompt + validation vocabulary once for
+        // the entire batch. Same text for every photo so Anthropic's
+        // ephemeral prompt cache kicks in on photo 2 onwards.
+        let compiled: PromptCompiler.Result
+        do {
+            compiled = try PromptCompiler.compile(
+                rulesTemplate: self.aiRulesTemplate,
+                tagLibrary: self.tagLibrary,
+                project: project
+            )
+        } catch let e as PromptCompiler.CompileError {
+            // No vocabulary scope picked — bail before touching the API.
+            // Returns the same "empty result" shape the no-photos guard
+            // above uses so callers don't need a separate error branch.
+            toastCenter?.post(e.errorDescription ?? "Pick at least one investigation context first.",
+                                kind: .error)
+            return BatchTagResult(
+                tagged: 0, skipped: 0, failures: [],
+                countsByPrimary: [], countsByRecommendedUse: [],
+                lowConfidence: [], reviewerFlagged: [],
+                validationIssues: [], parseFailed: []
+            )
+        }
 
         // Read concurrency from the user's setting (default 3). Tier-1
         // Anthropic accounts have a 30k input-tokens/min cap; with a long
@@ -2597,14 +2620,16 @@ final class ProjectStore {
                 let pid = item.photoID
                 let seq = item.sequenceNumber
                 let fname = item.filename
-                let inst = instructions
+                let prompt = compiled.systemPrompt
+                let vocab = compiled.vocabulary
                 group.addTask {
                     await Self.ensureDownloadedStatic(at: url)
                     do {
                         let r = try await ClaudeTaggingService.tag(
                             imageURL: url,
                             photoID: fname,
-                            instructions: inst
+                            systemPrompt: prompt,
+                            vocabulary: vocab
                         )
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
                                               outcome: .success(r))

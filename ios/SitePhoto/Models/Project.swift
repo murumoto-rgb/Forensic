@@ -85,21 +85,6 @@ struct Project: Identifiable, Codable, Hashable {
     var isActive: Bool { startedAt != nil && !stopped }
     var hasBeenStarted: Bool { startedAt != nil }
 
-    /// The instructions actually fed to Claude — falls back to the app-wide
-    /// default when the project hasn't been customised.
-    var effectiveAIInstructions: String {
-        if let s = aiInstructions, !s.isEmpty { return s }
-        return AIInstructions.defaultText
-    }
-
-    /// True when the project is using whatever the user typed into the
-    /// instructions editor (not the bundled default). Drives a "Customised"
-    /// badge in the UI.
-    var hasCustomAIInstructions: Bool {
-        guard let s = aiInstructions, !s.isEmpty else { return false }
-        return s != AIInstructions.defaultText
-    }
-
     static func makeFolderName(id: UUID, name: String, createdAt: Date) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"

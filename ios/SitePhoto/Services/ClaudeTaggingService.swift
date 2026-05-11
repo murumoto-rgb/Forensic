@@ -54,9 +54,15 @@ enum ClaudeTaggingService {
         let analysis: AIPhotoAnalysis
     }
 
+    /// Send a single photo to Claude with a pre-composed system prompt
+    /// and the matching validation vocabulary. Callers build both via
+    /// `PromptCompiler.compile(...)` so the noContextsPicked check +
+    /// vocabulary resolution happens outside the network path (no
+    /// wasted rate-limit budget).
     static func tag(imageURL: URL,
                     photoID: String = "",
-                    instructions: String? = nil) async throws -> Result {
+                    systemPrompt: String,
+                    vocabulary: ValidationVocabulary = .fallback) async throws -> Result {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
         }
@@ -67,16 +73,13 @@ enum ClaudeTaggingService {
         }
         let base64 = jpegData.base64EncodedString()
 
-        // Build the system message as a content-blocks array so we can attach
-        // `cache_control` to the (long, stable) instructions block. With
-        // ephemeral caching enabled, every photo after the first in a 5-min
-        // window pays only ~10% of the prompt-token cost — a big win when
-        // batch-tagging dozens of photos with the long forensic guide.
-        let guide = (instructions?.trimmingCharacters(in: .whitespacesAndNewlines))
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? AIInstructions.defaultText
-
-        let cachedSystemText = systemPreamble + "\n\n" + guide + "\n\n" + outputContract
+        // The pre-composed prompt is attached as a content-blocks array
+        // so we can flag it with `cache_control: ephemeral`. With caching
+        // enabled, every photo after the first in a 5-min window pays
+        // only ~10% of the prompt-token cost — a big win when
+        // batch-tagging dozens of photos through the long forensic
+        // prompt.
+        let cachedSystemText = systemPrompt
 
         let body: [String: Any] = [
             "model":      model,
@@ -119,7 +122,9 @@ enum ClaudeTaggingService {
         req.timeoutInterval = 60
 
         let data = try await sendWithRetry(req)
-        return try parseResult(from: data, fallbackPhotoID: photoID)
+        return try parseResult(from: data,
+                                fallbackPhotoID: photoID,
+                                vocabulary: vocabulary)
     }
 
     /// Send the request, retrying on 429 (rate limit) and 5xx (transient
@@ -184,26 +189,8 @@ enum ClaudeTaggingService {
 
     // MARK: - Prompt
 
-    /// Short framing prepended to the user's tagging guide. Sets the role
-    /// without prescribing vocabulary — the project guide does that.
-    private static let systemPreamble = """
-    You are an AI assistant tagging forensic site-investigation \
-    photographs. The user has supplied a project-specific tagging guide \
-    below. Read it carefully and use its vocabulary, categories, and tone \
-    of voice when describing what you see.
-    """
-
-    /// Short reinforcement appended after the user's guide. The schema-2
-    /// prompt itself specifies the JSON shape in detail; this contract just
-    /// re-emphasises "no code fences, no prose" because Claude occasionally
-    /// adds them despite the guide's instructions.
-    private static let outputContract = """
-    OUTPUT FORMAT (reinforces the guide above; do not contradict it):
-
-    Emit ONLY the single JSON object described in the guide. No prose \
-    before or after, no markdown code fences, no commentary, no \
-    explanation. Start your response with `{` and end it with `}`.
-    """
+    // `systemPreamble` and `outputContract` live in `PromptCompiler` —
+    // callers compose the full system prompt there and pass it in.
 
     /// Per-photo user message. The photo's filename (when known) is passed
     /// in so the model can echo it back as `photo_id`, which the rest of
@@ -247,7 +234,8 @@ enum ClaudeTaggingService {
     /// that the retry loop above catches). Only schema/JSON failures
     /// degrade to a soft `parseFailed` result.
     private static func parseResult(from data: Data,
-                                     fallbackPhotoID: String) throws -> Result {
+                                     fallbackPhotoID: String,
+                                     vocabulary: ValidationVocabulary) throws -> Result {
         let envelope: AnthropicResponse
         do {
             envelope = try JSONDecoder().decode(AnthropicResponse.self, from: data)
@@ -313,7 +301,8 @@ enum ClaudeTaggingService {
         )
 
         var validated = analysis
-        validated.validationErrors = AIResponseValidator.validate(validated)
+        validated.validationErrors = AIResponseValidator.validate(validated,
+                                                                    vocabulary: vocabulary)
 
         return Result(suggestions: suggestions(from: validated),
                       analysis: validated)
