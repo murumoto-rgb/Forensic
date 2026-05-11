@@ -1535,6 +1535,33 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Bulk variant — assign every photo in `photoIDs` to `planID` (or
+    /// detach all of them with `nil`). Saves once instead of once per
+    /// photo, so it stays fast on big imports. Mirrors
+    /// `setPhotoFloorPlan` on the per-photo math: if the new plan has
+    /// origin + scale and a photo already has saved `localXFeet/Y`,
+    /// `planPixelX/Y` is derived automatically.
+    @discardableResult
+    func assignFloorPlan(_ project: Project,
+                          photoIDs: Set<UUID>,
+                          planID: UUID?) -> Project {
+        guard !photoIDs.isEmpty else { return project }
+        var p = project
+        let plan = planID.flatMap { p.floorPlan(id: $0) }
+        for i in p.photos.indices where photoIDs.contains(p.photos[i].id) {
+            p.photos[i].floorPlanID = planID
+            p.photos[i].planPixelX = nil
+            p.photos[i].planPixelY = nil
+            if let plan,
+               let lx = p.photos[i].localXFeet,
+               let ly = p.photos[i].localYFeet {
+                p.photos[i].planPixelX = plan.anchorPixelX + lx * plan.pixelsPerFoot
+                p.photos[i].planPixelY = plan.anchorPixelY + ly * plan.pixelsPerFoot
+            }
+        }
+        return save(p)
+    }
+
     /// Move a photo to a different plan (or detach with `nil`). When
     /// the new plan has origin + scale and the photo already has saved
     /// `localXFeet/Y`, pixel coords are derived automatically so the
@@ -1716,7 +1743,11 @@ final class ProjectStore {
     // MARK: - Photos
 
     /// Optional location data attached when a photo is saved against a calibrated plan.
+    /// `floorPlanID` defaults to `nil` so memberwise-init callers that
+    /// don't yet thread the plan ID still compile (the back-compat
+    /// path captures against the project's currently-active plan).
     struct PhotoLocation {
+        var floorPlanID: UUID? = nil
         var planPixelX: Double
         var planPixelY: Double
         var localXFeet: Double
@@ -1758,6 +1789,7 @@ final class ProjectStore {
         photo.flashMode = captured.flashMode
 
         if let loc = location {
+            photo.floorPlanID = loc.floorPlanID
             photo.planPixelX = loc.planPixelX
             photo.planPixelY = loc.planPixelY
             photo.localXFeet = loc.localXFeet
@@ -1847,19 +1879,28 @@ final class ProjectStore {
 
     // MARK: - Photo location updates
 
-    /// Set or replace the plan-pixel location of an existing photo. Also
-    /// re-derives the localXFeet/Y from the current calibration. Use this
-    /// for photos imported without a location, or to relocate a photo that
-    /// was previously placed.
+    /// Set or replace the plan-pixel location of an existing photo,
+    /// scoped to a specific plan. Also re-derives `localXFeet/Y` from
+    /// that plan's calibration. When `planID` is nil, the location is
+    /// applied against the project's currently-active plan (back-compat
+    /// for callers that haven't been migrated).
     @discardableResult
     func setPhotoLocation(_ project: Project,
                           photoID: UUID,
+                          planID: UUID? = nil,
                           planPixelX: Double,
                           planPixelY: Double,
                           headingDegrees: Double?) -> Project {
         var p = project
-        guard let plan = p.floorPlan,
+        let resolvedPlan: FloorPlan?
+        if let planID, let plan = p.floorPlan(id: planID) {
+            resolvedPlan = plan
+        } else {
+            resolvedPlan = p.floorPlan
+        }
+        guard let plan = resolvedPlan,
               let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].floorPlanID = plan.id
         p.photos[idx].planPixelX = planPixelX
         p.photos[idx].planPixelY = planPixelY
         p.photos[idx].localXFeet = (planPixelX - plan.anchorPixelX) / plan.pixelsPerFoot
@@ -1880,12 +1921,19 @@ final class ProjectStore {
     @discardableResult
     func attachToGroup(_ project: Project, photoID: UUID, leadPhotoID: UUID) -> Project {
         var p = project
-        guard let plan = p.floorPlan,
-              let leadIdx = p.photos.firstIndex(where: { $0.id == leadPhotoID }),
+        guard let leadIdx = p.photos.firstIndex(where: { $0.id == leadPhotoID }),
               let joinIdx = p.photos.firstIndex(where: { $0.id == photoID }),
               leadPhotoID != photoID,
               let lpx = p.photos[leadIdx].planPixelX,
               let lpy = p.photos[leadIdx].planPixelY else { return p }
+        // Use the lead's plan (not the project's active plan) — the
+        // lead might live on a different plan than the one the engineer
+        // is currently viewing in another sheet, and the joiner should
+        // adopt whatever plan the lead is on.
+        let leadPlanID = p.photos[leadIdx].floorPlanID
+        guard let plan = leadPlanID.flatMap({ p.floorPlan(id: $0) }) ?? p.floorPlan else {
+            return p
+        }
 
         let gid: UUID
         if let existing = p.photos[leadIdx].groupID {
@@ -1896,6 +1944,7 @@ final class ProjectStore {
             p.photos[leadIdx].isPrimary = true
         }
 
+        p.photos[joinIdx].floorPlanID = plan.id
         p.photos[joinIdx].planPixelX = lpx
         p.photos[joinIdx].planPixelY = lpy
         p.photos[joinIdx].localXFeet = (lpx - plan.anchorPixelX) / plan.pixelsPerFoot
@@ -3198,10 +3247,13 @@ extension ProjectStore {
     }
 
     /// Strip the location from an existing photo (turns it back into "NO LOC").
+    /// Also clears `floorPlanID` so the photo no longer counts toward
+    /// any plan's photo total in the list filter.
     @discardableResult
     func clearPhotoLocation(_ project: Project, photoID: UUID) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        p.photos[idx].floorPlanID = nil
         p.photos[idx].planPixelX = nil
         p.photos[idx].planPixelY = nil
         p.photos[idx].localXFeet = nil

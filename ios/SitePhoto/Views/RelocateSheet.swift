@@ -43,6 +43,12 @@ struct RelocateSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
+                if let project = store.project(withID: projectID),
+                   project.floorPlans.count > 1 {
+                    ToolbarItem(placement: .principal) {
+                        planPickerMenu(project: project)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingGroupPicker = true
@@ -225,6 +231,62 @@ struct RelocateSheet: View {
         .background(.ultraThinMaterial)
     }
 
+    /// Plan picker — only shown when the project has more than one
+    /// plan. Selecting a plan switches the active plan + reloads the
+    /// canvas image. If the photo already has saved `localXFeet/Y`,
+    /// the pin pre-positions at the equivalent coords on the new plan
+    /// (same real-world spot) so the engineer can accept or fine-tune
+    /// instead of re-tapping from scratch.
+    @ViewBuilder
+    private func planPickerMenu(project: Project) -> some View {
+        Menu {
+            Picker("Floor plan", selection: Binding(
+                get: { project.floorPlan?.id ?? UUID() },
+                set: { newID in
+                    _ = store.setActiveFloorPlan(project, planID: newID)
+                    Task { await reloadAfterPlanSwitch(newPlanID: newID) }
+                }
+            )) {
+                ForEach(project.floorPlans) { plan in
+                    Text(plan.label).tag(plan.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(project.floorPlan?.label ?? "Plan")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Re-load the plan image after the engineer switches plans, then
+    /// re-derive the pin's pixel coords from the photo's saved
+    /// `localXFeet/Y` against the new plan's calibration. Falls back
+    /// to "no pin set" when the photo has no local coords.
+    private func reloadAfterPlanSwitch(newPlanID: UUID) async {
+        await loadPlan()
+        guard let project = store.project(withID: projectID),
+              let plan = project.floorPlan(id: newPlanID),
+              let photo,
+              let lx = photo.localXFeet,
+              let ly = photo.localYFeet else {
+            planPoint = nil
+            heading = nil
+            step = .position
+            return
+        }
+        planPoint = CGPoint(
+            x: plan.anchorPixelX + lx * plan.pixelsPerFoot,
+            y: plan.anchorPixelY + ly * plan.pixelsPerFoot
+        )
+        heading = photo.headingDegrees
+        step = .direction
+    }
+
     // MARK: - Data lookup
 
     private var photo: Photo? {
@@ -283,12 +345,13 @@ struct RelocateSheet: View {
 
     private func save(skipDirection: Bool = false) {
         guard let project = store.project(withID: projectID),
-              project.floorPlan != nil,
+              let plan = project.floorPlan,
               let pt = planPoint else { return }
         let useHeading = skipDirection ? nil : heading
         store.setPhotoLocation(
             project,
             photoID: photoID,
+            planID: plan.id,
             planPixelX: Double(pt.x),
             planPixelY: Double(pt.y),
             headingDegrees: useHeading

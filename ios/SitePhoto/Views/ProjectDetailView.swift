@@ -17,6 +17,19 @@ struct ProjectDetailView: View {
     @State private var captureError: String?
     @State private var showingFloorPlanSetup = false
     @State private var confirmingPlanRemoval = false
+    @State private var planPendingRemoval: FloorPlan?
+    @State private var renamingPlan: FloorPlan?
+    @State private var renamePlanDraft: String = ""
+    /// Photo IDs that just landed via Photos-library or Files import.
+    /// Set drives the `FloorPlanAssignmentSheet` presentation; cleared
+    /// after the sheet dismisses.
+    @State private var pendingPlanAssignment: Set<UUID> = []
+    @State private var planFilter: PlanFilter = .all
+    private enum PlanFilter: Hashable {
+        case all
+        case unassigned
+        case plan(UUID)
+    }
     @State private var pendingPhotos: [CapturedPhoto] = []
     @State private var showingLocate = false
     @State private var showingPlanViewer = false
@@ -313,6 +326,18 @@ struct ProjectDetailView: View {
                                           anchorPhotoID: target.id)
                         .environment(store)
                 }
+                .sheet(isPresented: Binding(
+                    get: { !pendingPlanAssignment.isEmpty },
+                    set: { if !$0 { pendingPlanAssignment = [] } }
+                )) {
+                    FloorPlanAssignmentSheet(
+                        projectID: projectID,
+                        photoIDs: pendingPlanAssignment,
+                        onCompleted: { pendingPlanAssignment = [] }
+                    )
+                    .environment(store)
+                    .environment(toastCenter)
+                }
                 .sheet(item: $batchTagFailureReport) { report in
                     BatchTagSummarySheet(
                         projectID: projectID,
@@ -345,16 +370,46 @@ struct ProjectDetailView: View {
                     }
                 }
                 .confirmationDialog(
-                    "Remove the floor plan?",
+                    planPendingRemoval.map { "Remove \"\($0.label)\"?" } ?? "Remove plan?",
                     isPresented: $confirmingPlanRemoval,
-                    titleVisibility: .visible
-                ) {
+                    titleVisibility: .visible,
+                    presenting: planPendingRemoval
+                ) { plan in
                     Button("Remove", role: .destructive) {
-                        store.clearFloorPlan(project)
+                        _ = store.removeFloorPlan(project, planID: plan.id)
+                        planPendingRemoval = nil
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("The plan image will be deleted from this project. Photo positions are preserved — they'll reappear in the same physical locations when you set up a new plan with calibration and origin.")
+                    Button("Cancel", role: .cancel) {
+                        planPendingRemoval = nil
+                    }
+                } message: { plan in
+                    let count = project.photos.reduce(0) {
+                        $0 + ($1.floorPlanID == plan.id ? 1 : 0)
+                    }
+                    Text(count == 0
+                          ? "The plan image will be deleted from this project."
+                          : "The plan image will be deleted. \(count) photo\(count == 1 ? "" : "s") placed on this plan will be detached but their saved real-world coordinates are preserved — adding a new plan with calibration + origin re-derives their positions automatically.")
+                }
+                .alert(
+                    "Rename plan",
+                    isPresented: Binding(
+                        get: { renamingPlan != nil },
+                        set: { if !$0 { renamingPlan = nil } }
+                    )
+                ) {
+                    TextField("Name", text: $renamePlanDraft)
+                        .textInputAutocapitalization(.words)
+                    Button("Save") {
+                        if let plan = renamingPlan {
+                            _ = store.renameFloorPlan(project, planID: plan.id, label: renamePlanDraft)
+                        }
+                        renamingPlan = nil
+                        renamePlanDraft = ""
+                    }
+                    Button("Cancel", role: .cancel) {
+                        renamingPlan = nil
+                        renamePlanDraft = ""
+                    }
                 }
                 .alert(
                     "Delete photo?",
@@ -511,6 +566,7 @@ struct ProjectDetailView: View {
         if let px = original.planPixelX, let py = original.planPixelY,
            let lx = original.localXFeet, let ly = original.localYFeet {
             location = ProjectStore.PhotoLocation(
+                floorPlanID: original.floorPlanID,
                 planPixelX: px, planPixelY: py,
                 localXFeet: lx, localYFeet: ly,
                 headingDegrees: original.headingDegrees,
@@ -645,13 +701,15 @@ struct ProjectDetailView: View {
         }
         importing = true
         var added = 0
+        var newIDs: Set<UUID> = []
         for (i, item) in items.enumerated() {
             importStatus = "Importing \(i + 1) of \(items.count)…"
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
             guard let project = store.project(withID: projectID) else { return }
             let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
             do {
-                _ = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                let updated = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                if let newID = updated.photos.last?.id { newIDs.insert(newID) }
                 added += 1
             } catch {
                 captureError = "Import failed: \(error.localizedDescription)"
@@ -660,6 +718,11 @@ struct ProjectDetailView: View {
             }
         }
         importStatus = added > 0 ? "Imported \(added) photo\(added == 1 ? "" : "s")." : nil
+        if added > 0,
+           let project = store.project(withID: projectID),
+           !project.floorPlans.isEmpty {
+            pendingPlanAssignment = newIDs
+        }
     }
 
     @MainActor
@@ -669,6 +732,7 @@ struct ProjectDetailView: View {
         }
         importing = true
         var added = 0
+        var newIDs: Set<UUID> = []
         for (i, url) in urls.enumerated() {
             importStatus = "Importing \(i + 1) of \(urls.count)…"
             let access = url.startAccessingSecurityScopedResource()
@@ -677,7 +741,8 @@ struct ProjectDetailView: View {
             guard let project = store.project(withID: projectID) else { return }
             let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
             do {
-                _ = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                let updated = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                if let newID = updated.photos.last?.id { newIDs.insert(newID) }
                 added += 1
             } catch {
                 captureError = "Import failed: \(error.localizedDescription)"
@@ -686,6 +751,11 @@ struct ProjectDetailView: View {
             }
         }
         importStatus = added > 0 ? "Imported \(added) photo\(added == 1 ? "" : "s")." : nil
+        if added > 0,
+           let project = store.project(withID: projectID),
+           !project.floorPlans.isEmpty {
+            pendingPlanAssignment = newIDs
+        }
     }
 
     /// One-shot: when a project is opened that doesn't yet have a GPS fix,
@@ -730,66 +800,129 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func floorPlanSection(_ project: Project) -> some View {
-        Section("Floor Plan") {
-            if project.floorPlan != nil {
-                floorPlanThumbnail(project)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 120)
-                    .clipped()
-                    .background(Color.secondary.opacity(0.2))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                Button {
-                    showingPlanViewer = true
-                } label: {
-                    Label("View Plan", systemImage: "rectangle.expand.vertical")
-                }
-
-                Button {
-                    showingPlanOrigin = true
-                } label: {
-                    Label("Set Origin", systemImage: "scope")
-                }
-
-                Button {
-                    showingPlanNorth = true
-                } label: {
-                    Label("Set North", systemImage: "location.north")
-                }
-
-                Button {
-                    showingPlanRecalibrate = true
-                } label: {
-                    Label("Re-calibrate Scale", systemImage: "ruler")
-                }
-
-                Button {
-                    showingPlanReplace = true
-                } label: {
-                    Label("Replace Plan", systemImage: "rectangle.2.swap")
-                }
-
-                Button(role: .destructive) {
-                    confirmingPlanRemoval = true
-                } label: {
-                    Label("Remove Floor Plan", systemImage: "trash")
-                }
-            } else {
-                Text("No floor plan set. Photos will be saved without a recorded location until a plan is imported and calibrated.")
+        Section("Floor Plans") {
+            if project.floorPlans.isEmpty {
+                Text("No floor plans set. Photos will be saved without a recorded location until a plan is imported and calibrated.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button {
-                    showingFloorPlanSetup = true
-                } label: {
-                    Label("Set Up Floor Plan", systemImage: "doc.viewfinder")
+            } else {
+                ForEach(project.floorPlans) { plan in
+                    planRow(project: project, plan: plan)
                 }
+            }
+            Button {
+                showingFloorPlanSetup = true
+            } label: {
+                Label(project.floorPlans.isEmpty
+                       ? "Set Up Floor Plan"
+                       : "Add Floor Plan",
+                      systemImage: "plus.circle")
             }
         }
     }
 
+    /// One row per floor plan. Tapping the row makes that plan active
+    /// + opens the viewer; the trailing menu surfaces the existing
+    /// per-plan editors (Origin, North, Recalibrate, Replace) and
+    /// destructive Remove. Editor sheets read `project.floorPlan` (the
+    /// active plan accessor), so we set active before opening.
     @ViewBuilder
-    private func floorPlanThumbnail(_ project: Project) -> some View {
-        if let url = store.floorPlanURL(for: project),
+    private func planRow(project: Project, plan: FloorPlan) -> some View {
+        let isActive = plan.id == project.floorPlan?.id
+        Button {
+            _ = store.setActiveFloorPlan(project, planID: plan.id)
+            showingPlanViewer = true
+        } label: {
+            HStack(spacing: 10) {
+                planThumbnail(project: project, planID: plan.id)
+                    .frame(width: 56, height: 42)
+                    .clipped()
+                    .background(Color.secondary.opacity(0.2))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(plan.label)
+                        .foregroundStyle(.primary)
+                    Text(planRowSubtitle(project: project, planID: plan.id))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isActive {
+                    Text("ACTIVE")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor, in: Capsule())
+                }
+                Menu {
+                    Button {
+                        renamingPlan = plan
+                        renamePlanDraft = plan.label
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    if !isActive {
+                        Button {
+                            _ = store.setActiveFloorPlan(project, planID: plan.id)
+                        } label: {
+                            Label("Set as active", systemImage: "checkmark.circle")
+                        }
+                    }
+                    Divider()
+                    Button {
+                        _ = store.setActiveFloorPlan(project, planID: plan.id)
+                        showingPlanOrigin = true
+                    } label: {
+                        Label("Set Origin", systemImage: "scope")
+                    }
+                    Button {
+                        _ = store.setActiveFloorPlan(project, planID: plan.id)
+                        showingPlanNorth = true
+                    } label: {
+                        Label("Set North", systemImage: "location.north")
+                    }
+                    Button {
+                        _ = store.setActiveFloorPlan(project, planID: plan.id)
+                        showingPlanRecalibrate = true
+                    } label: {
+                        Label("Re-calibrate Scale", systemImage: "ruler")
+                    }
+                    Button {
+                        _ = store.setActiveFloorPlan(project, planID: plan.id)
+                        showingPlanReplace = true
+                    } label: {
+                        Label("Replace Image", systemImage: "rectangle.2.swap")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        planPendingRemoval = plan
+                        confirmingPlanRemoval = true
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Subtitle under the plan label — counts photos placed on this
+    /// plan so the engineer can spot at-a-glance which plan is heavily
+    /// used vs empty.
+    private func planRowSubtitle(project: Project, planID: UUID) -> String {
+        let count = project.photos.reduce(0) { $0 + ($1.floorPlanID == planID ? 1 : 0) }
+        return "\(count) photo\(count == 1 ? "" : "s")"
+    }
+
+    @ViewBuilder
+    private func planThumbnail(project: Project, planID: UUID) -> some View {
+        if let url = store.floorPlanURL(for: project, planID: planID),
            let data = try? Data(contentsOf: url),
            let img = UIImage(data: data) {
             Image(uiImage: img)
@@ -1012,6 +1145,7 @@ struct ProjectDetailView: View {
                     || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview
                     || favoritesOnly
+                    || planFilter != .all
                     || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
@@ -1145,9 +1279,10 @@ struct ProjectDetailView: View {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchActive = !trimmedSearch.isEmpty
         let dateBounds = dateFilter.bounds()
+        let planFilterActive = planFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
             && !showOnlyNeedsReview && !favoritesOnly && !searchActive
-            && dateBounds == nil {
+            && dateBounds == nil && !planFilterActive {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
@@ -1180,11 +1315,51 @@ struct ProjectDetailView: View {
             if favoritesOnly && !photo.isFavorite {
                 return false
             }
+            switch planFilter {
+            case .all:
+                break
+            case .unassigned:
+                if photo.floorPlanID != nil { return false }
+            case .plan(let id):
+                if photo.floorPlanID != id { return false }
+            }
             if searchActive && !photoMatchesSearch(photo, lcSearch: lcSearch) {
                 return false
             }
             return true
         }
+    }
+
+    /// Floor-plan filter pill — same shape as the date / favorites
+    /// chips. Options: All plans · each plan by label · Unassigned.
+    @ViewBuilder
+    private func planFilterMenu(project: Project) -> some View {
+        let label: String = {
+            switch planFilter {
+            case .all:           return "All plans"
+            case .unassigned:    return "Unassigned"
+            case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Plan"
+            }
+        }()
+        Menu {
+            Picker("Floor plan", selection: Binding(
+                get: { planFilter },
+                set: { planFilter = $0 }
+            )) {
+                Text("All plans").tag(PlanFilter.all)
+                Text("Unassigned").tag(PlanFilter.unassigned)
+                Divider()
+                ForEach(project.floorPlans) { plan in
+                    Text(plan.label).tag(PlanFilter.plan(plan.id))
+                }
+            }
+        } label: {
+            Label(label, systemImage: "map")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(planFilter == .all ? .secondary : .accentColor)
     }
 
     /// Check whether `photo` contains `lcSearch` (already lowercased) in
@@ -1295,19 +1470,25 @@ struct ProjectDetailView: View {
                     || !recommendedUseFilter.isEmpty
                     || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview
-                    || favoritesOnly {
+                    || favoritesOnly
+                    || planFilter != .all {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
                         activeBucketFilter.removeAll()
                         showOnlyNeedsReview = false
                         favoritesOnly = false
+                        planFilter = .all
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
+                if let project = store.project(withID: projectID),
+                   !project.floorPlans.isEmpty {
+                    planFilterMenu(project: project)
                 }
                 if favoritesCount > 0 {
                     Button {

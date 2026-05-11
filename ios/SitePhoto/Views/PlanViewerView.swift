@@ -91,6 +91,11 @@ struct PlanViewerView: View {
                 }
             }
         }
+        if let project = store.project(withID: projectID), project.floorPlans.count > 1 {
+            ToolbarItem(placement: .principal) {
+                planPickerMenu(project: project)
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             HStack {
                 Button {
@@ -476,12 +481,45 @@ struct PlanViewerView: View {
         pendingRecenterID = nextPhoto.id
     }
 
-    /// Every located photo in the project, sorted by sequence number.
+    /// Every located photo on the *currently-active* plan, sorted by
+    /// sequence number. Other plans' photos are excluded so the
+    /// preview-bar swipe and bubble taps stay scoped to the plan the
+    /// engineer is actually looking at.
     private func locatedPhotosOrdered() -> [Photo] {
         guard let project = store.project(withID: projectID) else { return [] }
+        let activeID = project.floorPlan?.id
         return project.photos
-            .filter { $0.planPixelX != nil && $0.planPixelY != nil }
+            .filter { $0.planPixelX != nil && $0.planPixelY != nil && $0.floorPlanID == activeID }
             .sorted { $0.sequenceNumber < $1.sequenceNumber }
+    }
+
+    /// Multi-plan picker shown in the principal toolbar slot when the
+    /// project has more than one plan. Selecting a plan updates the
+    /// project's `activeFloorPlanID` and triggers a re-render against
+    /// the new plan.
+    @ViewBuilder
+    private func planPickerMenu(project: Project) -> some View {
+        Menu {
+            Picker("Floor plan", selection: Binding(
+                get: { project.floorPlan?.id ?? UUID() },
+                set: { newID in
+                    _ = store.setActiveFloorPlan(project, planID: newID)
+                }
+            )) {
+                ForEach(project.floorPlans) { plan in
+                    Text(plan.label).tag(plan.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(project.floorPlan?.label ?? "Plan")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: - Project lookups
@@ -511,9 +549,15 @@ struct PlanViewerView: View {
     private func buildMarkers(project: Project,
                               firstGapPlan: Double,
                               stepGapPlan: Double) -> [PlanMarker] {
+        let activeID = project.floorPlan?.id
         var groups: [String: [Photo]] = [:]
         for photo in project.photos {
-            guard photo.planPixelX != nil, photo.planPixelY != nil else { continue }
+            // Only render bubbles for photos placed on the plan the
+            // engineer is currently viewing — multi-plan projects show
+            // each plan's bubbles in isolation.
+            guard photo.floorPlanID == activeID,
+                  photo.planPixelX != nil,
+                  photo.planPixelY != nil else { continue }
             let key = photo.groupID?.uuidString ?? photo.id.uuidString
             groups[key, default: []].append(photo)
         }

@@ -63,6 +63,12 @@ struct LocateSheet: View {
                         }
                     }
                 }
+                if let project = store.project(withID: projectID),
+                   project.floorPlans.count > 1 {
+                    ToolbarItem(placement: .principal) {
+                        planPickerMenu(project: project)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingGroupPicker = true
@@ -257,6 +263,41 @@ struct LocateSheet: View {
         return UIImage(data: data)
     }
 
+    /// Plan picker shown in the principal toolbar slot when the
+    /// project has more than one plan. Selecting a plan updates the
+    /// project's `activeFloorPlanID` so the canvas re-renders against
+    /// the new image and `save()` writes the placement against the
+    /// newly-active plan. Resets `planPoint`/`heading` because a tap
+    /// from the previous image's coord space wouldn't align on the
+    /// new image.
+    @ViewBuilder
+    private func planPickerMenu(project: Project) -> some View {
+        Menu {
+            Picker("Floor plan", selection: Binding(
+                get: { project.floorPlan?.id ?? UUID() },
+                set: { newID in
+                    _ = store.setActiveFloorPlan(project, planID: newID)
+                    planPoint = nil
+                    heading = nil
+                    step = .position
+                }
+            )) {
+                ForEach(project.floorPlans) { plan in
+                    Text(plan.label).tag(plan.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(project.floorPlan?.label ?? "Plan")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // MARK: - Actions
 
     private func discard() {
@@ -286,6 +327,7 @@ struct LocateSheet: View {
             var photoLoc: ProjectStore.PhotoLocation?
             if useLoc, let pt = planPoint {
                 photoLoc = ProjectStore.PhotoLocation(
+                    floorPlanID: plan.id,
                     planPixelX: Double(pt.x),
                     planPixelY: Double(pt.y),
                     localXFeet: (Double(pt.x) - plan.anchorPixelX) / plan.pixelsPerFoot,
@@ -368,6 +410,7 @@ struct LocateSheet: View {
 
         for captured in pendingPhotos {
             let loc = ProjectStore.PhotoLocation(
+                floorPlanID: plan.id,
                 planPixelX: lpx, planPixelY: lpy,
                 localXFeet: lx, localYFeet: ly,
                 headingDegrees: nil,
