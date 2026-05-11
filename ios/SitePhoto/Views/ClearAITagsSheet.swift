@@ -51,16 +51,49 @@ struct ClearAITagsSheet: View {
         return out
     }
 
-    /// Photos eligible for selection: those that carry at least one tag
-    /// or pending suggestion matching the current `tagSelectors`. With no
-    /// selectors, returns the empty list — there's nothing to clear.
+    /// Photos eligible for selection. With "Also clear AI analysis"
+    /// off, only photos carrying at least one tag/pending suggestion
+    /// matching `tagSelectors` are listed (legacy behaviour). With the
+    /// toggle on, the list is the union of (tag-matching photos) +
+    /// (photos that carry an `aiAnalysis` blob even without AI tags),
+    /// so the user can wipe AI narrative from photos whose tags they
+    /// already cleared.
     private var matchingPhotos: [Photo] {
-        guard !tagSelectors.isEmpty else { return [] }
-        return photos.filter { photo in
+        let tagMatching = photos.filter { photo in
             tagsOnPhoto(photo).contains { tag in
                 selectorMatches(parent: tag.parent, label: tag.label)
             }
         }
+        guard alsoClearAnalysis else {
+            // Legacy path: tag selectors mandatory.
+            return tagSelectors.isEmpty ? [] : tagMatching
+        }
+        // Toggle on: union with analysis-bearing photos. Preserve
+        // overall photo order by walking `photos` once and including
+        // anything that's either tag-matching (when selectors exist) or
+        // has an aiAnalysis blob.
+        let tagMatchingIDs = Set(tagMatching.map(\.id))
+        return photos.filter { photo in
+            if tagMatchingIDs.contains(photo.id) { return true }
+            return photo.aiAnalysis != nil
+        }
+    }
+
+    /// True when there's anything in the project worth offering to
+    /// clear — either AI tags, pending suggestions, or a saved AI
+    /// analysis. Drives the empty-state vs. main-UI branch.
+    private var projectHasAnyAIData: Bool {
+        if !aiTagGroups.isEmpty { return true }
+        return photos.contains { $0.aiAnalysis != nil }
+    }
+
+    /// True when the engineer can hit "Clear" right now — they've
+    /// picked photos AND either tag selectors (any of which actually
+    /// match the selected photos) or the "Also clear AI analysis"
+    /// toggle.
+    private var canRunClear: Bool {
+        guard !photoSelection.isEmpty else { return false }
+        return !tagSelectors.isEmpty || alsoClearAnalysis
     }
 
     /// True when the user has every chip checked. Mirrors today's
@@ -74,11 +107,11 @@ struct ClearAITagsSheet: View {
             VStack(spacing: 0) {
                 infoBanner
                 Divider()
-                if aiTagGroups.isEmpty {
+                if !projectHasAnyAIData {
                     EmptyStateView(
                         icon: "checkmark.seal",
                         title: "Nothing to clear",
-                        message: "No photo in this project has AI tags or pending suggestions."
+                        message: "No photo in this project has AI tags, pending suggestions, or a saved AI analysis."
                     )
                 } else {
                     ScrollView {
@@ -100,7 +133,7 @@ struct ClearAITagsSheet: View {
                 }
             }
             .alert(
-                "Clear \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s") from \(photoSelection.count) photo\(photoSelection.count == 1 ? "" : "s")?",
+                confirmAlertTitle,
                 isPresented: $confirming
             ) {
                 Button("Clear", role: .destructive) {
@@ -121,6 +154,15 @@ struct ClearAITagsSheet: View {
             // all" check stays consistent.
             .onChange(of: aiTagGroups) { _, _ in
                 tagSelectors.formIntersection(allSelectors)
+                photoSelection = photoSelection.intersection(
+                    matchingPhotos.map(\.id)
+                )
+            }
+            // Toggling the "Also clear AI analysis" switch changes the
+            // pool of eligible photos. Re-trim the selection so analysis-
+            // only photos drop out when the toggle flips off, and so the
+            // selection summary's count stays honest.
+            .onChange(of: alsoClearAnalysis) { _, _ in
                 photoSelection = photoSelection.intersection(
                     matchingPhotos.map(\.id)
                 )
@@ -270,7 +312,7 @@ struct ClearAITagsSheet: View {
     private var photoListSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Photos with selected tags")
+                Text(photoListHeading)
                     .font(.subheadline.bold())
                 Text("(\(matchingPhotos.count))")
                     .font(.caption.monospaced())
@@ -288,12 +330,8 @@ struct ClearAITagsSheet: View {
                 .font(.caption)
                 .disabled(matchingPhotos.isEmpty)
             }
-            if tagSelectors.isEmpty {
-                Text("Pick at least one tag to see matching photos.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if matchingPhotos.isEmpty {
-                Text("No photos carry the selected tags.")
+            if matchingPhotos.isEmpty {
+                Text(emptyPhotoListMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -306,6 +344,27 @@ struct ClearAITagsSheet: View {
             }
         }
         .padding(12)
+    }
+
+    /// Header text adapts to whether the photo list is in tag-match
+    /// mode (legacy) or union mode (with analysis-only photos).
+    private var photoListHeading: String {
+        if alsoClearAnalysis && tagSelectors.isEmpty {
+            return "Photos with AI analysis"
+        }
+        return alsoClearAnalysis
+            ? "Photos with selected tags or AI analysis"
+            : "Photos with selected tags"
+    }
+
+    private var emptyPhotoListMessage: String {
+        if !alsoClearAnalysis && tagSelectors.isEmpty {
+            return "Pick at least one tag to see matching photos."
+        }
+        if alsoClearAnalysis && tagSelectors.isEmpty {
+            return "No photo in this project has a saved AI analysis."
+        }
+        return "No photos carry the selected tags."
     }
 
     @ViewBuilder
@@ -369,24 +428,38 @@ struct ClearAITagsSheet: View {
             Button(role: .destructive) {
                 confirming = true
             } label: {
-                Label("Clear Tags", systemImage: "eraser")
+                Label(clearButtonLabel, systemImage: "eraser")
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .disabled(photoSelection.isEmpty || tagSelectors.isEmpty)
+            .disabled(!canRunClear)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
+    /// "Clear Tags" when the engineer is in the legacy tag-only mode,
+    /// "Clear Analysis" when the toggle is on but no tag selectors are
+    /// picked, "Clear Tags + Analysis" when both are in play.
+    private var clearButtonLabel: String {
+        switch (tagSelectors.isEmpty, alsoClearAnalysis) {
+        case (true,  true):  return "Clear Analysis"
+        case (false, true):  return "Clear Tags + Analysis"
+        default:             return "Clear Tags"
+        }
+    }
+
     // MARK: - Behaviour
 
     private var selectionSummary: String {
-        if tagSelectors.isEmpty {
-            return "Pick tags to clear."
+        if tagSelectors.isEmpty && !alsoClearAnalysis {
+            return "Pick tags to clear (or turn on \"Also clear AI analysis\")."
         }
         if photoSelection.isEmpty {
             return "Pick photos to clear from."
+        }
+        if tagSelectors.isEmpty {
+            return "\(photoSelection.count) of \(matchingPhotos.count) photos · AI analysis only"
         }
         return "\(photoSelection.count) of \(matchingPhotos.count) photos · \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s")"
     }
@@ -395,27 +468,55 @@ struct ClearAITagsSheet: View {
         guard let project else { return }
         let photoCount = photoSelection.count
         let tagCount = tagSelectors.count
-        var updated = store.removeTags(project,
+        var updated = project
+        if !tagSelectors.isEmpty {
+            updated = store.removeTags(updated,
                                          photoIDs: photoSelection,
                                          selectors: tagSelectors)
+        }
         if alsoClearAnalysis {
             updated = store.clearAIAnalysis(updated, photoIDs: photoSelection)
         }
         _ = updated
         photoSelection.removeAll()
         Haptics.confirm()
-        let suffix = alsoClearAnalysis ? " + AI analysis" : ""
-        toastCenter.post("Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s")\(suffix) from \(photoCount) photo\(photoCount == 1 ? "" : "s")",
-                          kind: .success)
+        let photoSuffix = "\(photoCount) photo\(photoCount == 1 ? "" : "s")"
+        let message: String
+        switch (tagCount, alsoClearAnalysis) {
+        case (0, true):
+            message = "Cleared AI analysis from \(photoSuffix)"
+        case (_, true):
+            message = "Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s") + AI analysis from \(photoSuffix)"
+        default:
+            message = "Cleared \(tagCount) tag\(tagCount == 1 ? "" : "s") from \(photoSuffix)"
+        }
+        toastCenter.post(message, kind: .success)
     }
 
-    /// Body text for the confirmation alert. Changes when "Also clear
-    /// AI analysis" is on so the user sees exactly what's about to
-    /// happen.
+    /// Title for the confirmation alert. Phrasing changes based on the
+    /// three modes the sheet supports: clear tags only, clear analysis
+    /// only, clear both.
+    private var confirmAlertTitle: String {
+        let photoSuffix = "\(photoSelection.count) photo\(photoSelection.count == 1 ? "" : "s")"
+        switch (tagSelectors.isEmpty, alsoClearAnalysis) {
+        case (true,  true):
+            return "Clear AI analysis from \(photoSuffix)?"
+        case (false, true):
+            return "Clear \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s") + AI analysis from \(photoSuffix)?"
+        default:
+            return "Clear \(tagSelectors.count) tag\(tagSelectors.count == 1 ? "" : "s") from \(photoSuffix)?"
+        }
+    }
+
+    /// Body text for the confirmation alert. Adapts to whichever of the
+    /// three clear modes is active.
     private var confirmAlertMessage: String {
-        if alsoClearAnalysis {
+        switch (tagSelectors.isEmpty, alsoClearAnalysis) {
+        case (true,  true):
+            return "Wipes each selected photo's saved AI analysis (caption draft, summary observation, recommended use, confidence, reviewer flag, …). Tags and pending suggestions are not touched. This cannot be undone."
+        case (false, true):
             return "Removes the chosen AI tags AND wipes each selected photo's saved AI analysis (caption draft, summary observation, recommended use, confidence, reviewer flag, …). Manually-typed tags are preserved. This cannot be undone."
-        } else {
+        default:
             return "Removes the chosen AI tags (and any pending suggestions for those tags) from the selected photos. Manually-typed tags and the photo's saved AI analysis are preserved. This cannot be undone."
         }
     }
@@ -442,15 +543,26 @@ struct ClearAITagsSheet: View {
 
     /// Comma-separated list of the tags on `photo` that would be removed
     /// by the current selection. Helps the user verify they're picking
-    /// the right photos.
+    /// the right photos. Photos that show up only because the "Also
+    /// clear AI analysis" toggle is on (no tag-side match) get an
+    /// "AI analysis" hint instead of an em dash.
     private func matchedTagsLine(for photo: Photo) -> String {
         let matched = tagsOnPhoto(photo).filter {
             selectorMatches(parent: $0.parent, label: $0.label)
         }
-        if matched.isEmpty { return "—" }
-        return matched.map { tag in
+        if matched.isEmpty {
+            if alsoClearAnalysis, photo.aiAnalysis != nil {
+                return "AI analysis"
+            }
+            return "—"
+        }
+        let tagsLine = matched.map { tag in
             tag.parent.map { "\($0) / \(tag.label)" } ?? tag.label
         }.joined(separator: " · ")
+        if alsoClearAnalysis, photo.aiAnalysis != nil {
+            return tagsLine + " · AI analysis"
+        }
+        return tagsLine
     }
 
     /// Flatten this photo's tags + pending suggestions into a uniform

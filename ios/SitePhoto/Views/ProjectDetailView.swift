@@ -1038,14 +1038,19 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+            // FlowLayout wraps to the next row when the four bordered
+            // buttons + their `.borderedProminent` Delete sibling don't
+            // fit. Without it the HStack runs out of horizontal width
+            // on smaller-than-iPhone-17-Pro-Max devices and SwiftUI's
+            // bordered style starts wrapping the labels letter-by-letter.
+            // The selected count is already shown in the row above
+            // ("N selected"), so the button labels drop the dynamic
+            // count to keep them short and predictable.
+            FlowLayout(spacing: 8) {
                 Button {
                     showingBucketPicker = true
                 } label: {
-                    Label(
-                        "Move \(selectedPhotoIDs.count) to Bucket…",
-                        systemImage: "folder"
-                    )
+                    Label("Bucket", systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
                 .tint(.accentColor)
@@ -1053,10 +1058,7 @@ struct ProjectDetailView: View {
                 Button {
                     showingBulkTagPicker = true
                 } label: {
-                    Label(
-                        "Apply Tag…",
-                        systemImage: "tag"
-                    )
+                    Label("Tag", systemImage: "tag")
                 }
                 .buttonStyle(.bordered)
                 .tint(.purple)
@@ -1064,29 +1066,19 @@ struct ProjectDetailView: View {
                 Button {
                     presentSelectedAITagPrompt()
                 } label: {
-                    Label(
-                        "Tag with AI",
-                        systemImage: "wand.and.sparkles"
-                    )
+                    Label("AI Tag", systemImage: "wand.and.sparkles")
                 }
                 .buttonStyle(.bordered)
                 .tint(.blue)
                 .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
-                Spacer()
-            }
-            HStack {
                 Button(role: .destructive) {
                     confirmingBatchDelete = true
                 } label: {
-                    Label(
-                        "Delete \(selectedPhotoIDs.count) Photo\(selectedPhotoIDs.count == 1 ? "" : "s")",
-                        systemImage: "trash"
-                    )
+                    Label("Delete", systemImage: "trash")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(selectedPhotoIDs.isEmpty)
-                Spacer()
             }
         }
     }
