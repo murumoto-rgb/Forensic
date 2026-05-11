@@ -897,7 +897,7 @@ struct PhotoTagEditorSheet: View {
             let r = try await ClaudeTaggingService.tag(
                 imageURL: url,
                 photoID: photo.imageFilename,
-                systemPrompt: compiled.systemPrompt,
+                systemBlocks: compiled.blocks,
                 vocabulary: compiled.vocabulary
             )
             // Merge with existing pending suggestions rather than

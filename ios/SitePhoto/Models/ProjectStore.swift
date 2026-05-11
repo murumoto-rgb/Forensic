@@ -1780,6 +1780,54 @@ final class ProjectStore {
         return save(p)
     }
 
+    /// Heuristic: does this project's AI Notes text look like it's the
+    /// stale legacy prompt that used to live in `Project.aiInstructions`
+    /// before the rules-template refactor? Used by `AIInstructionsSheet`
+    /// to surface a one-shot "These notes are bloated, want to clear
+    /// them?" banner. Two signals — either is enough:
+    ///   * length over 400 characters (the typical engineer-typed note
+    ///     is well under this; the legacy default prompt was ~5,700)
+    ///   * the text contains a phrase that only appeared in the legacy
+    ///     `AIInstructions.defaultText` blob.
+    ///
+    /// Returns `nil` when notes look fine.
+    func aiNotesBloatHint(for project: Project) -> AIInstructionsBloatHint? {
+        let raw = project.aiInstructions ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let signatures = [
+            "Controlled Primary and Secondary Tags",
+            "Field definitions",
+            "primary_tags: array of one or two Primary Tags",
+            "secondary_tags_by_primary: object keyed by"
+        ]
+        let matchesSignature = signatures.contains { trimmed.contains($0) }
+        guard trimmed.count > 400 || matchesSignature else { return nil }
+        return AIInstructionsBloatHint(
+            characterCount: trimmed.count,
+            looksLikeLegacyDefault: matchesSignature
+        )
+    }
+}
+
+/// Returned by `ProjectStore.aiNotesBloatHint(for:)` when a project's
+/// AI Notes look unusually large or like the legacy default prompt was
+/// carried over by accident. Drives the warning banner in
+/// `AIInstructionsSheet`.
+struct AIInstructionsBloatHint: Equatable {
+    let characterCount: Int
+    let looksLikeLegacyDefault: Bool
+
+    var bannerMessage: String {
+        if looksLikeLegacyDefault {
+            return "These notes look like the old default AI prompt (\(characterCount) chars). They're appended verbatim to every AI request and are likely slowing tagging down. Clear them?"
+        }
+        return "Notes are unusually long (\(characterCount) chars). They're appended verbatim to every AI request and may be slowing tagging down."
+    }
+}
+
+extension ProjectStore {
+
     // MARK: - Buckets
 
     /// Append a new bucket with the given name and color, picking the next
@@ -2642,7 +2690,7 @@ final class ProjectStore {
                 let pid = item.photoID
                 let seq = item.sequenceNumber
                 let fname = item.filename
-                let prompt = compiled.systemPrompt
+                let promptBlocks = compiled.blocks
                 let vocab = compiled.vocabulary
                 group.addTask {
                     await Self.ensureDownloadedStatic(at: url)
@@ -2650,7 +2698,7 @@ final class ProjectStore {
                         let r = try await ClaudeTaggingService.tag(
                             imageURL: url,
                             photoID: fname,
-                            systemPrompt: prompt,
+                            systemBlocks: promptBlocks,
                             vocabulary: vocab
                         )
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,

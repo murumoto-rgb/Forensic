@@ -34,9 +34,23 @@ struct AIInstructionsSheet: View {
         return saved != current
     }
 
+    /// Heuristic: if the project's saved notes look like the legacy
+    /// default prompt that lived in `Project.aiInstructions` before the
+    /// rules-template refactor, or just look uncharacteristically long,
+    /// `ProjectStore.aiNotesBloatHint` returns a hint we surface to the
+    /// engineer with a one-tap clear button.
+    private var bloatHint: AIInstructionsBloatHint? {
+        guard let project else { return nil }
+        return store.aiNotesBloatHint(for: project)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if let hint = bloatHint {
+                    bloatBanner(hint)
+                    Divider()
+                }
                 infoHeader
                 Divider()
                 TextEditor(text: $draft)
@@ -124,6 +138,39 @@ struct AIInstructionsSheet: View {
         Haptics.success()
         toastCenter.post("Saved template \"\(template.name)\"", kind: .success)
         saveTemplateName = ""
+    }
+
+    @ViewBuilder
+    private func bloatBanner(_ hint: AIInstructionsBloatHint) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.title3)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(hint.bannerMessage)
+                    .font(.caption)
+                Button(role: .destructive) {
+                    clearBloatedNotes()
+                } label: {
+                    Label("Clear notes", systemImage: "xmark.circle")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    private func clearBloatedNotes() {
+        guard let project else { return }
+        _ = store.setAIInstructions(project, nil)
+        draft = ""
+        Haptics.success()
+        toastCenter.post("AI Notes cleared", kind: .success)
     }
 
     @ViewBuilder

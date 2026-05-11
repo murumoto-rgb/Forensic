@@ -26,12 +26,22 @@ enum PromptCompiler {
 
     /// Short framing prepended to the rules template. Stable across
     /// projects so it benefits from Anthropic's ephemeral prompt cache.
+    /// Lives here (not in the user-editable rules template) because it
+    /// also carries the comma-separator format hint that pairs with
+    /// `compileVocabularyBlock`'s compact output — that contract has
+    /// to stay in sync with the network shape regardless of how the
+    /// engineer customises their rules text.
     private static let systemPreamble = """
     You are an AI assistant tagging forensic site-investigation \
     photographs. The rules below describe the JSON schema you must \
     emit. The controlled vocabulary below the rules is scoped to this \
     specific project — use ONLY the investigation contexts, primary \
     tags, and secondary tags listed there.
+
+    Vocabulary format: each primary tag's "Secondary tags:" line is a \
+    comma-separated list. Treat each comma-separated value as ONE \
+    verbatim secondary tag — none of the listed tags themselves \
+    contain commas, so a comma inside the list is always a separator.
     """
 
     /// Short reinforcement appended after everything else. Re-emphasises
@@ -45,13 +55,42 @@ enum PromptCompiler {
     Start your response with `{` and end it with `}`.
     """
 
-    /// Compiled output: the full system prompt to send + the
-    /// project-scoped validation vocabulary the response should be
+    /// A single text section of the compiled system prompt. The
+    /// `cacheable` flag tells the network layer whether to attach a
+    /// `cache_control: ephemeral` marker after this block. The order
+    /// of the returned array IS the order of blocks Anthropic sees.
+    ///
+    /// Blocks are arranged most-stable to least-stable so a cache hit
+    /// on the stable prefix survives small edits to downstream blocks:
+    ///
+    ///   * preamble + rules — only changes when the engineer edits the
+    ///     app-wide rules template in Settings (rare).
+    ///   * vocabulary — changes when the per-project tag selection
+    ///     changes (moderate).
+    ///   * notes — changes whenever the engineer tweaks "AI Notes" on
+    ///     this project (frequent for some workflows).
+    ///   * outputContract — stable but tiny; not worth a cache slot of
+    ///     its own.
+    struct Block: Sendable {
+        let text: String
+        let cacheable: Bool
+    }
+
+    /// Compiled output: the ordered list of system-prompt blocks +
+    /// the project-scoped validation vocabulary the response should be
     /// checked against. Bundled together so callers don't have to walk
     /// the library twice.
     struct Result: Sendable {
-        let systemPrompt: String
+        let blocks: [Block]
         let vocabulary: ValidationVocabulary
+
+        /// Convenience accessor — joins every block's text in order
+        /// with a blank line between them. Used by the DEBUG prompt
+        /// inspector + by anything that just wants the full prompt as
+        /// a string.
+        var joinedSystemPrompt: String {
+            blocks.map(\.text).joined(separator: "\n\n")
+        }
     }
 
     /// Build the system prompt + validation vocabulary for `project`.
@@ -82,19 +121,42 @@ enum PromptCompiler {
         let rules = rulesTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
         let notesBlock = compileNotesBlock(project.aiInstructions)
 
-        var parts: [String] = [systemPreamble, rules, vocabularyBlock]
-        if let notesBlock { parts.append(notesBlock) }
-        parts.append(outputContract)
+        // Block layout — see the `Block` docstring for the rationale.
+        // The first block bundles preamble + rules so a small change
+        // to either doesn't cost an extra cache slot, and so the
+        // combined block easily exceeds Anthropic's 1024-token cache
+        // minimum even when the rules template is tiny.
+        var blocks: [Block] = [
+            Block(text: systemPreamble + "\n\n" + rules, cacheable: true),
+            Block(text: vocabularyBlock,                  cacheable: true)
+        ]
+        if let notesBlock {
+            blocks.append(Block(text: notesBlock, cacheable: true))
+        }
+        blocks.append(Block(text: outputContract, cacheable: false))
+
         return Result(
-            systemPrompt: parts.joined(separator: "\n\n"),
+            blocks: blocks,
             vocabulary: ValidationVocabulary.resolve(library: tagLibrary,
                                                        selection: selection)
         )
     }
 
-    /// Build the vocabulary block in the same shape as the engineer's
-    /// starter pack — readable for the human reviewing the prompt, and
-    /// unambiguous for Claude.
+    /// Build the vocabulary block in a compact comma-separated form.
+    /// Semantically identical to the older bullet-per-secondary format
+    /// — every tag is still listed verbatim — but uses ~50% fewer
+    /// tokens, which directly shortens AI tagging latency and reduces
+    /// cache-write cost on first-photo-of-batch.
+    ///
+    /// Format Claude sees:
+    ///   INVESTIGATION CONTEXT: Foundation Performance
+    ///   Primary tag: Drainage / Grading
+    ///   Secondary tags: None, Adequate drainage, Marginal drainage, …
+    ///
+    /// The matching "Use commas as field separators inside Secondary
+    /// tags lists" hint lives in `AIRulesTemplate.defaultText` so the
+    /// model never confuses a comma inside a tag name (none of the
+    /// seeded tags carry commas) with a separator.
     private static func compileVocabularyBlock(library: TagLibrary,
                                                  selection: ProjectTagSelection) -> String {
         var lines: [String] = ["Controlled vocabulary for this project:"]
@@ -115,10 +177,8 @@ enum PromptCompiler {
 
                 lines.append("")
                 lines.append("Primary tag: \(primary.name)")
-                lines.append("Secondary tags:")
-                for s in activeSecondaries {
-                    lines.append("- \(s.name)")
-                }
+                let joined = activeSecondaries.map(\.name).joined(separator: ", ")
+                lines.append("Secondary tags: \(joined)")
             }
         }
 

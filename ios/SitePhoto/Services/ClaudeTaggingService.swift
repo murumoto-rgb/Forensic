@@ -54,14 +54,21 @@ enum ClaudeTaggingService {
         let analysis: AIPhotoAnalysis
     }
 
-    /// Send a single photo to Claude with a pre-composed system prompt
-    /// and the matching validation vocabulary. Callers build both via
-    /// `PromptCompiler.compile(...)` so the noContextsPicked check +
-    /// vocabulary resolution happens outside the network path (no
-    /// wasted rate-limit budget).
+    /// Send a single photo to Claude with a pre-composed list of
+    /// system-prompt blocks and the matching validation vocabulary.
+    /// Callers build both via `PromptCompiler.compile(...)` so the
+    /// noContextsPicked check + vocabulary resolution happens outside
+    /// the network path (no wasted rate-limit budget).
+    ///
+    /// The blocks array preserves cache breakpoints: every block
+    /// marked `cacheable` gets its own `cache_control: ephemeral`
+    /// marker. Anthropic caches the longest matching prefix, so when
+    /// the engineer edits e.g. AI Notes, the preamble+rules and
+    /// vocabulary blocks stay cached and only the notes section
+    /// re-caches on the next request.
     static func tag(imageURL: URL,
                     photoID: String = "",
-                    systemPrompt: String,
+                    systemBlocks: [PromptCompiler.Block],
                     vocabulary: ValidationVocabulary = .fallback) async throws -> Result {
         guard let key = KeychainStore.loadAnthropicKey(), !key.isEmpty else {
             throw Error.missingAPIKey
@@ -73,24 +80,26 @@ enum ClaudeTaggingService {
         }
         let base64 = jpegData.base64EncodedString()
 
-        // The pre-composed prompt is attached as a content-blocks array
-        // so we can flag it with `cache_control: ephemeral`. With caching
-        // enabled, every photo after the first in a 5-min window pays
-        // only ~10% of the prompt-token cost — a big win when
-        // batch-tagging dozens of photos through the long forensic
-        // prompt.
-        let cachedSystemText = systemPrompt
+        // Convert the compiler's block list into Anthropic's
+        // content-blocks-with-optional-cache-control shape. Multi-block
+        // caching means small per-project edits (e.g. AI Notes) only
+        // invalidate downstream sections, not the whole prefix —
+        // measurably faster on warm batches.
+        let systemBlocksJSON: [[String: Any]] = systemBlocks.map { block in
+            var entry: [String: Any] = [
+                "type": "text",
+                "text": block.text
+            ]
+            if block.cacheable {
+                entry["cache_control"] = ["type": "ephemeral"]
+            }
+            return entry
+        }
 
         let body: [String: Any] = [
             "model":      model,
             "max_tokens": 1500,
-            "system": [
-                [
-                    "type": "text",
-                    "text": cachedSystemText,
-                    "cache_control": ["type": "ephemeral"]
-                ]
-            ],
+            "system":     systemBlocksJSON,
             "messages": [
                 [
                     "role": "user",
