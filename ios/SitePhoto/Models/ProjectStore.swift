@@ -28,6 +28,19 @@ final class ProjectStore {
     /// Loaded during `loadInitial()`; seeded with the defaults on first
     /// launch. Mutations go through `addAIPromptTemplate(...)` etc.
     private(set) var aiPromptTemplates: [AIPromptTemplate] = []
+    /// App-wide three-level catalog of investigation contexts, primary
+    /// tags, and secondary tags used by the AI tagging pipeline. Each
+    /// project picks a subset of this catalog (`Project.tagSelection`)
+    /// to scope its AI prompt's vocabulary. Loaded during
+    /// `loadInitial()`; seeded from `TagLibrary.defaultSeeds` on first
+    /// launch.
+    private(set) var tagLibrary: TagLibrary = TagLibrary()
+    /// App-wide editable template for the rules / schema block at the
+    /// top of Claude's system prompt. Per-project vocabulary is
+    /// compiled separately and appended below this template at request
+    /// time. Loaded during `loadInitial()`; defaults to
+    /// `AIRulesTemplate.defaultText` on first launch.
+    private(set) var aiRulesTemplate: String = AIRulesTemplate.defaultText
     /// True while a `save(_:)` call is writing to disk. Bound to the
     /// auto-save indicator chip in ProjectDetailView so the engineer
     /// can spot a stuck or slow save (e.g. iCloud throttling) at a
@@ -131,6 +144,8 @@ final class ProjectStore {
         loadBrandingFromDisk()
         loadBucketLibraryFromDisk()
         loadAIPromptTemplatesFromDisk()
+        loadTagLibraryFromDisk()
+        loadAIRulesTemplateFromDisk()
         purgeOldTrash()
         isReady = true
     }
@@ -674,6 +689,233 @@ final class ProjectStore {
         let changed = aiPromptTemplates.count != before
         if changed { persistAIPromptTemplates() }
         return changed
+    }
+
+    // MARK: - Tag library (app-wide)
+
+    /// Where the three-level tag library JSON lives. Sibling of
+    /// `bucketLibrary.json` under the storage root so it follows the
+    /// same iCloud-promotion path as every other shared catalog.
+    private var tagLibraryURL: URL {
+        storageRoot.appending(path: "tagLibrary.json")
+    }
+
+    /// Load the tag library from disk, falling back to the bundled
+    /// starter pack (`TagLibrary.defaultSeeds`) when no file exists
+    /// (fresh install). The starter pack is persisted immediately on
+    /// first launch so subsequent reads are consistent.
+    fileprivate func loadTagLibraryFromDisk() {
+        if let data = try? Data(contentsOf: tagLibraryURL),
+           let decoded = try? decoder().decode(TagLibrary.self, from: data) {
+            tagLibrary = decoded
+            return
+        }
+        tagLibrary = TagLibrary.defaultSeeds
+        persistTagLibrary()
+    }
+
+    private func persistTagLibrary() {
+        if let data = try? encoder().encode(tagLibrary) {
+            try? data.write(to: tagLibraryURL, options: .atomic)
+        }
+    }
+
+    // Contexts ----------------------------------------------------------
+
+    @discardableResult
+    func addTagContext(name rawName: String) -> InvestigationContext? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let ctx = InvestigationContext(name: name, primaries: [])
+        tagLibrary.contexts.append(ctx)
+        persistTagLibrary()
+        return ctx
+    }
+
+    @discardableResult
+    func renameTagContext(_ id: UUID, to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let idx = tagLibrary.contexts.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        tagLibrary.contexts[idx].name = name
+        persistTagLibrary()
+        return true
+    }
+
+    @discardableResult
+    func deleteTagContext(_ id: UUID) -> Bool {
+        let before = tagLibrary.contexts.count
+        tagLibrary.contexts.removeAll { $0.id == id }
+        let changed = tagLibrary.contexts.count != before
+        if changed { persistTagLibrary() }
+        return changed
+    }
+
+    func reorderTagContexts(from source: IndexSet, to destination: Int) {
+        tagLibrary.contexts.move(fromOffsets: source, toOffset: destination)
+        persistTagLibrary()
+    }
+
+    // Primaries ---------------------------------------------------------
+
+    @discardableResult
+    func addTagPrimary(toContext contextID: UUID,
+                        name rawName: String) -> PrimaryTagEntry? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }) else {
+            return nil
+        }
+        let entry = PrimaryTagEntry(name: name, secondaries: [])
+        tagLibrary.contexts[cIdx].primaries.append(entry)
+        persistTagLibrary()
+        return entry
+    }
+
+    @discardableResult
+    func renameTagPrimary(inContext contextID: UUID,
+                           primary primaryID: UUID,
+                           to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }),
+              let pIdx = tagLibrary.contexts[cIdx].primaries.firstIndex(where: { $0.id == primaryID }) else {
+            return false
+        }
+        tagLibrary.contexts[cIdx].primaries[pIdx].name = name
+        persistTagLibrary()
+        return true
+    }
+
+    @discardableResult
+    func deleteTagPrimary(inContext contextID: UUID, primary primaryID: UUID) -> Bool {
+        guard let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }) else {
+            return false
+        }
+        let before = tagLibrary.contexts[cIdx].primaries.count
+        tagLibrary.contexts[cIdx].primaries.removeAll { $0.id == primaryID }
+        let changed = tagLibrary.contexts[cIdx].primaries.count != before
+        if changed { persistTagLibrary() }
+        return changed
+    }
+
+    func reorderTagPrimaries(inContext contextID: UUID,
+                              from source: IndexSet,
+                              to destination: Int) {
+        guard let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }) else { return }
+        tagLibrary.contexts[cIdx].primaries.move(fromOffsets: source, toOffset: destination)
+        persistTagLibrary()
+    }
+
+    // Secondaries -------------------------------------------------------
+
+    @discardableResult
+    func addTagSecondary(inContext contextID: UUID,
+                          primary primaryID: UUID,
+                          name rawName: String) -> SecondaryTagEntry? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }),
+              let pIdx = tagLibrary.contexts[cIdx].primaries.firstIndex(where: { $0.id == primaryID }) else {
+            return nil
+        }
+        let entry = SecondaryTagEntry(name: name)
+        tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.append(entry)
+        persistTagLibrary()
+        return entry
+    }
+
+    @discardableResult
+    func renameTagSecondary(inContext contextID: UUID,
+                             primary primaryID: UUID,
+                             secondary secondaryID: UUID,
+                             to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }),
+              let pIdx = tagLibrary.contexts[cIdx].primaries.firstIndex(where: { $0.id == primaryID }),
+              let sIdx = tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.firstIndex(where: { $0.id == secondaryID }) else {
+            return false
+        }
+        tagLibrary.contexts[cIdx].primaries[pIdx].secondaries[sIdx].name = name
+        persistTagLibrary()
+        return true
+    }
+
+    @discardableResult
+    func deleteTagSecondary(inContext contextID: UUID,
+                             primary primaryID: UUID,
+                             secondary secondaryID: UUID) -> Bool {
+        guard let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }),
+              let pIdx = tagLibrary.contexts[cIdx].primaries.firstIndex(where: { $0.id == primaryID }) else {
+            return false
+        }
+        let before = tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.count
+        tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.removeAll { $0.id == secondaryID }
+        let changed = tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.count != before
+        if changed { persistTagLibrary() }
+        return changed
+    }
+
+    func reorderTagSecondaries(inContext contextID: UUID,
+                                 primary primaryID: UUID,
+                                 from source: IndexSet,
+                                 to destination: Int) {
+        guard let cIdx = tagLibrary.contexts.firstIndex(where: { $0.id == contextID }),
+              let pIdx = tagLibrary.contexts[cIdx].primaries.firstIndex(where: { $0.id == primaryID }) else { return }
+        tagLibrary.contexts[cIdx].primaries[pIdx].secondaries.move(fromOffsets: source, toOffset: destination)
+        persistTagLibrary()
+    }
+
+    // Project-side helper -----------------------------------------------
+
+    /// Update a project's tag selection (or clear it with `nil`) and
+    /// persist the manifest. Returns the saved project so call sites can
+    /// chain.
+    @discardableResult
+    func setTagSelection(_ project: Project,
+                          _ selection: ProjectTagSelection?) -> Project {
+        var p = project
+        p.tagSelection = selection
+        return save(p)
+    }
+
+    // MARK: - AI rules template (app-wide)
+
+    /// Where the rules-template text lives. Plain `.txt` so the
+    /// engineer can spot-check it in Files.app without unwrapping a
+    /// JSON envelope.
+    private var aiRulesTemplateURL: URL {
+        storageRoot.appending(path: "aiRulesTemplate.txt")
+    }
+
+    fileprivate func loadAIRulesTemplateFromDisk() {
+        if let data = try? Data(contentsOf: aiRulesTemplateURL),
+           let text = String(data: data, encoding: .utf8),
+           !text.isEmpty {
+            aiRulesTemplate = text
+            return
+        }
+        aiRulesTemplate = AIRulesTemplate.defaultText
+        persistAIRulesTemplate()
+    }
+
+    private func persistAIRulesTemplate() {
+        if let data = aiRulesTemplate.data(using: .utf8) {
+            try? data.write(to: aiRulesTemplateURL, options: .atomic)
+        }
+    }
+
+    /// Replace the rules-template text and persist. Trimming + empty
+    /// fallback keeps a blank editor save from wiping the prompt.
+    @discardableResult
+    func updateAIRulesTemplate(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiRulesTemplate = trimmed.isEmpty ? AIRulesTemplate.defaultText : text
+        persistAIRulesTemplate()
+        return aiRulesTemplate
     }
 
     private static func resizeForLogo(_ image: UIImage) -> UIImage? {

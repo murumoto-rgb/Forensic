@@ -22,16 +22,24 @@ struct Project: Identifiable, Codable, Hashable {
     /// Stable, human-readable folder name used on disk. Computed once at
     /// creation; nil only on projects created before this field existed.
     var folderName: String?
-    /// Optional per-project tagging guide that gets injected into Claude's
-    /// system prompt. `nil` means use the app-wide default
-    /// (`AIInstructions.default`). Empty string means the user explicitly
-    /// disabled custom instructions.
+    /// Optional per-project free-text notes appended to Claude's system
+    /// prompt as "Additional notes for this project." Use cases: one-off
+    /// guidance like "focus on the east elevation" or "this project has
+    /// a known foundation repair in 2018." `nil` or empty means no
+    /// notes are appended. Historically this field held a full prompt
+    /// override; with the rules-template + per-project tag-selection
+    /// rework, it's been demoted to notes-only.
     var aiInstructions: String?
     /// User-defined categories for grouping photos in this project. Each
     /// `Photo.bucketID` references one of these (or nil). Folder export
     /// renders one directory per bucket in `sortOrder`. Empty by default —
     /// the user opts in by creating buckets via the manager sheet.
     var buckets: [Bucket]
+    /// Project-scoped subset of the app-wide `TagLibrary` that drives the
+    /// AI tagging prompt for this project. `nil` means the engineer
+    /// hasn't picked anything yet — AI tagging refuses to run until at
+    /// least one investigation context is picked.
+    var tagSelection: ProjectTagSelection?
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -49,6 +57,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.folderName = Self.makeFolderName(id: id, name: name, createdAt: self.createdAt)
         self.aiInstructions = nil
         self.buckets = []
+        self.tagSelection = nil
     }
 
     /// Tolerate manifests written before `aiInstructions` existed.
@@ -69,6 +78,8 @@ struct Project: Identifiable, Codable, Hashable {
         self.folderName      = try c.decodeIfPresent(String.self, forKey: .folderName)
         self.aiInstructions  = try c.decodeIfPresent(String.self, forKey: .aiInstructions)
         self.buckets         = try c.decodeIfPresent([Bucket].self, forKey: .buckets) ?? []
+        self.tagSelection    = try c.decodeIfPresent(ProjectTagSelection.self,
+                                                       forKey: .tagSelection)
     }
 
     var isActive: Bool { startedAt != nil && !stopped }
