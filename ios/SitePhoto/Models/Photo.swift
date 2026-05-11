@@ -253,7 +253,7 @@ struct Tag: Codable, Hashable {
         guard !primary.isEmpty, !secondary.isEmpty else { return nil }
         // Only split when the left side matches a known primary tag from the
         // AI guide — otherwise we'd accidentally chop "Drainage / Grading".
-        guard AIInstructions.knownPrimaryTagsLowercased.contains(primary.lowercased()) else {
+        guard ControlledVocabulary.primariesLowercased.contains(primary.lowercased()) else {
             return nil
         }
         return (primary, secondary)

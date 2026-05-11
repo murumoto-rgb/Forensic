@@ -545,8 +545,8 @@ struct PhotoTagEditorSheet: View {
         return orderLC
             .compactMap { byLC[$0] }
             .sorted { lhs, rhs in
-                let lr = AIInstructions.primaryRank(lhs.primary)
-                let rr = AIInstructions.primaryRank(rhs.primary)
+                let lr = ControlledVocabulary.primaryRank(lhs.primary)
+                let rr = ControlledVocabulary.primaryRank(rhs.primary)
                 if lr != rr { return lr < rr }
                 return lhs.primary.lowercased() < rhs.primary.lowercased()
             }
@@ -755,8 +755,8 @@ struct PhotoTagEditorSheet: View {
         return orderLC
             .compactMap { byLC[$0] }
             .sorted { lhs, rhs in
-                let lr = AIInstructions.primaryRank(lhs.primary)
-                let rr = AIInstructions.primaryRank(rhs.primary)
+                let lr = ControlledVocabulary.primaryRank(lhs.primary)
+                let rr = ControlledVocabulary.primaryRank(rhs.primary)
                 if lr != rr { return lr < rr }
                 return lhs.primary.lowercased() < rhs.primary.lowercased()
             }

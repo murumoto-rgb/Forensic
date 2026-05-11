@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Tag-driven photo browser. Tags live in a primary→secondary hierarchy
-/// (see `AIInstructions`); the filter UI shows one collapsible section per
+/// (see `ControlledVocabulary`); the filter UI shows one collapsible section per
 /// primary, with the primary chip filtering "anything under this category"
 /// and each secondary chip filtering for that exact tag. Selection works
 /// at either level and across categories — AND requires every selected

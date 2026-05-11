@@ -7,7 +7,7 @@ import SwiftUI
 /// of. Per-project vocabulary (the controlled tag list) is appended
 /// separately at request time from each project's `tagSelection`.
 ///
-/// Style mirrors `AIInstructionsSheet.swift`: a full-screen monospaced
+/// Style mirrors the per-project notes editor: a full-screen monospaced
 /// `TextEditor`, dirty-state-aware Save button, and a Reset-to-default
 /// confirmation.
 struct AIRulesTemplateSheet: View {

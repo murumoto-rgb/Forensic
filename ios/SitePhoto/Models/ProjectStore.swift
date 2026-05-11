@@ -2247,11 +2247,11 @@ final class ProjectStore {
     }
 
     /// Hierarchical view of tags used in `project`: one `TagGroup` per
-    /// distinct primary (canonical primary tags from `AIInstructions` come
-    /// first in guide order, then any unknown primaries appear alphabetically
-    /// at the end). Used by the tag-filter view to render primary headers
-    /// with secondary chips beneath them. Tags below `minConfidence` are
-    /// excluded.
+    /// distinct primary (canonical primary tags from `ControlledVocabulary`
+    /// come first in seed order, then any unknown primaries appear
+    /// alphabetically at the end). Used by the tag-filter view to render
+    /// primary headers with secondary chips beneath them. Tags below
+    /// `minConfidence` are excluded.
     func tagsUsedHierarchically(in project: Project,
                                 minConfidence: Double = 0) -> [TagGroup] {
         rankTagsHierarchically(in: project.photos, minConfidence: minConfidence)
@@ -2292,8 +2292,9 @@ final class ProjectStore {
     /// == nil) AND for any primary that's referenced as the parent of a
     /// secondary tag (parentTag == "Masonry"). Secondaries are listed under
     /// their parent. Primary-tag display casing follows the canonical
-    /// `AIInstructions.primaryTags` capitalisation when the case-insensitive
-    /// match wins; otherwise it follows whatever casing photos used.
+    /// `ControlledVocabulary.primaries` capitalisation when the
+    /// case-insensitive match wins; otherwise it follows whatever casing
+    /// photos used.
     private func rankTagsHierarchically(in photos: [Photo],
                                          minConfidence: Double) -> [TagGroup] {
         // Aggregator keyed on lowercased primary name.
@@ -2313,8 +2314,9 @@ final class ProjectStore {
                 buckets[lc] = Bucket()
             }
             // Track all the casings we've seen for this primary so the
-            // canonical one can win when we render. AIInstructions casing
-            // gets a leg up so guide-style names beat photo-typed variants.
+            // canonical one can win when we render. ControlledVocabulary
+            // casing gets a leg up so seed-style names beat photo-typed
+            // variants.
             buckets[lc]!.displayCounts[primary, default: 0] += 1
             return lc
         }
@@ -2338,7 +2340,7 @@ final class ProjectStore {
         // name matches a known primary from the guide, use the guide's
         // capitalisation; otherwise pick the most-frequent observed casing.
         let canonicalByLC: [String: String] = Dictionary(
-            uniqueKeysWithValues: AIInstructions.primaryTags.map { ($0.lowercased(), $0) }
+            uniqueKeysWithValues: ControlledVocabulary.primaries.map { ($0.lowercased(), $0) }
         )
 
         let groups: [TagGroup] = buckets.map { (lc, b) in
@@ -2368,8 +2370,8 @@ final class ProjectStore {
         // at the end. Within a tied rank (Int.max for unknowns), tiebreak by
         // primary name so the order is stable.
         return groups.sorted { lhs, rhs in
-            let lr = AIInstructions.primaryRank(lhs.primary)
-            let rr = AIInstructions.primaryRank(rhs.primary)
+            let lr = ControlledVocabulary.primaryRank(lhs.primary)
+            let rr = ControlledVocabulary.primaryRank(rhs.primary)
             if lr != rr { return lr < rr }
             return lhs.primary.lowercased() < rhs.primary.lowercased()
         }
@@ -2759,8 +2761,8 @@ final class ProjectStore {
         // bottom alphabetically.
         let primaryRows = primaryCounts.map { (primary: $0.key, count: $0.value) }
             .sorted { lhs, rhs in
-                let lr = AIInstructions.primaryRank(lhs.primary)
-                let rr = AIInstructions.primaryRank(rhs.primary)
+                let lr = ControlledVocabulary.primaryRank(lhs.primary)
+                let rr = ControlledVocabulary.primaryRank(rhs.primary)
                 if lr != rr { return lr < rr }
                 return lhs.primary.lowercased() < rhs.primary.lowercased()
             }

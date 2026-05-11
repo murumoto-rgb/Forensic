@@ -1962,8 +1962,8 @@ private struct PhotoRow: View {
         return kept.sorted { lhs, rhs in
             let lParent = lhs.parentTag ?? lhs.label
             let rParent = rhs.parentTag ?? rhs.label
-            let lr = AIInstructions.primaryRank(lParent)
-            let rr = AIInstructions.primaryRank(rParent)
+            let lr = ControlledVocabulary.primaryRank(lParent)
+            let rr = ControlledVocabulary.primaryRank(rParent)
             if lr != rr { return lr < rr }
             if lParent.lowercased() != rParent.lowercased() {
                 return lParent.lowercased() < rParent.lowercased()

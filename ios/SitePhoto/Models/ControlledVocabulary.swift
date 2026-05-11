@@ -1,15 +1,21 @@
 import Foundation
 
-/// Single source of truth for the primary→secondary tag vocabulary that
-/// the AI Instructions prompt and the response validator both rely on.
-/// If a category or secondary needs to change, edit it here AND in
-/// `AIInstructions.defaultText` — the validator anchors to this file, so
-/// any drift between prompt and code shows up as `validationErrors`
-/// rather than a silent miscategorisation.
+/// Static seed for the primary→secondary tag vocabulary. After the
+/// tag-library rework, the runtime source of truth is
+/// `ProjectStore.tagLibrary` (seeded from `TagLibrary.defaultSeeds`) —
+/// this file is kept around so:
+///   * `ValidationVocabulary.fallback` has a sensible default for unit
+///     tests / unmigrated call paths,
+///   * tag-sorting helpers (`primaryRank`, `primaries`,
+///     `primariesLowercased`) can rank primaries in canonical order
+///     without needing a `ProjectStore` reference,
+///   * `Photo.swift`'s legacy "Primary / Secondary" flat-label
+///     splitting can decide whether the left half is actually a
+///     primary tag.
 enum ControlledVocabulary {
 
-    /// Primary → ordered secondaries, in the same order they appear in
-    /// the AI Instructions prompt. Order matters because the filter UI
+    /// Primary → ordered secondaries, in the canonical seed order.
+    /// Order matters because the filter UI
     /// and the batch-summary breakdown both render in this sequence.
     static let entries: [(primary: String, secondaries: [String])] = [
         ("Drainage / Grading", [
