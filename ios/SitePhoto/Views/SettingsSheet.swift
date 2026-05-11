@@ -5,11 +5,14 @@ import SwiftUI
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
     @State private var saved: Bool = false
     @State private var showingBranding: Bool = false
+    @State private var showingRulesTemplate: Bool = false
+    @State private var showingTagLibrary: Bool = false
 
     /// Picker-bound accent hex. Drives the global tint via the matching
     /// `@AppStorage` binding in `SitePhotoApp`, so a change here ripples
@@ -97,6 +100,33 @@ struct SettingsSheet: View {
                     Text("Tag Confidence Filter")
                 } footer: {
                     Text("Tags below this confidence are hidden from photo rows, the filter bar, the tag-filter screen, and the PDF — but they stay on the photo, so lowering the slider brings them back. Manually-typed tags are always 100%. AI-suggested tags carry whatever score Claude returned. Default 50%.")
+                }
+
+                Section {
+                    Button {
+                        showingRulesTemplate = true
+                    } label: {
+                        navigationRow(
+                            title: "AI Tagging Rules",
+                            subtitle: rulesTemplateSubtitle,
+                            systemImage: "doc.plaintext"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        showingTagLibrary = true
+                    } label: {
+                        navigationRow(
+                            title: "Tag Library",
+                            subtitle: tagLibrarySubtitle,
+                            systemImage: "books.vertical"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("AI Tagging")
+                } footer: {
+                    Text("The rules block (schema + tagging rules) is the same for every project. The tag library is the three-level catalog of investigation contexts → primary tags → secondary tags each project picks from to scope its AI prompt.")
                 }
 
                 Section {
@@ -194,8 +224,60 @@ struct SettingsSheet: View {
             .sheet(isPresented: $showingBranding) {
                 ReportBrandingSheet().environment(store)
             }
+            .sheet(isPresented: $showingRulesTemplate) {
+                AIRulesTemplateSheet()
+                    .environment(store)
+                    .environment(toastCenter)
+            }
+            .sheet(isPresented: $showingTagLibrary) {
+                TagLibraryManagerSheet()
+                    .environment(store)
+                    .environment(toastCenter)
+            }
             .onAppear { reload() }
         }
+    }
+
+    /// Shared row chrome for the new AI Tagging entries — keeps both
+    /// rows visually consistent with the existing "Report Branding"
+    /// chevron row above.
+    @ViewBuilder
+    private func navigationRow(title: String,
+                                 subtitle: String,
+                                 systemImage: String) -> some View {
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: systemImage)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var rulesTemplateSubtitle: String {
+        let trimmed = store.aiRulesTemplate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultTrimmed = AIRulesTemplate.defaultText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == defaultTrimmed
+            ? "Using bundled default"
+            : "Customised"
+    }
+
+    private var tagLibrarySubtitle: String {
+        let ctxCount = store.tagLibrary.contexts.count
+        let primaryCount = store.tagLibrary.contexts
+            .reduce(0) { $0 + $1.primaries.count }
+        return "\(ctxCount) context\(ctxCount == 1 ? "" : "s"), \(primaryCount) primary tag\(primaryCount == 1 ? "" : "s")"
     }
 
     private func reload() {
@@ -326,4 +408,5 @@ struct SettingsSheet: View {
 #Preview {
     SettingsSheet()
         .environment(ProjectStore())
+        .environment(ToastCenter())
 }
