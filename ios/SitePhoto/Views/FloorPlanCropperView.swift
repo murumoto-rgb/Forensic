@@ -30,17 +30,20 @@ struct FloorPlanCropperView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                if let img = sourceImage, let rect = cropRect {
-                    GeometryReader { geo in
-                        cropCanvas(geo: geo, image: img, rect: rect)
+            VStack(spacing: 0) {
+                ZStack {
+                    Color.black
+                    if let img = sourceImage, let rect = cropRect {
+                        GeometryReader { geo in
+                            cropCanvas(geo: geo, image: img, rect: rect)
+                        }
+                    } else {
+                        ProgressView()
+                            .controlSize(.large)
+                            .tint(.white)
                     }
-                } else {
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
                 }
+                footerBar
             }
             .navigationTitle("Crop Floor Plan")
             .navigationBarTitleDisplayMode(.inline)
@@ -50,38 +53,48 @@ struct FloorPlanCropperView: View {
                         onCancel()
                         dismiss()
                     }
-                    .tint(.white)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
+                    Button("Use Full Image") {
                         useFullImage()
-                    } label: {
-                        Text("Use Full Image")
-                    }
-                    .tint(.white)
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    HStack {
-                        Button("Reset") {
-                            if let img = sourceImage {
-                                cropRect = CGRect(origin: .zero, size: img.size)
-                            }
-                        }
-                        .tint(.white)
-                        .disabled(isAtFullImage)
-                        Spacer()
-                        Button {
-                            applyCrop()
-                        } label: {
-                            Label("Apply Crop", systemImage: "crop")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isAtFullImage)
                     }
                 }
             }
             .task { await loadImage() }
         }
+    }
+
+    /// Footer with explicit labelled buttons. Lives outside the
+    /// `.toolbar` modifier because iOS's `.bottomBar` placement
+    /// collapses Button + Label combos to icon-only on iPhone when
+    /// space is tight — which made the "Apply Crop" button render as
+    /// just a small `crop` symbol with no text, leaving engineers
+    /// guessing what it did.
+    @ViewBuilder
+    private var footerBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                resetCropRect()
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+                    .font(.callout)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(isAtInitialRect)
+            Spacer()
+            Button {
+                applyCrop()
+            } label: {
+                Label("Apply Crop", systemImage: "crop")
+                    .font(.callout.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Canvas
@@ -196,13 +209,39 @@ struct FloorPlanCropperView: View {
         guard let img = UIImage(data: imageData) else { return }
         await MainActor.run {
             sourceImage = img
-            cropRect = CGRect(origin: .zero, size: img.size)
+            cropRect = Self.initialCropRect(for: img)
         }
     }
 
-    private var isAtFullImage: Bool {
+    /// Inset the starting crop rect away from the image edges so the
+    /// corner handles aren't pinned to the screen border — engineers
+    /// reported the edge-pinned corners were hard to drag. ~8% of the
+    /// shorter dimension or 60 image-pixels, whichever is smaller, so
+    /// small and giant images both get a sensible margin.
+    private static func initialCropRect(for image: UIImage) -> CGRect {
+        let w = image.size.width
+        let h = image.size.height
+        let shorter = min(w, h)
+        let inset = min(shorter * 0.08, 60)
+        return CGRect(
+            x: inset,
+            y: inset,
+            width:  max(20, w - 2 * inset),
+            height: max(20, h - 2 * inset)
+        )
+    }
+
+    private func resetCropRect() {
+        guard let img = sourceImage else { return }
+        cropRect = Self.initialCropRect(for: img)
+    }
+
+    /// True when the rect hasn't been moved from its initial inset
+    /// position. Drives the Reset button's disabled state — Reset
+    /// only makes sense if the engineer has actually moved a handle.
+    private var isAtInitialRect: Bool {
         guard let img = sourceImage, let rect = cropRect else { return true }
-        return rect == CGRect(origin: .zero, size: img.size)
+        return rect == Self.initialCropRect(for: img)
     }
 
     private func useFullImage() {

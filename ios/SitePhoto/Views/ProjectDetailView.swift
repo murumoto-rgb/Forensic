@@ -1112,51 +1112,51 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func selectionActionRow(visiblePhotos: [Photo]) -> some View {
-        // FlowLayout wraps to the next row when the four bordered
-        // buttons don't fit horizontally — so a wide iPhone shows them
-        // all in one row, while a narrow one wraps to 2–4 rows. Each
-        // button is wrapped in `.fixedSize()` so it advertises its
-        // natural intrinsic width (icon + text + bordered padding) to
-        // FlowLayout; without that the `.unspecified` size proposal
-        // FlowLayout uses causes the `.bordered` style to collapse the
-        // text and render icon-only ovals.
-        FlowLayout(spacing: 8) {
-            Button {
-                showingBucketPicker = true
-            } label: {
-                Label("Move to Bucket", systemImage: "folder")
+        // Horizontal ScrollView avoids the surprises that surface when
+        // a Layout container (FlowLayout) ends up inside a List row:
+        // List rows stretch their content vertically by default, and
+        // the bordered button style measures itself against that
+        // proposal — which produced huge tall icon-only ovals. With
+        // a plain HStack and `.fixedSize(vertical: true)`, each button
+        // sizes to its natural width + height and the user can scroll
+        // horizontally on narrow devices when all four don't fit.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Button {
+                    showingBucketPicker = true
+                } label: {
+                    Label("Move to Bucket", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+                .disabled(selectedPhotoIDs.isEmpty)
+                Button {
+                    showingBulkTagPicker = true
+                } label: {
+                    Label("Apply Tag", systemImage: "tag")
+                }
+                .buttonStyle(.bordered)
+                .tint(.purple)
+                .disabled(selectedPhotoIDs.isEmpty)
+                Button {
+                    presentSelectedAITagPrompt()
+                } label: {
+                    Label("Tag with AI", systemImage: "wand.and.sparkles")
+                }
+                .buttonStyle(.bordered)
+                .tint(.blue)
+                .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
+                Button(role: .destructive) {
+                    confirmingBatchDelete = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedPhotoIDs.isEmpty)
             }
-            .buttonStyle(.bordered)
-            .tint(.accentColor)
-            .disabled(selectedPhotoIDs.isEmpty)
-            .fixedSize()
-            Button {
-                showingBulkTagPicker = true
-            } label: {
-                Label("Apply Tag", systemImage: "tag")
-            }
-            .buttonStyle(.bordered)
-            .tint(.purple)
-            .disabled(selectedPhotoIDs.isEmpty)
-            .fixedSize()
-            Button {
-                presentSelectedAITagPrompt()
-            } label: {
-                Label("Tag with AI", systemImage: "wand.and.sparkles")
-            }
-            .buttonStyle(.bordered)
-            .tint(.blue)
-            .disabled(selectedPhotoIDs.isEmpty || batchTagTask != nil)
-            .fixedSize()
-            Button(role: .destructive) {
-                confirmingBatchDelete = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(selectedPhotoIDs.isEmpty)
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 2)
         }
     }
 
