@@ -333,9 +333,12 @@ struct PhotoGroupPickerSheet: View {
         let originX = (geo.size.width - dispW) / 2
         let originY = (geo.size.height - dispH) / 2
 
-        // Match PlanViewerView's sizing exactly.
-        let primaryRview = 18 * bubbleScale
-        let secRview = 13 * bubbleScale
+        // Match PlanViewerView's sizing exactly — including the
+        // per-project digit scale so picker bubbles and viewer
+        // bubbles render at the same size.
+        let digitScale = bubbleDigitScale()
+        let primaryRview = 18 * bubbleScale * digitScale
+        let secRview = 13 * bubbleScale * digitScale
         let firstGapView = primaryRview + secRview - 2 * bubbleScale
         let stepGapView = secRview * 2 - 2 * bubbleScale
 
@@ -483,11 +486,11 @@ struct PhotoGroupPickerSheet: View {
         ZStack {
             Circle().fill(Color.green).frame(width: radius * 2, height: radius * 2)
             Text("\(seq)")
-                .font(.system(size: radius * 1.1, weight: .bold, design: .rounded))
+                .font(.system(size: radius * 1.1, weight: .bold))
                 .foregroundStyle(.white)
-                .minimumScaleFactor(0.4)
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
-                .frame(width: radius * 1.6, height: radius * 1.6)
+                .frame(width: radius * 1.75, height: radius * 1.75)
         }
     }
 
@@ -500,6 +503,19 @@ struct PhotoGroupPickerSheet: View {
         let y: Double
         let isPrimary: Bool
         let bearing: Double?
+    }
+
+    /// Match `PlanViewerView.bubbleDigitScale`: when the project's
+    /// highest sequence number has 3+ digits, all bubbles get a
+    /// uniform size bump so the text stays crisp.
+    private func bubbleDigitScale() -> Double {
+        guard let project = store.project(withID: projectID) else { return 1.0 }
+        let maxSeq = project.photos.map(\.sequenceNumber).max() ?? 0
+        switch String(maxSeq).count {
+        case 0, 1, 2: return 1.0
+        case 3:       return 1.18
+        default:      return 1.30
+        }
     }
 
     private func buildMarkers(firstGapPlan: Double, stepGapPlan: Double) -> [Marker] {

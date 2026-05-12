@@ -522,8 +522,21 @@ struct PDFExportService {
                                 referenceScreenH / imgSize.height)
         let sizeMultiplier = scale / max(referenceFit, 0.0001)
 
-        let primaryR = 18 * bs * sizeMultiplier
-        let secR     = 13 * bs * sizeMultiplier
+        // Per-project digit scale — bubbles grow uniformly when the
+        // largest photo number in the project is 3+ digits so the
+        // sequence-number text inside stays crisp. Matches the
+        // SwiftUI renderers in PlanViewerView / PhotoGroupPickerSheet
+        // / LocateSheet.
+        let maxSeq = project.photos.map(\.sequenceNumber).max() ?? 0
+        let digitScale: CGFloat = {
+            switch String(maxSeq).count {
+            case 0, 1, 2: return 1.0
+            case 3:       return 1.18
+            default:      return 1.30
+            }
+        }()
+        let primaryR = 18 * bs * sizeMultiplier * digitScale
+        let secR     = 13 * bs * sizeMultiplier * digitScale
         // Gaps are computed in PDF points first (same as screen), then converted
         // to plan-pixel space so the buildMarkers offsets work in plan coords.
         let firstGapView = primaryR + secR - 2 * bs * sizeMultiplier
@@ -676,17 +689,20 @@ struct PDFExportService {
 
         let numStr = String(seq) as NSString
         var fontSize = radius * 1.1
+        // SF Pro Text (non-rounded, bold) holds shape at small sizes
+        // better than the rounded design — matches the SwiftUI bubble
+        // renderers in PlanViewerView et al.
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: roundedBoldFont(size: fontSize),
+            .font: UIFont.systemFont(ofSize: fontSize, weight: .bold),
             .foregroundColor: UIColor.white
         ]
-        let maxW = radius * 1.6
+        let maxW = radius * 1.75
         var measured = numStr.size(withAttributes: attrs)
         if measured.width > maxW {
-            // Match SwiftUI's minimumScaleFactor(0.4).
-            let factor = max(0.4, maxW / measured.width)
+            // Match SwiftUI's minimumScaleFactor(0.6).
+            let factor = max(0.6, maxW / measured.width)
             fontSize *= factor
-            attrs[.font] = roundedBoldFont(size: fontSize)
+            attrs[.font] = UIFont.systemFont(ofSize: fontSize, weight: .bold)
             measured = numStr.size(withAttributes: attrs)
         }
         numStr.draw(at: CGPoint(x: cx - measured.width / 2, y: cy - measured.height / 2),

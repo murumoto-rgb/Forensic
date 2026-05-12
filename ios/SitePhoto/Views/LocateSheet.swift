@@ -585,14 +585,15 @@ struct PlanLocateCanvas: View {
                 // BELOW the new pin so the active pin always wins
                 // visually. Tail bubbles get the smaller radius; only
                 // masters/independents carry an arrow.
+                let digitScale = bubbleDigitScale(existingBubbles)
                 ForEach(existingBubbles) { bubble in
                     let center = CGPoint(
                         x: effOX + bubble.position.x * effScale,
                         y: effOY + bubble.position.y * effScale
                     )
-                    let baseRadius: CGFloat = bubble.isTappable
+                    let baseRadius: CGFloat = (bubble.isTappable
                         ? 18 * bubbleScale
-                        : 13 * bubbleScale
+                        : 13 * bubbleScale) * digitScale
                     if let h = bubble.bearing, bubble.isTappable {
                         existingBubbleArrow(at: center,
                                              headingDegrees: h,
@@ -751,6 +752,22 @@ struct PlanLocateCanvas: View {
     /// Closest tappable bubble whose center is within `radius`
     /// image-pixels of `point`. Returns nil when nothing's in range —
     /// the caller then falls through to the place-pin path.
+    /// Match `PlanViewerView.bubbleDigitScale` — uniformly larger
+    /// bubbles when the project's highest sequence number has 3+
+    /// digits so the white text inside stays crisp at small zooms.
+    /// Uses the max sequence number across the bubbles we're about to
+    /// render rather than the project at large; functionally
+    /// equivalent because `existingBubbles` already covers every
+    /// placed photo on the active plan.
+    private func bubbleDigitScale(_ bubbles: [LocateBubble]) -> CGFloat {
+        let maxSeq = bubbles.map(\.sequenceNumber).max() ?? 0
+        switch String(maxSeq).count {
+        case 0, 1, 2: return 1.0
+        case 3:       return 1.18
+        default:      return 1.30
+        }
+    }
+
     private func nearestTappableBubble(to point: CGPoint,
                                          within radius: CGFloat) -> LocateBubble? {
         var best: (bubble: LocateBubble, dist: CGFloat)?
@@ -783,13 +800,11 @@ struct PlanLocateCanvas: View {
                          lineWidth: tappable ? 2 : 1)
                 .frame(width: radius * 2, height: radius * 2)
             Text("\(seq)")
-                .font(.system(size: radius * 1.05,
-                              weight: .bold,
-                              design: .rounded))
+                .font(.system(size: radius * 1.05, weight: .bold))
                 .foregroundStyle(.white)
-                .minimumScaleFactor(0.4)
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
-                .frame(width: radius * 1.6, height: radius * 1.6)
+                .frame(width: radius * 1.75, height: radius * 1.75)
         }
         .position(point)
     }

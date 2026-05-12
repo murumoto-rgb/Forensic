@@ -198,8 +198,12 @@ struct PlanViewerView: View {
         let originX = (geo.size.width - dispW) / 2
         let originY = (geo.size.height - dispH) / 2
 
-        let primaryRview = 18 * bubbleScale
-        let secRview = 13 * bubbleScale
+        // Per-project bubble size — uniformly larger when sequence
+        // numbers grow to 3+ digits so text doesn't have to shrink as
+        // hard. All bubbles within a single render use the same scale.
+        let digitScale = bubbleDigitScale(for: project)
+        let primaryRview = 18 * bubbleScale * digitScale
+        let secRview = 13 * bubbleScale * digitScale
         let firstGapView = primaryRview + secRview - 2 * bubbleScale
         let stepGapView = secRview * 2 - 2 * bubbleScale
 
@@ -372,11 +376,14 @@ struct PlanViewerView: View {
                 .fill(fillColor(for: marker))
                 .frame(width: radius * 2, height: radius * 2)
             Text("\(marker.photo.sequenceNumber)")
-                .font(.system(size: radius * 1.1, weight: .bold, design: .rounded))
+                // SF Pro Text (non-rounded) holds its shape down to
+                // smaller pixel sizes than the rounded design, which
+                // smears at scale-factors needed for 3+ digit numbers.
+                .font(.system(size: radius * 1.1, weight: .bold))
                 .foregroundStyle(.white)
-                .minimumScaleFactor(0.4)
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
-                .frame(width: radius * 1.6, height: radius * 1.6)
+                .frame(width: radius * 1.75, height: radius * 1.75)
         }
     }
 
@@ -545,6 +552,19 @@ struct PlanViewerView: View {
     }
 
     // MARK: - Marker layout
+
+    /// Project-wide multiplier on bubble radius so 3+ digit photo
+    /// numbers stay readable without per-bubble size variation. Looks
+    /// at the highest sequence number in the project and scales every
+    /// bubble (lead + tail) by the same amount.
+    private func bubbleDigitScale(for project: Project) -> Double {
+        let maxSeq = project.photos.map(\.sequenceNumber).max() ?? 0
+        switch String(maxSeq).count {
+        case 0, 1, 2: return 1.0
+        case 3:       return 1.18
+        default:      return 1.30
+        }
+    }
 
     private func buildMarkers(project: Project,
                               firstGapPlan: Double,

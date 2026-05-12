@@ -33,6 +33,15 @@ struct ProjectDetailView: View {
     /// bucket assigned. Useful when triaging fresh imports that
     /// haven't been categorised yet.
     @State private var notInBucketOnly: Bool = false
+    /// One-line filter row pill: limit visible photos to those with /
+    /// without a plan position. Orthogonal to the level filter
+    /// (which scopes by which plan, not whether placed).
+    @State private var locationFilter: LocationFilter = .all
+    private enum LocationFilter: Hashable {
+        case all
+        case located
+        case notLocated
+    }
     private enum PlanFilter: Hashable {
         case all
         case unassigned
@@ -1102,6 +1111,7 @@ struct ProjectDetailView: View {
                     || favoritesOnly
                     || planFilter != .all
                     || notInBucketOnly
+                    || locationFilter != .all
                     || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
@@ -1246,9 +1256,11 @@ struct ProjectDetailView: View {
         let searchActive = !trimmedSearch.isEmpty
         let dateBounds = dateFilter.bounds()
         let planFilterActive = planFilter != .all
+        let locationFilterActive = locationFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
             && !showOnlyNeedsReview && !favoritesOnly && !searchActive
-            && dateBounds == nil && !planFilterActive && !notInBucketOnly {
+            && dateBounds == nil && !planFilterActive && !notInBucketOnly
+            && !locationFilterActive {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
@@ -1290,11 +1302,49 @@ struct ProjectDetailView: View {
             case .plan(let id):
                 if photo.floorPlanID != id { return false }
             }
+            switch locationFilter {
+            case .all:
+                break
+            case .located:
+                if photo.positionSource == .none { return false }
+            case .notLocated:
+                if photo.positionSource != .none { return false }
+            }
             if searchActive && !photoMatchesSearch(photo, lcSearch: lcSearch) {
                 return false
             }
             return true
         }
+    }
+
+    /// Location filter pill — `All locations` / `Located` / `Not
+    /// located`. Distinct from the level filter (which scopes "which
+    /// plan"); this one scopes "has it been placed at all."
+    @ViewBuilder
+    private func locationFilterMenu() -> some View {
+        let label: String = {
+            switch locationFilter {
+            case .all:          return "All locations"
+            case .located:      return "Located"
+            case .notLocated:   return "Not located"
+            }
+        }()
+        Menu {
+            Picker("Location", selection: Binding(
+                get: { locationFilter },
+                set: { locationFilter = $0 }
+            )) {
+                Text("All locations").tag(LocationFilter.all)
+                Text("Located").tag(LocationFilter.located)
+                Text("Not located").tag(LocationFilter.notLocated)
+            }
+        } label: {
+            Label(label, systemImage: "location")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(locationFilter == .all ? .secondary : .accentColor)
     }
 
     /// Level filter pill — "level" being the engineer's term for a
@@ -1441,7 +1491,8 @@ struct ProjectDetailView: View {
                     || showOnlyNeedsReview
                     || favoritesOnly
                     || planFilter != .all
-                    || notInBucketOnly {
+                    || notInBucketOnly
+                    || locationFilter != .all {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
@@ -1450,6 +1501,7 @@ struct ProjectDetailView: View {
                         favoritesOnly = false
                         planFilter = .all
                         notInBucketOnly = false
+                        locationFilter = .all
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
                             .font(.caption)
@@ -1461,6 +1513,7 @@ struct ProjectDetailView: View {
                    !project.floorPlans.isEmpty {
                     planFilterMenu(project: project)
                 }
+                locationFilterMenu()
                 Button {
                     notInBucketOnly.toggle()
                 } label: {
@@ -2324,6 +2377,17 @@ private struct PhotoRow: View {
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
 
+    /// Compact timestamp formatter cached once per view type — used on
+    /// every row, so allocating a new `DateFormatter` per render would
+    /// noticeably affect scroll performance on big project lists. The
+    /// `h:mm a` token respects the user's locale's AM/PM marker; 24-hour
+    /// locales render `13:12`-style automatically.
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM/dd/yy '@' h:mm a"
+        return f
+    }()
+
     /// Tags above the visibility threshold, sorted to read top-to-bottom
     /// the same way they appear in the AI guide: primaries in canonical
     /// order, secondaries grouped under their primary. The chip itself
@@ -2381,7 +2445,7 @@ private struct PhotoRow: View {
                         badge(text: "AI \(livePending.count)", color: .purple)
                     }
                 }
-                Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
+                Text(Self.timestampFormatter.string(from: photo.timestamp))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
