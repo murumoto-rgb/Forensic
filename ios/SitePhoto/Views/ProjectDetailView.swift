@@ -2354,10 +2354,10 @@ private struct PhotoRow: View {
                 onTag?()
             } label: {
                 thumbnail
-                    .frame(width: 96, height: 72)
+                    .frame(width: 144, height: 108)
                     .clipped()
                     .background(Color.secondary.opacity(0.2))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
 
@@ -2383,9 +2383,6 @@ private struct PhotoRow: View {
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(metaLine)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
                 if !visibleTags.isEmpty {
                     tagsRow
                 }
@@ -2515,14 +2512,6 @@ private struct PhotoRow: View {
         }
     }
 
-    private var metaLine: String {
-        var parts: [String] = []
-        if let lens = photo.lensName { parts.append(lens.uppercased()) }
-        parts.append(zoomLabel(photo.cameraZoom))
-        parts.append("flash \(photo.flashMode.rawValue)")
-        return parts.joined(separator: " · ")
-    }
-
     @ViewBuilder
     private func badge(text: String, color: Color) -> some View {
         Text(text)
@@ -2559,10 +2548,6 @@ private struct PhotoRow: View {
         .foregroundStyle(bucket.color)
     }
 
-    private func zoomLabel(_ z: Double) -> String {
-        if z == floor(z) { return "\(Int(z))x" }
-        return String(format: "%.1fx", z)
-    }
 }
 
 #Preview {
