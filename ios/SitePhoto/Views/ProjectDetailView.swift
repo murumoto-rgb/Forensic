@@ -2363,28 +2363,31 @@ private struct PhotoRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text("#\(photo.sequenceNumber)")
+                    Text("\(photo.sequenceNumber)")
                         .font(.headline.monospaced())
-                    if photo.positionSource == .none {
-                        badge(text: "NO LOC", color: .orange)
-                    } else if photo.groupID != nil {
-                        badge(text: photo.isPrimary ? "GROUP★" : "GROUP", color: .blue)
-                    } else {
-                        badge(text: "LOCATED", color: .green)
+                        .layoutPriority(1)
+                    if photo.groupID != nil {
+                        // Stacked-folders glyph mirrors the group-picker
+                        // toolbar; filled variant marks the lead so it
+                        // still reads at a glance.
+                        Image(systemName: photo.isPrimary
+                              ? "rectangle.stack.fill"
+                              : "rectangle.stack")
+                            .font(.caption.bold())
+                            .foregroundStyle(.blue)
                     }
                     let livePending = photo.pendingSuggestions.filter { $0.source == .claude }
                     if !livePending.isEmpty {
                         badge(text: "AI \(livePending.count)", color: .purple)
                     }
-                    if let bucket = bucketFor(photo) {
-                        bucketBadge(bucket)
-                    }
                 }
                 Text(photo.timestamp.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !visibleTags.isEmpty {
-                    tagsRow
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                if let bucket = bucketFor(photo) {
+                    bucketBadge(bucket)
                 }
             }
             Spacer()
@@ -2418,13 +2421,15 @@ private struct PhotoRow: View {
                     Button {
                         onLocate()
                     } label: {
-                        Image(systemName: isUnlocated
-                              ? "location"
-                              : "arrow.up.and.down.and.arrow.left.and.right")
+                        Image(systemName: "location")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .tint(.blue)
+                    // Grey when the photo has no plan position yet; blue
+                    // once it's been placed. Same tap target either way —
+                    // RelocateSheet handles both "set initial" and
+                    // "change existing" via its pre-fill logic.
+                    .tint(isUnlocated ? .secondary : .blue)
                     .accessibilityLabel(isUnlocated ? "Add Location" : "Change Location")
                 }
                 if onReshoot != nil || onCompare != nil {
@@ -2469,32 +2474,6 @@ private struct PhotoRow: View {
     private var hasReshootLineage: Bool {
         if photo.reshootsPhotoID != nil { return true }
         return project.photos.contains(where: { $0.reshootsPhotoID == photo.id })
-    }
-
-    @ViewBuilder
-    private var tagsRow: some View {
-        // ScrollView keeps long tag lists from forcing the row to grow tall
-        // or breaking the cell layout. Two-line wrap would be nicer but adds
-        // a layout pass per row — the horizontal scroll is fine for now.
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(visibleTags, id: \.label) { tag in
-                    HStack(spacing: 3) {
-                        Text(tag.label)
-                        if tag.confidence < 1.0 {
-                            Text("\(Int(round(tag.confidence * 100)))")
-                                .foregroundStyle(.purple.opacity(0.6))
-                        }
-                    }
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.purple.opacity(0.15), in: Capsule())
-                    .foregroundStyle(.purple)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
