@@ -20,11 +20,19 @@ struct ProjectDetailView: View {
     @State private var planPendingRemoval: FloorPlan?
     @State private var renamingPlan: FloorPlan?
     @State private var renamePlanDraft: String = ""
-    /// Photo IDs that just landed via Photos-library or Files import.
-    /// Set drives the `FloorPlanAssignmentSheet` presentation; cleared
-    /// after the sheet dismisses.
+    /// Photo IDs that just landed via Photos-library or Files import,
+    /// OR were picked in multi-select before the engineer tapped "Move
+    /// to Level". Drives the `FloorPlanAssignmentSheet` presentation;
+    /// cleared after the sheet dismisses. `assignmentFromSelection`
+    /// distinguishes the two paths so the multi-select case can also
+    /// exit selection mode on completion.
     @State private var pendingPlanAssignment: Set<UUID> = []
+    @State private var assignmentFromSelection: Bool = false
     @State private var planFilter: PlanFilter = .all
+    /// One-line filter row toggle: when on, show only photos with no
+    /// bucket assigned. Useful when triaging fresh imports that
+    /// haven't been categorised yet.
+    @State private var notInBucketOnly: Bool = false
     private enum PlanFilter: Hashable {
         case all
         case unassigned
@@ -379,7 +387,13 @@ struct ProjectDetailView: View {
                         }
                     },
                     onDeletePhoto: { photo in deletePhoto(photo) },
-                    onDeleteSelectedPhotos: { deleteSelectedPhotos() }
+                    onDeleteSelectedPhotos: { deleteSelectedPhotos() },
+                    onAssignmentCompleted: {
+                        if assignmentFromSelection {
+                            assignmentFromSelection = false
+                            exitSelectionMode()
+                        }
+                    }
                 ))
                 .modifier(BatchTagModifiers(
                     confirm: $batchTagConfirm,
@@ -1087,6 +1101,7 @@ struct ProjectDetailView: View {
                     || showOnlyNeedsReview
                     || favoritesOnly
                     || planFilter != .all
+                    || notInBucketOnly
                     || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
@@ -1130,6 +1145,16 @@ struct ProjectDetailView: View {
                 .buttonStyle(.bordered)
                 .tint(.accentColor)
                 .disabled(selectedPhotoIDs.isEmpty)
+                if hasFloorPlans {
+                    Button {
+                        presentSelectedLevelAssignment()
+                    } label: {
+                        Label("Move to Level", systemImage: "map")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.teal)
+                    .disabled(selectedPhotoIDs.isEmpty)
+                }
                 Button {
                     showingBulkTagPicker = true
                 } label: {
@@ -1223,15 +1248,13 @@ struct ProjectDetailView: View {
         let planFilterActive = planFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
             && !showOnlyNeedsReview && !favoritesOnly && !searchActive
-            && dateBounds == nil && !planFilterActive {
+            && dateBounds == nil && !planFilterActive && !notInBucketOnly {
             return project.photos
         }
         let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
         let lcSearch = trimmedSearch.lowercased()
         return project.photos.filter { photo in
             if let bounds = dateBounds {
-                // Use a half-open interval [start, end) so "Today"
-                // doesn't pick up tomorrow's earliest photo by mistake.
                 if photo.timestamp < bounds.start || photo.timestamp >= bounds.end {
                     return false
                 }
@@ -1249,6 +1272,9 @@ struct ProjectDetailView: View {
             if bucketFilterActive {
                 guard let bid = photo.bucketID,
                       activeBucketFilter.contains(bid) else { return false }
+            }
+            if notInBucketOnly && photo.bucketID != nil {
+                return false
             }
             if showOnlyNeedsReview {
                 if !needsReview(photo) { return false }
@@ -1271,24 +1297,26 @@ struct ProjectDetailView: View {
         }
     }
 
-    /// Floor-plan filter pill — same shape as the date / favorites
-    /// chips. Options: All plans · each plan by label · Unassigned.
+    /// Level filter pill — "level" being the engineer's term for a
+    /// floor plan in their workflow. Same shape as the date /
+    /// favorites chips. Options: All levels · No level · each plan by
+    /// label.
     @ViewBuilder
     private func planFilterMenu(project: Project) -> some View {
         let label: String = {
             switch planFilter {
-            case .all:           return "All plans"
-            case .unassigned:    return "Unassigned"
-            case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Plan"
+            case .all:           return "All levels"
+            case .unassigned:    return "No level"
+            case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Level"
             }
         }()
         Menu {
-            Picker("Floor plan", selection: Binding(
+            Picker("Level", selection: Binding(
                 get: { planFilter },
                 set: { planFilter = $0 }
             )) {
-                Text("All plans").tag(PlanFilter.all)
-                Text("Unassigned").tag(PlanFilter.unassigned)
+                Text("All levels").tag(PlanFilter.all)
+                Text("No level").tag(PlanFilter.unassigned)
                 Divider()
                 ForEach(project.floorPlans) { plan in
                     Text(plan.label).tag(PlanFilter.plan(plan.id))
@@ -1412,7 +1440,8 @@ struct ProjectDetailView: View {
                     || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview
                     || favoritesOnly
-                    || planFilter != .all {
+                    || planFilter != .all
+                    || notInBucketOnly {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
@@ -1420,6 +1449,7 @@ struct ProjectDetailView: View {
                         showOnlyNeedsReview = false
                         favoritesOnly = false
                         planFilter = .all
+                        notInBucketOnly = false
                     } label: {
                         Label("Clear", systemImage: "xmark.circle.fill")
                             .font(.caption)
@@ -1431,6 +1461,15 @@ struct ProjectDetailView: View {
                    !project.floorPlans.isEmpty {
                     planFilterMenu(project: project)
                 }
+                Button {
+                    notInBucketOnly.toggle()
+                } label: {
+                    Label("Not in bucket", systemImage: "folder.badge.minus")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(notInBucketOnly ? .accentColor : .secondary)
                 if favoritesCount > 0 {
                     Button {
                         favoritesOnly.toggle()
@@ -1774,6 +1813,24 @@ struct ProjectDetailView: View {
     /// picked these photos — even if some already carry tags, the
     /// confirmation dialog surfaces an Add/Overwrite choice so the user
     /// stays in control of the merge.
+    /// True when the project has at least one floor plan — gates the
+    /// "Move to Level" multi-select button so single-plan-less
+    /// projects don't show a no-op picker.
+    private var hasFloorPlans: Bool {
+        guard let project = store.project(withID: projectID) else { return false }
+        return !project.floorPlans.isEmpty
+    }
+
+    /// Open the level-assignment sheet against the currently-selected
+    /// photos. Reuses the same `FloorPlanAssignmentSheet` the
+    /// import-time flow already uses; flag `assignmentFromSelection`
+    /// so completion also exits select mode.
+    private func presentSelectedLevelAssignment() {
+        guard !selectedPhotoIDs.isEmpty else { return }
+        assignmentFromSelection = true
+        pendingPlanAssignment = selectedPhotoIDs
+    }
+
     private func presentSelectedAITagPrompt() {
         guard !selectedPhotoIDs.isEmpty else { return }
         guard let project else { return }
@@ -1992,6 +2049,11 @@ fileprivate struct PlanAndDeletionModifiers: ViewModifier {
     let onRenamePlanCommit: () -> Void
     let onDeletePhoto: (Photo) -> Void
     let onDeleteSelectedPhotos: () -> Void
+    /// Fires after the assignment sheet dismisses successfully. The
+    /// caller uses this to exit multi-select mode when the assignment
+    /// came from the "Move to Level" path; the import-time path has
+    /// nothing to do here.
+    let onAssignmentCompleted: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -2057,7 +2119,10 @@ fileprivate struct PlanAndDeletionModifiers: ViewModifier {
                 FloorPlanAssignmentSheet(
                     projectID: projectID,
                     photoIDs: pendingPlanAssignment,
-                    onCompleted: { pendingPlanAssignment = [] }
+                    onCompleted: {
+                        pendingPlanAssignment = []
+                        onAssignmentCompleted()
+                    }
                 )
             }
     }
