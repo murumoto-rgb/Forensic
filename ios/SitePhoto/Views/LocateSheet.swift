@@ -375,11 +375,20 @@ struct LocateSheet: View {
     /// the lead's group so they render as stack tails.
     private func saveAttachedToGroup(leadID: UUID) {
         guard var current = store.project(withID: projectID),
-              let plan = current.floorPlan,
               let leadIdx = current.photos.firstIndex(where: { $0.id == leadID }),
               let lpx = current.photos[leadIdx].planPixelX,
               let lpy = current.photos[leadIdx].planPixelY,
               !pendingPhotos.isEmpty else {
+            dismiss()
+            return
+        }
+        // Use the LEAD's plan, not the project's active plan — when
+        // grouping with a photo on a different floor than the one
+        // currently selected here, the new captures need to land on
+        // the lead's plan with the lead's calibration.
+        let leadPlanID = current.photos[leadIdx].floorPlanID
+        guard let plan = leadPlanID.flatMap({ current.floorPlan(id: $0) })
+                ?? current.floorPlan else {
             dismiss()
             return
         }

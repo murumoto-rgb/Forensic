@@ -26,6 +26,13 @@ struct PhotoGroupPickerSheet: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var pendingTargetID: UUID?
+    /// Which floor plan is being shown in plan mode. Defaults to the
+    /// `fromPhoto`'s plan when the photo being grouped is already
+    /// placed; otherwise falls back to the project's `activeFloorPlanID`.
+    /// The picker shows bubbles for ONLY this plan; the user switches
+    /// via the toolbar Menu when there's more than one plan.
+    @State private var activePlanID: UUID?
+    @State private var didInitialiseActivePlan: Bool = false
 
     private enum Mode { case list, plan }
     private enum PlanLoadState { case loading, loaded, missing }
@@ -56,6 +63,13 @@ struct PhotoGroupPickerSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
+                if mode == .plan,
+                   let project = store.project(withID: projectID),
+                   project.floorPlans.count > 1 {
+                    ToolbarItem(placement: .principal) {
+                        planPickerMenu(project: project)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         toggleMode()
@@ -70,10 +84,9 @@ struct PhotoGroupPickerSheet: View {
                     .disabled(mode == .list && !planAvailable)
                 }
             }
-            .task(id: mode) {
-                if mode == .plan && planLoadState != .loaded {
-                    await loadPlan()
-                }
+            .onAppear { initialiseActivePlanIfNeeded() }
+            .task(id: planLoadKey) {
+                if mode == .plan { await loadPlan() }
             }
             .sheet(item: Binding(
                 get: { pendingTargetID.map { TargetID(id: $0) } },
@@ -141,7 +154,64 @@ struct PhotoGroupPickerSheet: View {
     }
 
     private var planAvailable: Bool {
-        store.project(withID: projectID)?.floorPlan != nil
+        guard let project = store.project(withID: projectID) else { return false }
+        return !project.floorPlans.isEmpty
+    }
+
+    /// Drives `task(id:)` so the plan image reloads when the engineer
+    /// switches plans via the toolbar Menu.
+    private var planLoadKey: String {
+        "\(mode == .plan ? "plan" : "list")|\(activePlanID?.uuidString ?? "none")"
+    }
+
+    /// First time this sheet appears, default the visible plan to the
+    /// `fromPhoto`'s plan (if it has one) so the engineer sees the
+    /// canvas they were just placing against. Otherwise fall back to
+    /// the project's active plan or the first plan.
+    private func initialiseActivePlanIfNeeded() {
+        guard !didInitialiseActivePlan else { return }
+        didInitialiseActivePlan = true
+        let project = store.project(withID: projectID)
+        if let id = fromPhotoID,
+           let photo = project?.photos.first(where: { $0.id == id }),
+           let planID = photo.floorPlanID {
+            activePlanID = planID
+            return
+        }
+        activePlanID = project?.activeFloorPlanID ?? project?.floorPlans.first?.id
+    }
+
+    /// Toolbar Menu shown when the project has more than one plan.
+    /// Switching plans clears the gesture transform so the new image
+    /// starts in fit-to-screen view.
+    @ViewBuilder
+    private func planPickerMenu(project: Project) -> some View {
+        let activeLabel = activePlanID
+            .flatMap { id in project.floorPlan(id: id) }?
+            .label ?? "Plan"
+        Menu {
+            Picker("Floor plan", selection: Binding(
+                get: { activePlanID ?? UUID() },
+                set: { newID in
+                    activePlanID = newID
+                    scale = 1; lastScale = 1
+                    offset = .zero; lastOffset = .zero
+                }
+            )) {
+                ForEach(project.floorPlans) { plan in
+                    Text(plan.label).tag(plan.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(activeLabel)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder
@@ -164,6 +234,14 @@ struct PhotoGroupPickerSheet: View {
                             .background(Color.blue.opacity(0.2), in: Capsule())
                             .foregroundStyle(Color.blue)
                     }
+                    if let label = planLabel(for: photo) {
+                        Text(label)
+                            .font(.caption2.monospaced())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.18), in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let lx = photo.localXFeet, let ly = photo.localYFeet {
                     Text(String(format: "X %.1f ft · Y %.1f ft", lx, ly))
@@ -179,6 +257,19 @@ struct PhotoGroupPickerSheet: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    /// Plan-label badge for a list-mode row — only shown when the
+    /// project has more than one plan (single-plan projects don't need
+    /// the noise).
+    private func planLabel(for photo: Photo) -> String? {
+        guard let project = store.project(withID: projectID),
+              project.floorPlans.count > 1 else { return nil }
+        guard let planID = photo.floorPlanID,
+              let plan = project.floorPlan(id: planID) else {
+            return nil
+        }
+        return plan.label
     }
 
     @ViewBuilder
@@ -413,9 +504,15 @@ struct PhotoGroupPickerSheet: View {
 
     private func buildMarkers(firstGapPlan: Double, stepGapPlan: Double) -> [Marker] {
         guard let project = store.project(withID: projectID) else { return [] }
+        // Render bubbles only for photos placed on the plan the picker
+        // is currently showing — multi-plan projects keep each plan's
+        // bubble set in isolation so the engineer doesn't accidentally
+        // tap a tail bubble from a different plan.
         var groups: [String: [Photo]] = [:]
         for photo in project.photos {
-            guard photo.planPixelX != nil, photo.planPixelY != nil else { continue }
+            guard photo.floorPlanID == activePlanID,
+                  photo.planPixelX != nil,
+                  photo.planPixelY != nil else { continue }
             if excludingPhotoIDs.contains(photo.id) { continue }
             let key = photo.groupID?.uuidString ?? photo.id.uuidString
             groups[key, default: []].append(photo)
@@ -451,9 +548,11 @@ struct PhotoGroupPickerSheet: View {
 
     private func loadPlan() async {
         planLoadState = .loading
+        planImage = nil
         guard let proj = store.project(withID: projectID),
-              proj.floorPlan != nil,
-              let url = store.floorPlanURL(for: proj) else {
+              let planID = activePlanID,
+              proj.floorPlan(id: planID) != nil,
+              let url = store.floorPlanURL(for: proj, planID: planID) else {
             planLoadState = .missing
             return
         }
@@ -496,7 +595,7 @@ private struct ConfirmGroupSheet: View {
             .padding(.horizontal)
 
             if let target = targetPhoto {
-                Text("It will share #\(target.sequenceNumber)'s location on the plan and join its group.")
+                Text(groupingMessage(target: target))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -539,6 +638,30 @@ private struct ConfirmGroupSheet: View {
     private var fromPhoto: Photo? {
         guard let id = fromPhotoID else { return nil }
         return store.project(withID: projectID)?.photos.first { $0.id == id }
+    }
+
+    /// Compose the body text shown beneath the two thumbnails. Calls
+    /// out a cross-plan move when the joining photo's current plan
+    /// differs from the target's, so the engineer isn't surprised that
+    /// the photo's floor-plan assignment changed.
+    private func groupingMessage(target: Photo) -> String {
+        let base = "It will share #\(target.sequenceNumber)'s location on the plan and join its group."
+        guard let project = store.project(withID: projectID),
+              let targetPlanID = target.floorPlanID,
+              let targetPlan = project.floorPlan(id: targetPlanID) else {
+            return base
+        }
+        // From-photo case: explicit cross-plan move warning.
+        if let from = fromPhoto, from.floorPlanID != targetPlanID {
+            let fromLabel = from.floorPlanID
+                .flatMap { project.floorPlan(id: $0)?.label } ?? "Unassigned"
+            return base + "\n\nThe photo will move from \(fromLabel) → \(targetPlan.label)."
+        }
+        // Pending-capture case: just confirm where the new photos land.
+        if pendingCount > 0, fromPhoto == nil {
+            return base + "\n\nNew photo\(pendingCount == 1 ? "" : "s") will be saved on \(targetPlan.label)."
+        }
+        return base
     }
 
     @ViewBuilder
