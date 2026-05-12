@@ -25,6 +25,12 @@ struct LocateSheet: View {
     @State private var captionDraft: String = ""
     @State private var captionDictation = VoiceDictationController()
     @FocusState private var captionFocused: Bool
+    /// When the engineer taps an existing master/independent bubble on
+    /// the canvas, this holds that photo's ID so the alert below can
+    /// prompt before grouping. nil = no group-confirm pending.
+    @State private var groupConfirmTarget: UUID?
+    @State private var groupConfirmSequence: Int = 0
+    @AppStorage("sitephoto.bubbleScale") private var bubbleScale: Double = 1.5
 
     var body: some View {
         NavigationStack {
@@ -37,7 +43,12 @@ struct LocateSheet: View {
                         image: img,
                         planPoint: $planPoint,
                         heading: $heading,
-                        step: $step
+                        step: $step,
+                        existingBubbles: existingBubbles,
+                        bubbleScale: CGFloat(bubbleScale),
+                        onBubbleTap: { photoID in
+                            handleExistingBubbleTap(photoID)
+                        }
                     )
                     .background(.black)
                     .frame(maxHeight: .infinity)
@@ -98,8 +109,62 @@ struct LocateSheet: View {
                 )
                 .environment(store)
             }
+            .alert(
+                "Group with #\(groupConfirmSequence)?",
+                isPresented: Binding(
+                    get: { groupConfirmTarget != nil },
+                    set: { if !$0 { groupConfirmTarget = nil } }
+                )
+            ) {
+                Button("Group") {
+                    if let leadID = groupConfirmTarget {
+                        saveAttachedToGroup(leadID: leadID)
+                    }
+                    groupConfirmTarget = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    groupConfirmTarget = nil
+                }
+            } message: {
+                Text("The new photo will share #\(groupConfirmSequence)'s location and join its group as a stacked tail bubble. Tap an empty spot to place a new pin instead.")
+            }
         }
         .interactiveDismissDisabled(true)
+    }
+
+    /// Photos already placed on the currently-active plan, surfaced to
+    /// the canvas so the engineer can see where they're working
+    /// against — and tap a master/independent bubble to group rather
+    /// than dropping a new pin.
+    private var existingBubbles: [LocateBubble] {
+        guard let project = store.project(withID: projectID),
+              let activeID = project.floorPlan?.id else { return [] }
+        return project.photos.compactMap { p -> LocateBubble? in
+            guard p.floorPlanID == activeID,
+                  let px = p.planPixelX,
+                  let py = p.planPixelY else { return nil }
+            // "Master / independent" — a tappable bubble for grouping:
+            // either a group lead (`isPrimary && groupID != nil`), or a
+            // standalone photo with no group at all.
+            let isTail = p.groupID != nil && !p.isPrimary
+            return LocateBubble(
+                id: p.id,
+                position: CGPoint(x: px, y: py),
+                isTappable: !isTail,
+                bearing: p.headingDegrees,
+                sequenceNumber: p.sequenceNumber
+            )
+        }
+    }
+
+    /// Called when the engineer taps an existing tappable bubble.
+    /// Records the target so the confirmation alert fires; the actual
+    /// save runs from the alert's Group button.
+    private func handleExistingBubbleTap(_ photoID: UUID) {
+        guard let project = store.project(withID: projectID),
+              let photo = project.photos.first(where: { $0.id == photoID }) else { return }
+        groupConfirmSequence = photo.sequenceNumber
+        groupConfirmTarget = photoID
     }
 
     // MARK: - Subviews
@@ -451,11 +516,34 @@ struct LocateSheet: View {
 
 // MARK: - Plan canvas
 
+/// One previously-placed photo on the plan, surfaced to the locate
+/// canvas so the engineer can see where they're working against and
+/// optionally tap an existing master/independent to group with it.
+struct LocateBubble: Identifiable {
+    let id: UUID            // photo ID
+    let position: CGPoint   // image-pixel space
+    /// Group masters + independent photos — tapping these prompts the
+    /// engineer to group. Tail bubbles render but pass-through to the
+    /// normal pin-placement so they aren't accidentally "selected."
+    let isTappable: Bool
+    let bearing: Double?
+    let sequenceNumber: Int
+}
+
 struct PlanLocateCanvas: View {
     let image: UIImage
     @Binding var planPoint: CGPoint?
     @Binding var heading: Double?
     @Binding var step: LocateStep
+    /// Existing photos to render on the canvas as static reference
+    /// bubbles. `RelocateSheet` and any other caller that doesn't
+    /// want them just leaves this at its default empty array.
+    var existingBubbles: [LocateBubble] = []
+    var bubbleScale: CGFloat = 1.5
+    /// Fires when the engineer taps a tappable existing bubble.
+    /// Default is a no-op so callers without grouping behaviour stay
+    /// unchanged.
+    var onBubbleTap: (UUID) -> Void = { _ in }
 
     // Pinch-zoom + pan state.
     @State private var zoom:       CGFloat = 1
@@ -493,6 +581,29 @@ struct PlanLocateCanvas: View {
                     .frame(width: effW, height: effH)
                     .offset(x: effOX, y: effOY)
 
+                // Existing bubbles + their direction arrows. Rendered
+                // BELOW the new pin so the active pin always wins
+                // visually. Tail bubbles get the smaller radius; only
+                // masters/independents carry an arrow.
+                ForEach(existingBubbles) { bubble in
+                    let center = CGPoint(
+                        x: effOX + bubble.position.x * effScale,
+                        y: effOY + bubble.position.y * effScale
+                    )
+                    let baseRadius: CGFloat = bubble.isTappable
+                        ? 18 * bubbleScale
+                        : 13 * bubbleScale
+                    if let h = bubble.bearing, bubble.isTappable {
+                        existingBubbleArrow(at: center,
+                                             headingDegrees: h,
+                                             length: baseRadius + 36 * bubbleScale)
+                    }
+                    existingBubble(seq: bubble.sequenceNumber,
+                                    radius: baseRadius,
+                                    at: center,
+                                    tappable: bubble.isTappable)
+                }
+
                 if let pp = planPoint {
                     let pinView = CGPoint(
                         x: effOX + pp.x * effScale,
@@ -523,6 +634,20 @@ struct PlanLocateCanvas: View {
                 )
                 guard inImage.x >= 0, inImage.x <= imgSize.width,
                       inImage.y >= 0, inImage.y <= imgSize.height else { return }
+                // Hit-test existing tappable bubbles only while we're
+                // still positioning the new pin. Once a pin has been
+                // dropped (step == .direction), bubble taps are
+                // ignored so the engineer can refine direction without
+                // accidentally triggering a group prompt.
+                if step == .position {
+                    let hitRadiusPt: CGFloat = 22 * bubbleScale + 8
+                    let hitRadiusImg = hitRadiusPt / effScale
+                    if let hit = nearestTappableBubble(to: inImage,
+                                                         within: hitRadiusImg) {
+                        onBubbleTap(hit.id)
+                        return
+                    }
+                }
                 planPoint = inImage
                 if step == .position { step = .direction }
             }
@@ -621,6 +746,83 @@ struct PlanLocateCanvas: View {
         let dy = startLocation.y - pinScreen.y
         let r: CGFloat = 36
         return (dx * dx + dy * dy) < r * r ? .heading : .pan
+    }
+
+    /// Closest tappable bubble whose center is within `radius`
+    /// image-pixels of `point`. Returns nil when nothing's in range —
+    /// the caller then falls through to the place-pin path.
+    private func nearestTappableBubble(to point: CGPoint,
+                                         within radius: CGFloat) -> LocateBubble? {
+        var best: (bubble: LocateBubble, dist: CGFloat)?
+        for b in existingBubbles where b.isTappable {
+            let dx = b.position.x - point.x
+            let dy = b.position.y - point.y
+            let d = sqrt(dx * dx + dy * dy)
+            if d <= radius, best == nil || d < best!.dist {
+                best = (b, d)
+            }
+        }
+        return best?.bubble
+    }
+
+    /// Filled bubble drawn for an already-placed photo. Slightly
+    /// dimmer than the active pin so the pin still reads as the
+    /// "selected" element; thicker border for tappable bubbles so the
+    /// engineer can see at a glance which ones invite a group action.
+    @ViewBuilder
+    private func existingBubble(seq: Int,
+                                  radius: CGFloat,
+                                  at point: CGPoint,
+                                  tappable: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.green.opacity(tappable ? 0.92 : 0.7))
+                .frame(width: radius * 2, height: radius * 2)
+            Circle()
+                .stroke(Color.white.opacity(tappable ? 0.9 : 0.55),
+                         lineWidth: tappable ? 2 : 1)
+                .frame(width: radius * 2, height: radius * 2)
+            Text("\(seq)")
+                .font(.system(size: radius * 1.05,
+                              weight: .bold,
+                              design: .rounded))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.4)
+                .lineLimit(1)
+                .frame(width: radius * 1.6, height: radius * 1.6)
+        }
+        .position(point)
+    }
+
+    @ViewBuilder
+    private func existingBubbleArrow(at pin: CGPoint,
+                                       headingDegrees: Double,
+                                       length: CGFloat) -> some View {
+        let angRad = (headingDegrees - 90) * .pi / 180
+        let tip = CGPoint(
+            x: pin.x + cos(angRad) * length,
+            y: pin.y + sin(angRad) * length
+        )
+        Path { p in
+            p.move(to: pin)
+            p.addLine(to: tip)
+        }
+        .stroke(Color.green.opacity(0.9),
+                 style: StrokeStyle(lineWidth: 3, lineCap: .round))
+
+        Path { p in
+            let back = angRad + .pi
+            let baseR: CGFloat = 12
+            let leftX = tip.x + cos(back + 0.42) * baseR
+            let leftY = tip.y + sin(back + 0.42) * baseR
+            let rightX = tip.x + cos(back - 0.42) * baseR
+            let rightY = tip.y + sin(back - 0.42) * baseR
+            p.move(to: tip)
+            p.addLine(to: CGPoint(x: leftX, y: leftY))
+            p.addLine(to: CGPoint(x: rightX, y: rightY))
+            p.closeSubpath()
+        }
+        .fill(Color.green.opacity(0.9))
     }
 
     @ViewBuilder
