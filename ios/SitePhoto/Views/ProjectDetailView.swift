@@ -117,9 +117,6 @@ struct ProjectDetailView: View {
     @State private var batchTagSummary: String?
     @State private var batchTagFailureReport: BatchTagFailureReport?
     @State private var batchBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-    /// Toggles the spreadsheet-style Photo Sheet view. Reuses the current
-    /// `filteredPhotos` set so search / chip filters carry over.
-    @State private var showingPhotoSheet: Bool = false
     /// Comparison-view anchor — when non-nil, the comparison sheet opens
     /// for this photo's reshoot lineage.
     @State private var comparingPhoto: PhotoTarget?
@@ -332,11 +329,6 @@ struct ProjectDetailView: View {
                         }
                     )
                     .environment(store)
-                }
-                .sheet(isPresented: $showingPhotoSheet) {
-                    PhotoSheetView(projectID: projectID,
-                                    photos: filteredPhotos(project))
-                        .environment(store)
                 }
                 .sheet(item: $comparingPhoto) { target in
                     PhotoComparisonView(projectID: projectID,
@@ -1118,13 +1110,6 @@ struct ProjectDetailView: View {
                 }
                 Spacer()
                 if !project.photos.isEmpty {
-                    Button {
-                        showingPhotoSheet = true
-                    } label: {
-                        Label("Sheet", systemImage: "tablecells")
-                    }
-                    .textCase(nil)
-                    .font(.caption)
                     Button("Select") {
                         selectionMode = true
                     }
