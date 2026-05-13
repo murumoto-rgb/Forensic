@@ -396,8 +396,31 @@ enum ClaudeTaggingService {
                 ))
             }
         }
+
+        // Auto-tag photos that show a transcribed measurement readout so
+        // the engineer can find them via the tag filter alongside the
+        // vocabulary-driven tags. measurementVisible is null when no
+        // number was visible; any non-empty value means the model
+        // transcribed something (level reading, moisture meter, ruler,
+        // crack comparator, etc.). Synthetic — not part of the
+        // controlled vocabulary, so confidence is 1.0 and the validator
+        // ignores it (it only validates primaryTags / secondaries).
+        if let m = a.measurementVisible?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !m.isEmpty {
+            out.append(TagSuggestion(
+                label: measurementTagLabel,
+                confidence: 1.0,
+                source: .claude,
+                parentTag: nil
+            ))
+        }
         return out
     }
+
+    /// Stable label for the synthetic "this photo shows a measurement"
+    /// tag. Centralised so the filter chip in `ProjectDetailView` and the
+    /// CSV export both check against the same string.
+    static let measurementTagLabel: String = "Measurement reading"
 
     /// Strip a leading "N. " (one or more digits + period + optional spaces)
     /// from a primary tag name. The forensic guide used to list primaries

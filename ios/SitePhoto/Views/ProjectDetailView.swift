@@ -95,6 +95,10 @@ struct ProjectDetailView: View {
     /// returned a response that failed validation. ANDed with the tag
     /// filter and the recommended-use filter.
     @State private var showOnlyNeedsReview: Bool = false
+    /// True when the "Has measurement" chip is on. Surfaces only photos
+    /// whose AI analysis transcribed a visible measurement readout
+    /// (level / moisture meter / ruler etc). ANDed with everything else.
+    @State private var measurementsOnly: Bool = false
     /// Recommended-use bucket(s) to keep. Empty = no use-based filtering.
     /// ANDed with the tag filter and the needs-review toggle.
     @State private var recommendedUseFilter: Set<String> = []
@@ -1361,6 +1365,9 @@ struct ProjectDetailView: View {
             if favoritesOnly && !photo.isFavorite {
                 return false
             }
+            if measurementsOnly && !hasMeasurement(photo) {
+                return false
+            }
             switch planFilter {
             case .all:
                 break
@@ -1559,6 +1566,7 @@ struct ProjectDetailView: View {
         let project = store.project(withID: projectID)
         let needsReviewCount = project?.photos.filter { needsReview($0) }.count ?? 0
         let favoritesCount = project?.photos.filter { $0.isFavorite }.count ?? 0
+        let measurementCount = project?.photos.filter { hasMeasurement($0) }.count ?? 0
         let recommendedUseChips = bucketsInUseFor(projectID: projectID)
         let userBuckets = (project?.buckets ?? []).sorted { $0.sortOrder < $1.sortOrder }
         let bucketFilterCount = activeBucketFilter.count
@@ -1570,6 +1578,7 @@ struct ProjectDetailView: View {
             || !activeBucketFilter.isEmpty
             || showOnlyNeedsReview
             || favoritesOnly
+            || measurementsOnly
             || planFilter != .all
             || notInBucketOnly
             || locationFilter != .all
@@ -1584,6 +1593,7 @@ struct ProjectDetailView: View {
                         activeBucketFilter.removeAll()
                         showOnlyNeedsReview = false
                         favoritesOnly = false
+                        measurementsOnly = false
                         planFilter = .all
                         notInBucketOnly = false
                         locationFilter = .all
@@ -1632,9 +1642,30 @@ struct ProjectDetailView: View {
                 .controlSize(.small)
                 .tint(showOnlyNeedsReview ? .orange : .secondary)
                 .disabled(needsReviewCount == 0 && !showOnlyNeedsReview)
+                Button {
+                    measurementsOnly.toggle()
+                } label: {
+                    Image(systemName: "ruler")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(measurementsOnly ? .teal : .secondary)
+                .disabled(measurementCount == 0 && !measurementsOnly)
             }
             .padding(.vertical, 2)
         }
+    }
+
+    /// Whether the photo's AI analysis transcribed a visible measurement
+    /// readout. A non-empty `measurementVisible` means the model read a
+    /// number off the image (level / moisture meter / ruler etc.) —
+    /// surfaces the photo in the "Has measurement" filter chip even when
+    /// the auto-synthesised "Measurement reading" tag has been edited
+    /// off by the engineer.
+    private func hasMeasurement(_ photo: Photo) -> Bool {
+        guard let m = photo.aiAnalysis?.measurementVisible else { return false }
+        return !m.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Consolidated bucket filter pill. Shows a folder icon plus an
