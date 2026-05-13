@@ -1386,16 +1386,11 @@ struct ProjectDetailView: View {
 
     /// Location filter pill — `All locations` / `Located` / `Not
     /// located`. Distinct from the level filter (which scopes "which
-    /// plan"); this one scopes "has it been placed at all."
+    /// plan"); this one scopes "has it been placed at all." Renders
+    /// as an icon-only pill when inactive and adds a short label only
+    /// after the engineer picks a specific filter.
     @ViewBuilder
     private func locationFilterMenu() -> some View {
-        let label: String = {
-            switch locationFilter {
-            case .all:          return "All locations"
-            case .located:      return "Located"
-            case .notLocated:   return "Not located"
-            }
-        }()
         Menu {
             Picker("Location", selection: Binding(
                 get: { locationFilter },
@@ -1406,8 +1401,20 @@ struct ProjectDetailView: View {
                 Text("Not located").tag(LocationFilter.notLocated)
             }
         } label: {
-            Label(label, systemImage: "location")
-                .font(.caption)
+            if locationFilter == .all {
+                Image(systemName: "location")
+                    .font(.caption)
+            } else {
+                let short: String = {
+                    switch locationFilter {
+                    case .all:          return ""
+                    case .located:      return "Located"
+                    case .notLocated:   return "Not located"
+                    }
+                }()
+                Label(short, systemImage: "location")
+                    .font(.caption)
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -1415,18 +1422,10 @@ struct ProjectDetailView: View {
     }
 
     /// Level filter pill — "level" being the engineer's term for a
-    /// floor plan in their workflow. Same shape as the date /
-    /// favorites chips. Options: All levels · No level · each plan by
-    /// label.
+    /// floor plan in their workflow. Icon-only when inactive; icon +
+    /// short label when filtered to a specific plan.
     @ViewBuilder
     private func planFilterMenu(project: Project) -> some View {
-        let label: String = {
-            switch planFilter {
-            case .all:           return "All levels"
-            case .unassigned:    return "No level"
-            case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Level"
-            }
-        }()
         Menu {
             Picker("Level", selection: Binding(
                 get: { planFilter },
@@ -1440,8 +1439,20 @@ struct ProjectDetailView: View {
                 }
             }
         } label: {
-            Label(label, systemImage: "map")
-                .font(.caption)
+            if planFilter == .all {
+                Image(systemName: "map")
+                    .font(.caption)
+            } else {
+                let short: String = {
+                    switch planFilter {
+                    case .all:           return ""
+                    case .unassigned:    return "No level"
+                    case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Level"
+                    }
+                }()
+                Label(short, systemImage: "map")
+                    .font(.caption)
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -1530,8 +1541,13 @@ struct ProjectDetailView: View {
                 showingCustomDateSheet = true
             }
         } label: {
-            Label(dateFilter.chipLabel, systemImage: "calendar")
-                .font(.caption)
+            if dateFilter.isActive {
+                Label(dateFilter.chipLabel, systemImage: "calendar")
+                    .font(.caption)
+            } else {
+                Image(systemName: "calendar")
+                    .font(.caption)
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -1540,26 +1556,28 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func tagFilterBar(allTags: [String]) -> some View {
-        // Buckets and reviewer-attention counts come from the project's
-        // analysed photos; the chips below them only show when at least
-        // one photo would match.
-        let needsReviewCount = store.project(withID: projectID)
-            .map { project in project.photos.filter { needsReview($0) }.count } ?? 0
+        let project = store.project(withID: projectID)
+        let needsReviewCount = project?.photos.filter { needsReview($0) }.count ?? 0
+        let favoritesCount = project?.photos.filter { $0.isFavorite }.count ?? 0
         let recommendedUseChips = bucketsInUseFor(projectID: projectID)
-        let userBuckets = (store.project(withID: projectID)?.buckets ?? [])
-            .sorted { $0.sortOrder < $1.sortOrder }
+        let userBuckets = (project?.buckets ?? []).sorted { $0.sortOrder < $1.sortOrder }
+        let bucketFilterCount = activeBucketFilter.count
+            + recommendedUseFilter.count
+            + (notInBucketOnly ? 1 : 0)
+        let tagFilterCount = activeTagFilters.count
+        let anyFilterActive = !activeTagFilters.isEmpty
+            || !recommendedUseFilter.isEmpty
+            || !activeBucketFilter.isEmpty
+            || showOnlyNeedsReview
+            || favoritesOnly
+            || planFilter != .all
+            || notInBucketOnly
+            || locationFilter != .all
+            || dateFilter.isActive
 
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                let favoritesCount = store.project(withID: projectID)?.photos.filter { $0.isFavorite }.count ?? 0
-                if !activeTagFilters.isEmpty
-                    || !recommendedUseFilter.isEmpty
-                    || !activeBucketFilter.isEmpty
-                    || showOnlyNeedsReview
-                    || favoritesOnly
-                    || planFilter != .all
-                    || notInBucketOnly
-                    || locationFilter != .all {
+                if anyFilterActive {
                     Button {
                         activeTagFilters.removeAll()
                         recommendedUseFilter.removeAll()
@@ -1569,99 +1587,163 @@ struct ProjectDetailView: View {
                         planFilter = .all
                         notInBucketOnly = false
                         locationFilter = .all
+                        dateFilter = .all
                     } label: {
-                        Label("Clear", systemImage: "xmark.circle.fill")
+                        Image(systemName: "xmark.circle.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .tint(.secondary)
                 }
-                if let project = store.project(withID: projectID),
-                   !project.floorPlans.isEmpty {
+                if let project, !project.floorPlans.isEmpty {
                     planFilterMenu(project: project)
                 }
                 locationFilterMenu()
-                Button {
-                    notInBucketOnly.toggle()
-                } label: {
-                    Label("Not in bucket", systemImage: "folder.badge.minus")
-                        .font(.caption)
+                dateFilterChip
+                bucketFilterMenu(userBuckets: userBuckets,
+                                  recommendedUseChips: recommendedUseChips,
+                                  activeCount: bucketFilterCount)
+                if !allTags.isEmpty {
+                    tagFilterMenu(allTags: allTags, activeCount: tagFilterCount)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(notInBucketOnly ? .accentColor : .secondary)
                 if favoritesCount > 0 {
                     Button {
                         favoritesOnly.toggle()
                     } label: {
-                        Label("Favorites · \(favoritesCount)",
-                              systemImage: "star.fill")
+                        Image(systemName: "star.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(favoritesOnly ? .yellow : .secondary)
                 }
-                dateFilterChip
                 if needsReviewCount > 0 {
                     Button {
                         showOnlyNeedsReview.toggle()
                     } label: {
-                        Label("Needs review · \(needsReviewCount)",
-                              systemImage: "exclamationmark.triangle.fill")
+                        Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(showOnlyNeedsReview ? .orange : .secondary)
                 }
-                ForEach(userBuckets) { bucket in
-                    let on = activeBucketFilter.contains(bucket.id)
-                    Button {
-                        if on { activeBucketFilter.remove(bucket.id) }
-                        else  { activeBucketFilter.insert(bucket.id) }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(bucket.color)
-                                .frame(width: 8, height: 8)
-                            Text(bucket.name)
-                                .font(.caption)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(on ? bucket.color : .secondary)
-                }
-                ForEach(recommendedUseChips, id: \.self) { bucket in
-                    let on = recommendedUseFilter.contains(bucket)
-                    Button {
-                        if on { recommendedUseFilter.remove(bucket) }
-                        else  { recommendedUseFilter.insert(bucket) }
-                    } label: {
-                        Text(bucket)
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(on ? .blue : .secondary)
-                }
-                ForEach(allTags, id: \.self) { tag in
-                    let on = activeTagFilters.contains(tag)
-                    Button {
-                        if on { activeTagFilters.remove(tag) }
-                        else  { activeTagFilters.insert(tag) }
-                    } label: {
-                        Text(tag)
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(on ? .accentColor : .secondary)
-                }
             }
             .padding(.vertical, 2)
         }
+    }
+
+    /// Consolidated bucket filter pill. Shows a folder icon plus an
+    /// active-count badge; tapping opens a menu with:
+    ///   • "Not in a bucket" toggle (mutually exclusive with picking
+    ///     specific user buckets — selecting one clears the other so
+    ///     the filter never produces an impossible intersection).
+    ///   • User buckets (multi-select with checkmarks).
+    ///   • AI categories from `recommendedUse` (multi-select).
+    @ViewBuilder
+    private func bucketFilterMenu(userBuckets: [Bucket],
+                                    recommendedUseChips: [String],
+                                    activeCount: Int) -> some View {
+        Menu {
+            Button {
+                notInBucketOnly.toggle()
+                if notInBucketOnly {
+                    activeBucketFilter.removeAll()
+                }
+            } label: {
+                if notInBucketOnly {
+                    Label("Not in a bucket", systemImage: "checkmark")
+                } else {
+                    Text("Not in a bucket")
+                }
+            }
+            if !userBuckets.isEmpty {
+                Section("Buckets") {
+                    ForEach(userBuckets) { bucket in
+                        let on = activeBucketFilter.contains(bucket.id)
+                        Button {
+                            if on {
+                                activeBucketFilter.remove(bucket.id)
+                            } else {
+                                activeBucketFilter.insert(bucket.id)
+                                notInBucketOnly = false
+                            }
+                        } label: {
+                            if on {
+                                Label(bucket.name, systemImage: "checkmark")
+                            } else {
+                                Text(bucket.name)
+                            }
+                        }
+                    }
+                }
+            }
+            if !recommendedUseChips.isEmpty {
+                Section("Photo use") {
+                    ForEach(recommendedUseChips, id: \.self) { bucket in
+                        let on = recommendedUseFilter.contains(bucket)
+                        Button {
+                            if on {
+                                recommendedUseFilter.remove(bucket)
+                            } else {
+                                recommendedUseFilter.insert(bucket)
+                            }
+                        } label: {
+                            if on {
+                                Label(bucket, systemImage: "checkmark")
+                            } else {
+                                Text(bucket)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            if activeCount > 0 {
+                Label("\(activeCount)", systemImage: "folder.fill")
+                    .font(.caption)
+            } else {
+                Image(systemName: "folder")
+                    .font(.caption)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(activeCount > 0 ? .accentColor : .secondary)
+    }
+
+    /// Consolidated tag filter pill. Tag icon + count badge; the menu
+    /// lists every confirmed tag in the project with a multi-select
+    /// checkmark UI.
+    @ViewBuilder
+    private func tagFilterMenu(allTags: [String], activeCount: Int) -> some View {
+        Menu {
+            ForEach(allTags, id: \.self) { tag in
+                let on = activeTagFilters.contains(tag)
+                Button {
+                    if on { activeTagFilters.remove(tag) }
+                    else  { activeTagFilters.insert(tag) }
+                } label: {
+                    if on {
+                        Label(tag, systemImage: "checkmark")
+                    } else {
+                        Text(tag)
+                    }
+                }
+            }
+        } label: {
+            if activeCount > 0 {
+                Label("\(activeCount)", systemImage: "tag.fill")
+                    .font(.caption)
+            } else {
+                Image(systemName: "tag")
+                    .font(.caption)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(activeCount > 0 ? .accentColor : .secondary)
     }
 
     /// Recommended-use buckets that actually appear on at least one photo
