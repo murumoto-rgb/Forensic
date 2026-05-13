@@ -576,6 +576,12 @@ struct PDFExportService {
         let primaryRplan    = Double(primaryR    / scale)
         let secRplan        = Double(secR        / scale)
         let arrowLengthPlan = Double(arrowLength / scale)
+        // Floor the cluster math at default bubbleScale so shrinking
+        // bubbles doesn't also shrink collisionRadius / minSpacing —
+        // mirrors the same fix in PlanViewerView so the PDF layout
+        // matches what the engineer previews on-screen.
+        let clusterBs = max(bs, 1.5)
+        let clusterPrimaryRplan = Double(18 * clusterBs * sizeMultiplier * digitScale / scale)
         let fanResult = ClusterFanning.apply(
             markers: markers,
             sortKey: { $0.photo.sequenceNumber },
@@ -586,8 +592,8 @@ struct PDFExportService {
                 M(photo: m.photo, x: p.x, y: p.y,
                   isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: primaryRplan * 2.0,
-            minSpacing: primaryRplan * 1.0
+            collisionRadius: clusterPrimaryRplan * 2.0,
+            minSpacing: clusterPrimaryRplan * 1.0
         )
         markers = fanResult.adjusted
 

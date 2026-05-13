@@ -234,6 +234,17 @@ struct PlanViewerView: View {
         // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
+        // Cluster detection + fan spacing use a floor on bubbleScale so
+        // shrinking the user's "bubble size" preference doesn't also
+        // shrink the threshold at which overlapping photos get fanned.
+        // Without the floor, a tight column that fans into a rosette at
+        // default size stops being detected as a cluster when bubbles
+        // shrink — the bubbles just pile up at their natural positions
+        // and look cluttered, because collisionRadius shrinks in
+        // lock-step with the bubble. 1.5 matches the default bubbleScale
+        // so anyone at default-or-larger sees no behaviour change.
+        let clusterBubbleScale = max(bubbleScale, 1.5)
+        let clusterPrimaryRplan = Double(18 * clusterBubbleScale * digitScale / fit)
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -245,11 +256,11 @@ struct PlanViewerView: View {
                            x: p.x, y: p.y,
                            isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: primaryRplan * 2.0,
+            collisionRadius: clusterPrimaryRplan * 2.0,
             // Bumped from 0.55 → 1.0 so neighbouring bubbles have a full
             // bubble-radius of breathing room — fewer arrows end up
             // shortened by the per-arrow obstacle pass below.
-            minSpacing: primaryRplan * 1.0
+            minSpacing: clusterPrimaryRplan * 1.0
         )
         let markers = fanResult.adjusted
         // MARK: end cluster-fanning

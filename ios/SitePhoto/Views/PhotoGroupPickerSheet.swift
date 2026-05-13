@@ -362,6 +362,12 @@ struct PhotoGroupPickerSheet: View {
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
         let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
+        // Floor the cluster math at default bubbleScale so shrinking
+        // bubbles doesn't also shrink collisionRadius / minSpacing —
+        // mirrors the same fix in PlanViewerView so the picker layout
+        // matches the viewer.
+        let clusterBubbleScale = max(bubbleScale, 1.5)
+        let clusterPrimaryRplan = Double(18 * clusterBubbleScale * digitScale / fit)
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -373,8 +379,8 @@ struct PhotoGroupPickerSheet: View {
                        x: p.x, y: p.y,
                        isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: primaryRplan * 2.0,
-            minSpacing: primaryRplan * 1.0
+            collisionRadius: clusterPrimaryRplan * 2.0,
+            minSpacing: clusterPrimaryRplan * 1.0
         )
         let markers = fanResult.adjusted
 
