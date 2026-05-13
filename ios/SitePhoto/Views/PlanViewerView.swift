@@ -495,6 +495,7 @@ struct PlanViewerView: View {
         }
     }
 
+    @ViewBuilder
     private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
         // Canvas-based rendering keeps the text crisp at every zoom
         // level. SwiftUI Text + .minimumScaleFactor lets the text land
