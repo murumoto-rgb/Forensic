@@ -47,6 +47,22 @@ struct ExportView: View {
                         }
                     }
                     .disabled(photos.isEmpty)
+
+                    NavigationLink {
+                        AIAnalysisCSVExportRunner(projectID: projectID)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("AI Analysis CSV")
+                                Text("One row per primary tag with the AI's context, observation, caption, measurement, and reviewer flag. Opens directly in Excel / Google Sheets.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "tablecells")
+                        }
+                    }
+                    .disabled(photos.isEmpty)
                 }
                 if photos.isEmpty {
                     Section {
@@ -293,6 +309,121 @@ private struct FolderExportRunner: View {
     /// Whether the export landed in iCloud or the local container affects
     /// where the user looks for it in Files. We sniff that by checking
     /// whether the storage root is under the iCloud ubiquity container.
+    private func filesAppLocationHint() -> String {
+        let path = store.rootURL.path()
+        if path.contains("Mobile Documents") || path.contains("CloudDocs") {
+            return "iCloud Drive → SitePhoto → Exports"
+        }
+        return "On My iPhone → SitePhoto → Exports"
+    }
+}
+
+/// Runs `AIAnalysisCSVExportService` and surfaces a ShareLink to the
+/// resulting `.csv` file. CSV generation is synchronous — no image work,
+/// no network — so we skip the progress UI used by the PDF / folder
+/// runners and just show the result.
+private struct AIAnalysisCSVExportRunner: View {
+    let projectID: UUID
+    @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
+
+    @State private var exportURL: URL?
+    @State private var failed: Bool = false
+    @State private var status: String = ""
+    @State private var ran: Bool = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            if let url = exportURL {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.green)
+                Text("CSV ready")
+                    .font(.headline)
+                Text(summaryLine(for: url))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                ShareLink(
+                    item: url,
+                    subject: Text(projectName),
+                    message: Text("SitePhoto AI analysis CSV")
+                ) {
+                    Label("Share / Save CSV", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                }
+                .buttonStyle(.borderedProminent)
+                Text("Also saved to \(filesAppLocationHint()) — open with Numbers, Excel, or any spreadsheet app.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            } else if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.orange)
+                Text("Export failed")
+                    .font(.headline)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            } else {
+                ProgressView().controlSize(.large)
+            }
+            Spacer()
+        }
+        .navigationTitle("AI Analysis CSV")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard !ran else { return }
+            ran = true
+            runExport()
+        }
+    }
+
+    private var projectName: String {
+        store.project(withID: projectID)?.name ?? "Export"
+    }
+
+    private func runExport() {
+        guard let proj = store.project(withID: projectID) else {
+            failed = true; status = "Project not found."; return
+        }
+        let analysedCount = proj.photos.filter {
+            ($0.aiAnalysis?.parseFailed == false) && $0.aiAnalysis != nil
+        }.count
+        guard analysedCount > 0 else {
+            failed = true
+            status = "No AI-analysed photos in this project yet. Run AI tagging on at least one photo before exporting."
+            return
+        }
+        let service = AIAnalysisCSVExportService(
+            project: proj, tagLibrary: store.tagLibrary, store: store
+        )
+        guard let url = service.export() else {
+            failed = true
+            status = "Could not write the CSV. Check that the project storage folder is accessible."
+            Haptics.error()
+            toastCenter.post("CSV export failed", kind: .error)
+            return
+        }
+        exportURL = url
+        Haptics.success()
+        toastCenter.post("CSV export complete", kind: .success)
+    }
+
+    private func summaryLine(for url: URL) -> String {
+        let proj = store.project(withID: projectID)
+        let count = proj?.photos.filter {
+            ($0.aiAnalysis?.parseFailed == false) && $0.aiAnalysis != nil
+        }.count ?? 0
+        return "\(count) photo\(count == 1 ? "" : "s") exported to \(url.lastPathComponent)."
+    }
+
     private func filesAppLocationHint() -> String {
         let path = store.rootURL.path()
         if path.contains("Mobile Documents") || path.contains("CloudDocs") {
