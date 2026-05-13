@@ -402,9 +402,26 @@ struct PlanViewerView: View {
             )
         )
         .onChange(of: pendingRecenterID) { _, newID in
-            guard let id = newID,
-                  let marker = markers.first(where: { $0.photo.id == id }) else { return }
-            recenter(on: marker, geo: geo, imgSize: imgSize, fit: fit)
+            guard let id = newID else { return }
+            // After the cluster refactor there's no single `markers` list
+            // — the displayed marker for a stacked photo is the cluster
+            // representative at the centroid, not the photo's own
+            // PlanMarker. Search tails first, then cluster reps (matching
+            // either the lead's ID or any stacked member's ID so a
+            // recenter request for a non-lead member still hits its
+            // stack).
+            let marker: PlanMarker?
+            if let tail = tailMarkers.first(where: { $0.photo.id == id }) {
+                marker = tail
+            } else if let dp = displayedPrimaries.first(where: {
+                $0.marker.photo.id == id || $0.stackPhotoIDs.contains(id)
+            }) {
+                marker = dp.marker
+            } else {
+                marker = nil
+            }
+            guard let m = marker else { return }
+            recenter(on: m, geo: geo, imgSize: imgSize, fit: fit)
             pendingRecenterID = nil
         }
     }
