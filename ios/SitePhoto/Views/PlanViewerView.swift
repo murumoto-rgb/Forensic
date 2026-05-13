@@ -954,19 +954,16 @@ private struct PhotoPreviewBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Group / All mode picker. Always visible, even when the
-            // current photo has no group — Group then degenerates to a
-            // single-thumbnail strip, which keeps the control's position
-            // stable as the engineer cycles through photos.
-            Picker("Navigation", selection: $navMode) {
-                Text("Group").tag(PreviewNavMode.group)
-                Text("All").tag(PreviewNavMode.all)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(Color.black)
+            // Group / All mode toggle. The default segmented Picker
+            // renders its inactive segment with a dark-grey tint that
+            // disappears against the bar's pure-black background, so
+            // engineers can only see the active half. A custom
+            // two-button toggle with explicit fill + text contrast for
+            // both states makes both options visible at a glance.
+            modeToggle
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(Color.black)
 
             // Horizontal thumbnail strip. Tap to jump; current photo
             // gets an accent-coloured stroke so its position is obvious
@@ -985,6 +982,36 @@ private struct PhotoPreviewBar: View {
         .task(id: photo.id) {
             await loadCurrentPhoto()
         }
+    }
+
+    @ViewBuilder
+    private var modeToggle: some View {
+        HStack(spacing: 0) {
+            ForEach([PreviewNavMode.group, PreviewNavMode.all], id: \.self) { mode in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        navMode = mode
+                    }
+                } label: {
+                    Text(mode == .group ? "Group" : "All")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(navMode == mode ? Color.black : Color.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(navMode == mode ? Color.white : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.18))
+        )
+        .frame(width: 220)
     }
 
     @ViewBuilder
