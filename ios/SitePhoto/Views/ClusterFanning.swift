@@ -43,10 +43,20 @@ enum ClusterFanning {
     ///   iterates a Dictionary; switching to a property-based key makes
     ///   the layout deterministic across re-renders (zoom, pan, etc).
     /// - `collisionRadius`: plan-pixel distance below which two primaries
-    ///   are considered to overlap (typically `2 × primaryRadius`).
+    ///   are considered overlapping for *cluster detection*. Callers may
+    ///   pass a value larger than the actual bubble (e.g. floored at the
+    ///   default scale) so tight clusters of small bubbles still get
+    ///   detected.
+    /// - `bubbleRadius`: plan-pixel radius of the *rendered* primary
+    ///   bubble. Used to compute the fan layout — chord length between
+    ///   neighbours, minimum fan radius. Decoupling this from
+    ///   `collisionRadius` lets cluster detection be generous without
+    ///   blowing the fan radius out beyond the visible bubble size,
+    ///   which would scatter small bubbles far away from the plan with
+    ///   long leader lines bridging the gap.
     /// - `minSpacing`: minimum edge-to-edge gap between fanned bubbles.
-    ///   The fan radius scales with cluster size so this gap is preserved
-    ///   even for 4+ bubble clusters.
+    ///   Typically scales with `bubbleRadius` so the gap looks
+    ///   proportional at any bubble size.
     static func apply<M, K: Comparable>(
         markers: [M],
         sortKey: (M) -> K,
@@ -55,9 +65,10 @@ enum ClusterFanning {
         isPrimary: (M) -> Bool,
         setPosition: (M, CGPoint) -> M,
         collisionRadius: Double,
+        bubbleRadius: Double,
         minSpacing: Double
     ) -> Result<M> {
-        let bubbleR = collisionRadius / 2
+        let bubbleR = bubbleRadius
 
         let primaries = markers.indices.filter { isPrimary(markers[$0]) }
         guard primaries.count >= 2 else {

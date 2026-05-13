@@ -576,10 +576,10 @@ struct PDFExportService {
         let primaryRplan    = Double(primaryR    / scale)
         let secRplan        = Double(secR        / scale)
         let arrowLengthPlan = Double(arrowLength / scale)
-        // Floor the cluster math at default bubbleScale so shrinking
-        // bubbles doesn't also shrink collisionRadius / minSpacing —
-        // mirrors the same fix in PlanViewerView so the PDF layout
-        // matches what the engineer previews on-screen.
+        // Floor collisionRadius (cluster DETECTION) at default bubbleScale
+        // so shrinking bubbles doesn't also shrink the detection threshold.
+        // Fan LAYOUT (bubbleRadius + minSpacing) stays at the actual scale
+        // so the PDF rosette matches the on-screen preview at every size.
         let clusterBs = max(bs, 1.5)
         let clusterPrimaryRplan = Double(18 * clusterBs * sizeMultiplier * digitScale / scale)
         let fanResult = ClusterFanning.apply(
@@ -593,7 +593,8 @@ struct PDFExportService {
                   isPrimary: m.isPrimary, bearing: m.bearing)
             },
             collisionRadius: clusterPrimaryRplan * 2.0,
-            minSpacing: clusterPrimaryRplan * 1.0
+            bubbleRadius: primaryRplan,
+            minSpacing: primaryRplan * 1.0
         )
         markers = fanResult.adjusted
 
