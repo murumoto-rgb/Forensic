@@ -576,12 +576,11 @@ struct PDFExportService {
         let primaryRplan    = Double(primaryR    / scale)
         let secRplan        = Double(secR        / scale)
         let arrowLengthPlan = Double(arrowLength / scale)
-        // Floor collisionRadius (cluster DETECTION) at default bubbleScale
-        // so shrinking bubbles doesn't also shrink the detection threshold.
-        // Fan LAYOUT (bubbleRadius + minSpacing) stays at the actual scale
-        // so the PDF rosette matches the on-screen preview at every size.
-        let clusterBs = max(bs, 1.5)
-        let clusterPrimaryRplan = Double(18 * clusterBs * sizeMultiplier * digitScale / scale)
+        // Detection threshold and fan layout both scale with the user's
+        // actual bubble size — mirrors PlanViewerView so the PDF matches
+        // what the engineer previews on-screen. See that file for the
+        // rationale behind preferring position fidelity over fanning
+        // tight clusters at small bubble scales.
         let fanResult = ClusterFanning.apply(
             markers: markers,
             sortKey: { $0.photo.sequenceNumber },
@@ -592,7 +591,7 @@ struct PDFExportService {
                 M(photo: m.photo, x: p.x, y: p.y,
                   isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: clusterPrimaryRplan * 2.0,
+            collisionRadius: primaryRplan * 2.0,
             bubbleRadius: primaryRplan,
             minSpacing: primaryRplan * 1.0
         )

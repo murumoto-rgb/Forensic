@@ -362,13 +362,10 @@ struct PhotoGroupPickerSheet: View {
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
         let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
-        // Floor collisionRadius (cluster DETECTION) at default bubbleScale
-        // so shrinking bubbles doesn't also shrink the detection threshold.
-        // Fan LAYOUT (bubbleRadius + minSpacing) stays at the actual scale
-        // so the rosette matches the rendered bubble size — see the
-        // matching block in PlanViewerView for the full rationale.
-        let clusterBubbleScale = max(bubbleScale, 1.5)
-        let clusterPrimaryRplan = Double(18 * clusterBubbleScale * digitScale / fit)
+        // Detection threshold and fan layout both scale with the user's
+        // actual bubble size — mirrors PlanViewerView. See that file for
+        // the rationale behind preferring position fidelity over fanning
+        // tight clusters at small bubble scales.
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -380,7 +377,7 @@ struct PhotoGroupPickerSheet: View {
                        x: p.x, y: p.y,
                        isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: clusterPrimaryRplan * 2.0,
+            collisionRadius: primaryRplan * 2.0,
             bubbleRadius: primaryRplan,
             minSpacing: primaryRplan * 1.0
         )

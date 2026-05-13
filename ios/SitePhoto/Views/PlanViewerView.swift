@@ -234,19 +234,15 @@ struct PlanViewerView: View {
         // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
-        // Cluster DETECTION uses a floor on bubbleScale so shrinking the
-        // user's "bubble size" preference doesn't also shrink the
-        // threshold at which overlapping photos get fanned. Without the
-        // floor, a tight column that fans into a rosette at default size
-        // stops being detected as a cluster when bubbles shrink — the
-        // bubbles pile up at their natural positions and look cluttered.
-        // Fan LAYOUT, on the other hand, uses the actual primaryRplan so
-        // the resulting rosette matches the rendered bubble size and
-        // doesn't fly off the page at small scales. 1.5 matches the
-        // default bubbleScale so anyone at default-or-larger sees no
-        // behaviour change.
-        let clusterBubbleScale = max(bubbleScale, 1.5)
-        let clusterPrimaryRplan = Double(18 * clusterBubbleScale * digitScale / fit)
+        // Cluster detection threshold and fan layout both scale with the
+        // user's actual bubble size. An earlier revision floored these at
+        // the default scale so tight clusters of tiny bubbles still got
+        // fanned — but that displaced bubbles far from where the engineer
+        // placed them and broke the "I know which photo is which because
+        // of where it sits on the plan" mental model. Position fidelity
+        // wins: at very small bubble sizes some tightly-placed photos
+        // will visually overlap again, but every bubble renders at the
+        // location it was actually placed.
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -258,7 +254,7 @@ struct PlanViewerView: View {
                            x: p.x, y: p.y,
                            isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: clusterPrimaryRplan * 2.0,
+            collisionRadius: primaryRplan * 2.0,
             bubbleRadius: primaryRplan,
             // Bumped from 0.55 → 1.0 so neighbouring bubbles have a full
             // bubble-radius of breathing room — fewer arrows end up
