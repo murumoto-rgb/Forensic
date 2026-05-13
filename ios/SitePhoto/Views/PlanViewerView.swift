@@ -193,10 +193,18 @@ struct PlanViewerView: View {
         let imgSize = image.size
         let fit = min(geo.size.width / max(1, imgSize.width),
                       geo.size.height / max(1, imgSize.height))
-        let dispW = imgSize.width * fit
-        let dispH = imgSize.height * fit
-        let originX = (geo.size.width - dispW) / 2
-        let originY = (geo.size.height - dispH) / 2
+        // Bake the user's zoom directly into image size + bubble
+        // positions instead of going through .scaleEffect. scaleEffect
+        // GPU-transforms already-rasterised pixels, which blurs text
+        // at any scale ≠ 1. With manual scaling the image re-renders
+        // at the new size each frame and bubble text stays crisp at
+        // every zoom level. Mirrors `PlanLocateCanvas` in
+        // `LocateSheet.swift`.
+        let effScale = fit * scale
+        let effW = imgSize.width * effScale
+        let effH = imgSize.height * effScale
+        let effOX = (geo.size.width  - effW) / 2 + offset.width
+        let effOY = (geo.size.height - effH) / 2 + offset.height
 
         // Per-project bubble size — uniformly larger when sequence
         // numbers grow to 3+ digits so text doesn't have to shrink as
@@ -254,19 +262,19 @@ struct PlanViewerView: View {
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
                 .resizable()
-                .frame(width: dispW, height: dispH)
-                .offset(x: originX, y: originY)
+                .frame(width: effW, height: effH)
+                .offset(x: effOX, y: effOY)
 
             // MARK: cluster-fanning leader lines (experimental)
             ForEach(fanResult.leaderLines, id: \.self) { line in
                 Path { p in
                     p.move(to: CGPoint(
-                        x: originX + line.from.x * fit,
-                        y: originY + line.from.y * fit
+                        x: effOX + line.from.x * effScale,
+                        y: effOY + line.from.y * effScale
                     ))
                     p.addLine(to: CGPoint(
-                        x: originX + line.to.x * fit,
-                        y: originY + line.to.y * fit
+                        x: effOX + line.to.x * effScale,
+                        y: effOY + line.to.y * effScale
                     ))
                 }
                 .stroke(Color.white.opacity(0.4),
@@ -279,10 +287,13 @@ struct PlanViewerView: View {
                 // capture). Changing the plan's northDeg afterwards must NOT
                 // rotate existing arrows, so draw with the heading as-is.
                 let planFrame = marker.bearing ?? 0
-                let centerX = originX + marker.x * fit
-                let centerY = originY + marker.y * fit
+                let centerX = effOX + marker.x * effScale
+                let centerY = effOY + marker.y * effScale
                 // MARK: cluster-fanning per-marker arrow length (experimental)
                 let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? arrowLengthPlan
+                // Arrow length stays at its "fit-to-screen" natural
+                // size regardless of zoom — same rationale as
+                // keeping bubble size constant during zoom.
                 let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
                 // MARK: end cluster-fanning per-marker arrow length
                 ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
@@ -308,18 +319,20 @@ struct PlanViewerView: View {
                     .frame(width: secRview * 2, height: secRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
-                        select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
+                        select(photo: marker.photo, geo: geo, imgSize: imgSize, fit: fit)
                     }
-                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .position(x: effOX + marker.x * effScale,
+                               y: effOY + marker.y * effScale)
             }
             ForEach(markers.filter { $0.isPrimary }) { marker in
                 bubble(for: marker, radius: primaryRview)
                     .frame(width: primaryRview * 2, height: primaryRview * 2)
                     .contentShape(Circle().inset(by: -8))
                     .onTapGesture {
-                        select(photo: marker.photo, geo: geo, originX: originX, originY: originY, fit: fit)
+                        select(photo: marker.photo, geo: geo, imgSize: imgSize, fit: fit)
                     }
-                    .position(x: originX + marker.x * fit, y: originY + marker.y * fit)
+                    .position(x: effOX + marker.x * effScale,
+                               y: effOY + marker.y * effScale)
             }
 
             NorthIndicator(northDeg: plan.northDeg)
@@ -327,23 +340,29 @@ struct PlanViewerView: View {
                 .position(x: geo.size.width - 38, y: 38)
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-        .scaleEffect(scale, anchor: .center)
-        .offset(offset)
         .gesture(
             SimultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in
                         let newScale = max(0.5, min(8, lastScale * value.magnification))
-                        // Anchor the zoom at the pinch point: keep the layout
-                        // location at value.startLocation under the user's
-                        // fingers as the scale changes.
-                        let aX = geo.size.width  / 2
-                        let aY = geo.size.height / 2
-                        let dx = value.startLocation.x - aX
-                        let dy = value.startLocation.y - aY
+                        // Anchor the zoom at the pinch start point: the
+                        // image pixel under value.startLocation should
+                        // stay there as the scale changes. Same derivation
+                        // as `PlanLocateCanvas` in LocateSheet:
+                        //   offset_new = q·(1 − r) + offset_start·r
+                        // where r = magnification and q is the pinch
+                        // location relative to the image's natural-fit
+                        // center.
+                        let baseW = imgSize.width  * fit
+                        let baseH = imgSize.height * fit
+                        let imgCenterX = (geo.size.width  - baseW) / 2 + baseW / 2
+                        let imgCenterY = (geo.size.height - baseH) / 2 + baseH / 2
+                        let qx = value.startLocation.x - imgCenterX
+                        let qy = value.startLocation.y - imgCenterY
+                        let r  = value.magnification
                         offset = CGSize(
-                            width: lastOffset.width + dx * (lastScale - newScale),
-                            height: lastOffset.height + dy * (lastScale - newScale)
+                            width:  qx * (1 - r) + lastOffset.width  * r,
+                            height: qy * (1 - r) + lastOffset.height * r
                         )
                         scale = newScale
                     }
@@ -364,27 +383,51 @@ struct PlanViewerView: View {
         .onChange(of: pendingRecenterID) { _, newID in
             guard let id = newID,
                   let marker = markers.first(where: { $0.photo.id == id }) else { return }
-            recenter(on: marker, geo: geo, originX: originX, originY: originY, fit: fit)
+            recenter(on: marker, geo: geo, imgSize: imgSize, fit: fit)
             pendingRecenterID = nil
         }
     }
 
     @ViewBuilder
     private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
-        ZStack {
-            Circle()
-                .fill(fillColor(for: marker))
-                .frame(width: radius * 2, height: radius * 2)
-            Text("\(marker.photo.sequenceNumber)")
-                // SF Pro Text (non-rounded) holds its shape down to
-                // smaller pixel sizes than the rounded design, which
-                // smears at scale-factors needed for 3+ digit numbers.
-                .font(.system(size: radius * 1.1, weight: .bold))
-                .foregroundStyle(.white)
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-                .frame(width: radius * 1.75, height: radius * 1.75)
+        // Canvas-based rendering keeps the text crisp at every zoom
+        // level. SwiftUI Text + .minimumScaleFactor lets the text land
+        // at a fractional point size and is re-rasterised by the layer
+        // tree on each frame — both produce soft edges. Canvas resolves
+        // the Text once at an integer point size and draws via Metal,
+        // so glyphs land on exact pixel boundaries.
+        let fill = fillColor(for: marker)
+        Canvas { context, size in
+            context.fill(
+                Path(ellipseIn: CGRect(origin: .zero, size: size)),
+                with: .color(fill)
+            )
+            let maxSize = max(8, floor(radius * 1.1))
+            let str = "\(marker.photo.sequenceNumber)"
+            var fontSize = maxSize
+            var resolved = context.resolve(
+                Text(str)
+                    .font(.system(size: fontSize, weight: .bold))
+                    .foregroundColor(.white)
+            )
+            let measured = resolved.measure(in: size)
+            let widthCap = radius * 1.75
+            if measured.width > widthCap {
+                let factor = max(0.6, widthCap / measured.width)
+                fontSize = max(8, floor(maxSize * factor))
+                resolved = context.resolve(
+                    Text(str)
+                        .font(.system(size: fontSize, weight: .bold))
+                        .foregroundColor(.white)
+                )
+            }
+            context.draw(
+                resolved,
+                at: CGPoint(x: size.width / 2, y: size.height / 2),
+                anchor: .center
+            )
         }
+        .frame(width: radius * 2, height: radius * 2)
     }
 
     /// Resolve the bubble fill colour. Selected always wins (red) so the
@@ -408,7 +451,7 @@ struct PlanViewerView: View {
 
     // MARK: - Selection / centering
 
-    private func select(photo: Photo, geo: GeometryProxy, originX: CGFloat, originY: CGFloat, fit: CGFloat) {
+    private func select(photo: Photo, geo: GeometryProxy, imgSize: CGSize, fit: CGFloat) {
         // Always pick the LEAD of the group when the user taps on the cluster
         // (the tap may land on a tail since the tap bubbles overlap visually).
         let target = leadOfGroup(containing: photo) ?? photo
@@ -424,21 +467,26 @@ struct PlanViewerView: View {
             bearing: target.headingDegrees
         )
 
-        recenter(on: targetMarker, geo: geo, originX: originX, originY: originY, fit: fit)
+        recenter(on: targetMarker, geo: geo, imgSize: imgSize, fit: fit)
         withAnimation(.easeInOut(duration: 0.25)) {
             selectedPhotoID = target.id
         }
     }
 
-    private func recenter(on marker: PlanMarker, geo: GeometryProxy, originX: CGFloat, originY: CGFloat, fit: CGFloat) {
-        let lx = originX + marker.x * fit
-        let ly = originY + marker.y * fit
-        let geoCx = geo.size.width / 2
-        let geoCy = geo.size.height / 2
+    private func recenter(on marker: PlanMarker, geo: GeometryProxy, imgSize: CGSize, fit: CGFloat) {
+        // Mirror the manual-scaling math used in `planContent`: the
+        // marker lands at (effOX + x·effScale, effOY + y·effScale).
+        // Solve for the `offset` (= pan) that puts that landing point at
+        // the desired target screen position.
+        let effScale = fit * scale
+        let effW = imgSize.width  * effScale
+        let effH = imgSize.height * effScale
+        let baseEffOX = (geo.size.width  - effW) / 2
+        let baseEffOY = (geo.size.height - effH) / 2
         let targetX = geo.size.width / 2
         let targetY = max(80, (geo.size.height - previewHeight) / 4)
-        let newX = targetX - geoCx - (lx - geoCx) * scale
-        let newY = targetY - geoCy - (ly - geoCy) * scale
+        let newX = targetX - baseEffOX - marker.x * effScale
+        let newY = targetY - baseEffOY - marker.y * effScale
 
         withAnimation(.easeInOut(duration: 0.4)) {
             offset = CGSize(width: newX, height: newY)

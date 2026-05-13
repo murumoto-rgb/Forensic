@@ -114,8 +114,8 @@ struct BucketManagerSheet: View {
                     .environment(toastCenter)
             }
             .sheet(item: $savingBucketToLibrary) { bucket in
-                SaveToLibraryCategorySheet(bucket: bucket) { categoryID in
-                    saveToLibrary(bucket, categoryID: categoryID)
+                SaveToLibraryCategorySheet(bucket: bucket) { choice in
+                    saveToLibrary(bucket, choice: choice)
                 }
                 .environment(store)
                 .environment(toastCenter)
@@ -336,10 +336,26 @@ struct BucketManagerSheet: View {
         .accessibilityLabel("Bucket Library")
     }
 
-    private func saveToLibrary(_ bucket: Bucket, categoryID: UUID) {
-        guard let project,
-              let entry = store.saveBucketToLibrary(bucket,
-                                                      intoCategory: categoryID) else {
+    /// Resolve the engineer's category choice — either pick an
+    /// existing library category, or mint a brand-new one before
+    /// filing the bucket. Single Save click handles both branches.
+    private func saveToLibrary(_ bucket: Bucket,
+                                 choice: SaveToLibraryCategoryChoice) {
+        guard let project else { return }
+        let categoryID: UUID
+        switch choice {
+        case .existing(let id):
+            categoryID = id
+        case .new(let rawName):
+            let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let created = store.addLibraryCategory(name: trimmed) else {
+                return
+            }
+            categoryID = created.id
+        }
+        guard let entry = store.saveBucketToLibrary(bucket,
+                                                     intoCategory: categoryID) else {
             return
         }
         // Classify the bucket on the project so it surfaces under the
@@ -402,61 +418,74 @@ struct BucketManagerSheet: View {
     }
 }
 
+/// Category choice when saving a project bucket back to the library —
+/// either an existing primary category or a fresh one created inline.
+enum SaveToLibraryCategoryChoice {
+    case existing(UUID)
+    case new(String)
+}
+
 /// Half-height sheet shown when the engineer taps "Save to Library…" on
 /// a project bucket. Lists the existing Primary Investigation Type
-/// categories so the bucket can be filed under one. If the library is
-/// empty, the user is invited to open the manager and create a category
-/// first — saving into a non-existent category is meaningless.
+/// categories so the bucket can be filed under one — plus a "+ New
+/// category…" row so a bucket can be promoted into a fresh category
+/// without first detouring through Manage Library.
 private struct SaveToLibraryCategorySheet: View {
     let bucket: Bucket
-    let onPick: (UUID) -> Void
+    let onPick: (SaveToLibraryCategoryChoice) -> Void
 
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @State private var creatingNewCategoryName: String = ""
+    @State private var showingCreateAlert: Bool = false
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.bucketLibrary.isEmpty {
-                    EmptyStateView(
-                        icon: "books.vertical",
-                        title: "No categories yet",
-                        message: "Create a Primary Investigation Type in Manage Library, then come back to save this bucket into it."
-                    )
-                } else {
-                    List {
-                        Section {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(bucket.color)
-                                    .frame(width: 14, height: 14)
-                                Text(bucket.name)
-                                    .font(.body.bold())
-                                Spacer()
-                            }
-                        } header: {
-                            Text("Bucket to save")
-                        }
-                        Section {
-                            ForEach(store.bucketLibrary) { category in
-                                Button {
-                                    onPick(category.id)
-                                    dismiss()
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(category.name)
-                                            .font(.body)
-                                            .foregroundStyle(.primary)
-                                        Text("\(category.entries.count) bucket\(category.entries.count == 1 ? "" : "s") already")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+            List {
+                Section {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(bucket.color)
+                            .frame(width: 14, height: 14)
+                        Text(bucket.name)
+                            .font(.body.bold())
+                        Spacer()
+                    }
+                } header: {
+                    Text("Bucket to save")
+                }
+                if !store.bucketLibrary.isEmpty {
+                    Section {
+                        ForEach(store.bucketLibrary) { category in
+                            Button {
+                                onPick(.existing(category.id))
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(category.name)
+                                        .font(.body)
+                                        .foregroundStyle(.primary)
+                                    Text("\(category.entries.count) bucket\(category.entries.count == 1 ? "" : "s") already")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
-                        } header: {
-                            Text("Save into category")
                         }
+                    } header: {
+                        Text("Save into category")
                     }
+                }
+                Section {
+                    Button {
+                        creatingNewCategoryName = ""
+                        showingCreateAlert = true
+                    } label: {
+                        Label("New category…", systemImage: "plus.circle")
+                    }
+                } footer: {
+                    Text(store.bucketLibrary.isEmpty
+                          ? "No categories in the library yet — start by creating one for this bucket."
+                          : "Create a new Primary Investigation Type and save this bucket under it in one step.")
                 }
             }
             .navigationTitle("Save to Library")
@@ -465,6 +494,21 @@ private struct SaveToLibraryCategorySheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
+            }
+            .alert("New Primary Investigation Type",
+                   isPresented: $showingCreateAlert) {
+                TextField("Name (e.g. Roofing)", text: $creatingNewCategoryName)
+                    .textInputAutocapitalization(.words)
+                Button("Save") {
+                    onPick(.new(creatingNewCategoryName))
+                    dismiss()
+                }
+                .disabled(creatingNewCategoryName
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The new category will be created and the bucket will be saved into it.")
             }
         }
     }

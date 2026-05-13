@@ -786,26 +786,60 @@ struct PlanLocateCanvas: View {
     /// dimmer than the active pin so the pin still reads as the
     /// "selected" element; thicker border for tappable bubbles so the
     /// engineer can see at a glance which ones invite a group action.
+    /// Canvas-rendered so the digit text stays crisp at every zoom
+    /// level (SwiftUI Text + .minimumScaleFactor blurs at fractional
+    /// point sizes and during transform passes).
     @ViewBuilder
     private func existingBubble(seq: Int,
                                   radius: CGFloat,
                                   at point: CGPoint,
                                   tappable: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(Color.green.opacity(tappable ? 0.92 : 0.7))
-                .frame(width: radius * 2, height: radius * 2)
-            Circle()
-                .stroke(Color.white.opacity(tappable ? 0.9 : 0.55),
-                         lineWidth: tappable ? 2 : 1)
-                .frame(width: radius * 2, height: radius * 2)
-            Text("\(seq)")
-                .font(.system(size: radius * 1.05, weight: .bold))
-                .foregroundStyle(.white)
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-                .frame(width: radius * 1.75, height: radius * 1.75)
+        let fillOpacity: Double = tappable ? 0.92 : 0.7
+        let strokeOpacity: Double = tappable ? 0.9 : 0.55
+        let strokeWidth: CGFloat = tappable ? 2 : 1
+        Canvas { context, size in
+            let rect = CGRect(origin: .zero, size: size)
+            context.fill(
+                Path(ellipseIn: rect),
+                with: .color(Color.green.opacity(fillOpacity))
+            )
+            // Inset the stroke path by half its line width so the
+            // stroke renders fully inside the bubble (matches the old
+            // SwiftUI Circle().stroke behaviour, which centers on the
+            // path).
+            let strokeRect = rect.insetBy(dx: strokeWidth / 2,
+                                             dy: strokeWidth / 2)
+            context.stroke(
+                Path(ellipseIn: strokeRect),
+                with: .color(Color.white.opacity(strokeOpacity)),
+                lineWidth: strokeWidth
+            )
+            let maxSize = max(8, floor(radius * 1.05))
+            let str = "\(seq)"
+            var fontSize = maxSize
+            var resolved = context.resolve(
+                Text(str)
+                    .font(.system(size: fontSize, weight: .bold))
+                    .foregroundColor(.white)
+            )
+            let measured = resolved.measure(in: size)
+            let widthCap = radius * 1.75
+            if measured.width > widthCap {
+                let factor = max(0.6, widthCap / measured.width)
+                fontSize = max(8, floor(maxSize * factor))
+                resolved = context.resolve(
+                    Text(str)
+                        .font(.system(size: fontSize, weight: .bold))
+                        .foregroundColor(.white)
+                )
+            }
+            context.draw(
+                resolved,
+                at: CGPoint(x: size.width / 2, y: size.height / 2),
+                anchor: .center
+            )
         }
+        .frame(width: radius * 2, height: radius * 2)
         .position(point)
     }
 

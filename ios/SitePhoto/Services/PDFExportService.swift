@@ -688,7 +688,11 @@ struct PDFExportService {
                                     width: radius * 2, height: radius * 2))
 
         let numStr = String(seq) as NSString
-        var fontSize = radius * 1.1
+        // Round to an integer point size so glyphs land on exact pixel
+        // boundaries during PDF rasterisation — matches the SwiftUI
+        // Canvas bubble renderers in PlanViewerView / PhotoGroupPickerSheet
+        // / LocateSheet, which also use floor(radius * 1.1).
+        var fontSize = max(8, floor(radius * 1.1))
         // SF Pro Text (non-rounded, bold) holds shape at small sizes
         // better than the rounded design — matches the SwiftUI bubble
         // renderers in PlanViewerView et al.
@@ -699,9 +703,10 @@ struct PDFExportService {
         let maxW = radius * 1.75
         var measured = numStr.size(withAttributes: attrs)
         if measured.width > maxW {
-            // Match SwiftUI's minimumScaleFactor(0.6).
+            // Match SwiftUI's minimumScaleFactor(0.6); also round so
+            // the shrunken size stays integer.
             let factor = max(0.6, maxW / measured.width)
-            fontSize *= factor
+            fontSize = max(8, floor(fontSize * factor))
             attrs[.font] = UIFont.systemFont(ofSize: fontSize, weight: .bold)
             measured = numStr.size(withAttributes: attrs)
         }

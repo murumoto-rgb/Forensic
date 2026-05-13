@@ -328,10 +328,15 @@ struct PhotoGroupPickerSheet: View {
         let imgSize = image.size
         let fit = min(geo.size.width / max(1, imgSize.width),
                       geo.size.height / max(1, imgSize.height))
-        let dispW = imgSize.width * fit
-        let dispH = imgSize.height * fit
-        let originX = (geo.size.width - dispW) / 2
-        let originY = (geo.size.height - dispH) / 2
+        // Bake the user's zoom directly into image size + bubble
+        // positions rather than using .scaleEffect, which GPU-transforms
+        // already-rasterised pixels and blurs text at any non-1 scale.
+        // Mirrors PlanViewerView / PlanLocateCanvas.
+        let effScale = fit * scale
+        let effW = imgSize.width  * effScale
+        let effH = imgSize.height * effScale
+        let effOX = (geo.size.width  - effW) / 2 + offset.width
+        let effOY = (geo.size.height - effH) / 2 + offset.height
 
         // Match PlanViewerView's sizing exactly — including the
         // per-project digit scale so picker bubbles and viewer
@@ -382,19 +387,19 @@ struct PhotoGroupPickerSheet: View {
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
                 .resizable()
-                .frame(width: dispW, height: dispH)
-                .offset(x: originX, y: originY)
+                .frame(width: effW, height: effH)
+                .offset(x: effOX, y: effOY)
 
             // MARK: cluster-fanning leader lines
             ForEach(fanResult.leaderLines, id: \.self) { line in
                 Path { p in
                     p.move(to: CGPoint(
-                        x: originX + line.from.x * fit,
-                        y: originY + line.from.y * fit
+                        x: effOX + line.from.x * effScale,
+                        y: effOY + line.from.y * effScale
                     ))
                     p.addLine(to: CGPoint(
-                        x: originX + line.to.x * fit,
-                        y: originY + line.to.y * fit
+                        x: effOX + line.to.x * effScale,
+                        y: effOY + line.to.y * effScale
                     ))
                 }
                 .stroke(Color.white.opacity(0.4),
@@ -405,10 +410,12 @@ struct PhotoGroupPickerSheet: View {
             // Direction arrows on primary bubbles with a stored bearing.
             ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
                 let planFrame = marker.bearing ?? 0
-                let centerX = originX + marker.x * fit
-                let centerY = originY + marker.y * fit
+                let centerX = effOX + marker.x * effScale
+                let centerY = effOY + marker.y * effScale
                 // MARK: cluster-fanning per-marker arrow length
                 let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? Double(arrowLengthPlan)
+                // Keep arrows at their natural fit-to-screen size
+                // (no zoom) so they don't visually outgrow the bubble.
                 let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
                 // MARK: end cluster-fanning per-marker arrow length
                 ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
@@ -435,7 +442,7 @@ struct PhotoGroupPickerSheet: View {
                     .onTapGesture {
                         pendingTargetID = m.photo.id
                     }
-                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
+                    .position(x: effOX + m.x * effScale, y: effOY + m.y * effScale)
             }
             ForEach(markers.filter { $0.isPrimary }) { m in
                 bubble(seq: m.photo.sequenceNumber, radius: primaryRview)
@@ -444,24 +451,29 @@ struct PhotoGroupPickerSheet: View {
                     .onTapGesture {
                         pendingTargetID = m.photo.id
                     }
-                    .position(x: originX + m.x * fit, y: originY + m.y * fit)
+                    .position(x: effOX + m.x * effScale, y: effOY + m.y * effScale)
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-        .scaleEffect(scale, anchor: .center)
-        .offset(offset)
         .gesture(
             SimultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in
                         let newScale = max(0.5, min(8, lastScale * value.magnification))
-                        let aX = geo.size.width  / 2
-                        let aY = geo.size.height / 2
-                        let dx = value.startLocation.x - aX
-                        let dy = value.startLocation.y - aY
+                        // Anchor zoom at pinch start: hold the image
+                        // pixel under value.startLocation in place as
+                        // scale changes. Same derivation as LocateSheet
+                        // (PlanLocateCanvas).
+                        let baseW = imgSize.width  * fit
+                        let baseH = imgSize.height * fit
+                        let imgCenterX = (geo.size.width  - baseW) / 2 + baseW / 2
+                        let imgCenterY = (geo.size.height - baseH) / 2 + baseH / 2
+                        let qx = value.startLocation.x - imgCenterX
+                        let qy = value.startLocation.y - imgCenterY
+                        let r  = value.magnification
                         offset = CGSize(
-                            width: lastOffset.width + dx * (lastScale - newScale),
-                            height: lastOffset.height + dy * (lastScale - newScale)
+                            width:  qx * (1 - r) + lastOffset.width  * r,
+                            height: qy * (1 - r) + lastOffset.height * r
                         )
                         scale = newScale
                     }
@@ -483,15 +495,42 @@ struct PhotoGroupPickerSheet: View {
 
     @ViewBuilder
     private func bubble(seq: Int, radius: CGFloat) -> some View {
-        ZStack {
-            Circle().fill(Color.green).frame(width: radius * 2, height: radius * 2)
-            Text("\(seq)")
-                .font(.system(size: radius * 1.1, weight: .bold))
-                .foregroundStyle(.white)
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-                .frame(width: radius * 1.75, height: radius * 1.75)
+        // Canvas keeps the digit text crisp at every zoom level by
+        // resolving Text once at an integer point size and rasterising
+        // via Metal. SwiftUI Text + .minimumScaleFactor would land at a
+        // fractional point size and be re-rasterised by the layer tree
+        // on each frame — both produce soft edges.
+        Canvas { context, size in
+            context.fill(
+                Path(ellipseIn: CGRect(origin: .zero, size: size)),
+                with: .color(.green)
+            )
+            let maxSize = max(8, floor(radius * 1.1))
+            let str = "\(seq)"
+            var fontSize = maxSize
+            var resolved = context.resolve(
+                Text(str)
+                    .font(.system(size: fontSize, weight: .bold))
+                    .foregroundColor(.white)
+            )
+            let measured = resolved.measure(in: size)
+            let widthCap = radius * 1.75
+            if measured.width > widthCap {
+                let factor = max(0.6, widthCap / measured.width)
+                fontSize = max(8, floor(maxSize * factor))
+                resolved = context.resolve(
+                    Text(str)
+                        .font(.system(size: fontSize, weight: .bold))
+                        .foregroundColor(.white)
+                )
+            }
+            context.draw(
+                resolved,
+                at: CGPoint(x: size.width / 2, y: size.height / 2),
+                anchor: .center
+            )
         }
+        .frame(width: radius * 2, height: radius * 2)
     }
 
     // MARK: - Marker layout (mirrors PlanViewerView)

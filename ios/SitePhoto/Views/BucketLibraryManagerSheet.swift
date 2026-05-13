@@ -24,6 +24,10 @@ struct BucketLibraryManagerSheet: View {
     @State private var deletingCategory: BucketLibraryCategory?
 
     @State private var addingEntryToCategory: BucketLibraryCategory?
+    /// When true, present `AddEntrySheet` with no pre-selected category
+    /// — the top-level "Add Bucket" entry point lets the engineer
+    /// pick (or create) the category from inside the sheet.
+    @State private var showingTopLevelAdd: Bool = false
     @State private var newEntryName: String = ""
     @State private var newEntryColor: String = Bucket.palette[0]
 
@@ -59,10 +63,18 @@ struct BucketLibraryManagerSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 12) {
                         Button {
+                            newEntryName = ""
+                            newEntryColor = Bucket.palette[0]
+                            showingTopLevelAdd = true
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .accessibilityLabel("Add Bucket")
+                        Button {
                             addingCategoryName = ""
                             showingAddCategoryPrompt = true
                         } label: {
-                            Image(systemName: "plus.circle")
+                            Image(systemName: "rectangle.stack.badge.plus")
                         }
                         .accessibilityLabel("Add Primary Investigation Type")
                         EditButton()
@@ -104,15 +116,29 @@ struct BucketLibraryManagerSheet: View {
             }
             .sheet(item: $addingEntryToCategory) { category in
                 AddEntrySheet(
-                    category: category,
+                    categories: library,
+                    initialCategoryID: category.id,
                     initialName: $newEntryName,
                     initialColor: $newEntryColor,
-                    onSave: { name, color in
-                        commitNewEntry(in: category, name: name, color: color)
+                    onSave: { name, color, choice in
+                        commitNewEntry(name: name, color: color, categoryChoice: choice)
                     }
                 )
                 .environment(store)
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showingTopLevelAdd) {
+                AddEntrySheet(
+                    categories: library,
+                    initialCategoryID: nil,
+                    initialName: $newEntryName,
+                    initialColor: $newEntryColor,
+                    onSave: { name, color, choice in
+                        commitNewEntry(name: name, color: color, categoryChoice: choice)
+                    }
+                )
+                .environment(store)
+                .presentationDetents([.medium, .large])
             }
             .alert("Rename observation bucket",
                    isPresented: Binding(
@@ -255,14 +281,37 @@ struct BucketLibraryManagerSheet: View {
         }
     }
 
-    private func commitNewEntry(in category: BucketLibraryCategory,
-                                  name: String,
-                                  color: String) {
-        if store.addLibraryEntry(toCategory: category.id, name: name, colorHex: color) != nil {
-            Haptics.success()
-            toastCenter.post("Added bucket to \"\(category.name)\"", kind: .success)
+    /// Resolve the engineer's category choice (existing one OR fresh
+    /// one to be created), then add the bucket. When `.new` is picked
+    /// we mint the category first via `addLibraryCategory` and then
+    /// fall through to `addLibraryEntry` against the brand-new ID —
+    /// a single Save click does both operations.
+    private func commitNewEntry(name: String,
+                                  color: String,
+                                  categoryChoice: BucketCategoryChoice) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        defer {
+            addingEntryToCategory = nil
+            showingTopLevelAdd = false
         }
-        addingEntryToCategory = nil
+        guard !trimmedName.isEmpty else { return }
+        let resolvedCategory: BucketLibraryCategory?
+        switch categoryChoice {
+        case .existing(let id):
+            resolvedCategory = library.first(where: { $0.id == id })
+        case .new(let rawName):
+            let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            resolvedCategory = store.addLibraryCategory(name: trimmed)
+        }
+        guard let category = resolvedCategory,
+              store.addLibraryEntry(toCategory: category.id,
+                                     name: trimmedName,
+                                     colorHex: color) != nil else {
+            return
+        }
+        Haptics.success()
+        toastCenter.post("Added bucket to \"\(category.name)\"", kind: .success)
     }
 
     private func commitEntryRename() {
@@ -282,21 +331,63 @@ private struct EntryRef: Identifiable {
     var id: String { "\(categoryID)-\(entryID)" }
 }
 
-/// Sheet for picking a name + colour when adding a new observation
-/// bucket to a category. Inline alert wouldn't carry the colour swatch
-/// row, so we use a dedicated half-height sheet.
+/// The engineer's category choice when adding a bucket — either an
+/// existing primary category or a brand-new one created inline by
+/// the same Save click.
+enum BucketCategoryChoice {
+    case existing(UUID)
+    case new(String)
+}
+
+/// Sheet for adding a new observation bucket. Takes a name + color
+/// + primary category choice; the category can be an existing
+/// library category or a freshly-typed name. Inline alert wouldn't
+/// carry the colour swatch grid, so we use a dedicated sheet.
 private struct AddEntrySheet: View {
-    let category: BucketLibraryCategory
+    let categories: [BucketLibraryCategory]
+    /// Pre-selected category — typically whichever row the engineer
+    /// tapped "+ Add Observation Bucket" on. `nil` means "user opened
+    /// the top-level Add Bucket flow, no preselection."
+    let initialCategoryID: UUID?
     @Binding var initialName: String
     @Binding var initialColor: String
-    var onSave: (String, String) -> Void
+    /// Fires with (name, colorHex, choice). The parent resolves the
+    /// `.existing`/`.new` choice into one or two `ProjectStore` calls.
+    var onSave: (String, String, BucketCategoryChoice) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    /// `nil` means the "+ New category…" option is selected; otherwise
+    /// the UUID of the picked existing category.
+    @State private var pickedCategoryID: UUID?
+    @State private var newCategoryName: String = ""
+    @State private var didInit: Bool = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
+                Section {
+                    Picker("Primary category", selection: $pickedCategoryID) {
+                        ForEach(categories) { c in
+                            Text(c.name).tag(Optional(c.id))
+                        }
+                        Divider()
+                        Text("+ New category…")
+                            .tag(UUID?.none)
+                    }
+                    .pickerStyle(.menu)
+                    if pickedCategoryID == nil {
+                        TextField("New category name (e.g. Stucco Investigation)",
+                                  text: $newCategoryName)
+                            .textInputAutocapitalization(.words)
+                    }
+                } header: {
+                    Text("Primary category")
+                } footer: {
+                    Text(pickedCategoryID == nil
+                          ? "The new category will be created when you tap Add."
+                          : "Bucket will be saved under the selected category.")
+                }
+                Section("Bucket name") {
                     TextField("e.g. Cracks", text: $initialName)
                         .textInputAutocapitalization(.words)
                 }
@@ -325,7 +416,7 @@ private struct AddEntrySheet: View {
                     .padding(.vertical, 6)
                 }
             }
-            .navigationTitle("Add to \(category.name)")
+            .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -333,12 +424,50 @@ private struct AddEntrySheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Add") {
-                        onSave(initialName, initialColor)
+                        let choice: BucketCategoryChoice
+                        if let id = pickedCategoryID {
+                            choice = .existing(id)
+                        } else {
+                            choice = .new(newCategoryName)
+                        }
+                        onSave(initialName, initialColor, choice)
                     }
                     .bold()
-                    .disabled(initialName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSave)
                 }
             }
+            .onAppear { initIfNeeded() }
+        }
+    }
+
+    private var navTitle: String {
+        if let id = pickedCategoryID,
+           let c = categories.first(where: { $0.id == id }) {
+            return "Add to \(c.name)"
+        }
+        return "Add Bucket"
+    }
+
+    private var canSave: Bool {
+        let nameOK = !initialName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let categoryOK: Bool = (pickedCategoryID != nil)
+            || !newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return nameOK && categoryOK
+    }
+
+    private func initIfNeeded() {
+        guard !didInit else { return }
+        didInit = true
+        if let id = initialCategoryID,
+           categories.contains(where: { $0.id == id }) {
+            pickedCategoryID = id
+        } else if let first = categories.first {
+            pickedCategoryID = first.id
+        } else {
+            // Library is empty — push the engineer straight into
+            // "create a new category" since they can't pick an
+            // existing one.
+            pickedCategoryID = nil
         }
     }
 }
