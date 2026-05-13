@@ -229,7 +229,7 @@ struct PlanViewerView: View {
         let digitScale = bubbleDigitScale(for: project)
         // Base radius at fit-to-screen (zoom=1). The plan-pixel
         // footprint = base / fit — independent of zoom, so the cluster
-        // fanning algorithm and tail-gap math use this directly.
+        // detection threshold uses this directly.
         let basePrimaryRview = 18 * bubbleScale * digitScale
         let baseSecRview = 13 * bubbleScale * digitScale
         // Rendered radius scales with zoom so the bubble keeps a fixed
@@ -238,15 +238,12 @@ struct PlanViewerView: View {
         // .scaleEffect approach behaved, just without the rasterised-
         // pixel blur. Same for arrow length / stroke / arrowhead size.
         let primaryRview = basePrimaryRview * scale
-        let secRview = baseSecRview * scale
-        let firstGapView = basePrimaryRview + baseSecRview - 2 * bubbleScale
-        let stepGapView = baseSecRview * 2 - 2 * bubbleScale
 
-        let initialMarkers = buildMarkers(
-            project: project,
-            firstGapPlan: firstGapView / fit,
-            stepGapPlan: stepGapView / fit
-        )
+        // Group leads (one marker per groupID, or one per ungrouped
+        // photo). Tail bubbles are no longer rendered — grouped photos
+        // collapse into a single ringed bubble; the engineer drills into
+        // group members via the photo editor's per-group navigation.
+        let initialMarkers = buildMarkers(project: project)
 
         // MARK: cluster detection (replaces the old fanning rosette)
         let primaryRplan = Double(basePrimaryRview / fit)
@@ -265,18 +262,20 @@ struct PlanViewerView: View {
             collisionRadius: primaryRplan * 1.0
         )
 
-        let tailMarkers = initialMarkers.filter { !$0.isPrimary }
         // For each cluster build a "displayed primary" — the lowest-seq
         // member acting as the cluster's lead, positioned at the cluster
         // centroid. Singletons keep their natural position (centroid ==
-        // member position).
+        // member position). groupSize carries through so the cluster
+        // representative draws the group-band when the lead represents
+        // a group.
         let displayedPrimaries: [DisplayedPrimary] = primaryClusters.map { cluster in
             let lead = cluster.members.min(by: { $0.photo.sequenceNumber < $1.photo.sequenceNumber })
                 ?? cluster.members[0]
             let leadAtCentroid = PlanMarker(
                 id: lead.id, photo: lead.photo,
                 x: cluster.centroid.x, y: cluster.centroid.y,
-                isPrimary: true, bearing: lead.bearing
+                isPrimary: true, bearing: lead.bearing,
+                groupSize: lead.groupSize
             )
             return DisplayedPrimary(
                 id: lead.photo.id,
@@ -287,10 +286,9 @@ struct PlanViewerView: View {
 
         let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
 
-        // Arrow shortening considers everything that's actually drawn
-        // — tail bubbles plus the cluster representatives at their
-        // displayed positions.
-        let allDisplayedForArrowMath = tailMarkers + displayedPrimaries.map { $0.marker }
+        // Arrow shortening considers the cluster representatives at
+        // their displayed positions — no tails to consider anymore.
+        let allDisplayedForArrowMath = displayedPrimaries.map { $0.marker }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
             markers: allDisplayedForArrowMath,
             id: { $0.photo.id },
@@ -332,22 +330,13 @@ struct PlanViewerView: View {
                 }
             }
 
-            // Tail bubbles first (under), then leads on top so a tap on a stack hits the lead.
-            // contentShape + onTapGesture must come BEFORE .position(...) —
-            // .position reparents the view to fill the entire plan area for
-            // layout, so a trailing .contentShape(Circle()) would inscribe in
-            // the whole parent and steal every tap (always selecting the
-            // last-drawn bubble).
-            ForEach(tailMarkers) { marker in
-                bubble(for: marker, radius: secRview)
-                    .frame(width: secRview * 2, height: secRview * 2)
-                    .contentShape(Circle().inset(by: -8))
-                    .onTapGesture {
-                        select(photo: marker.photo, geo: geo, imgSize: imgSize, fit: fit)
-                    }
-                    .position(x: effOX + marker.x * effScale,
-                               y: effOY + marker.y * effScale)
-            }
+            // Group-lead bubbles. Grouped photos no longer render tail
+            // bubbles — the lead carries a black band signalling that
+            // it represents a group. contentShape + onTapGesture must
+            // come BEFORE .position(...) — .position reparents the view
+            // to fill the entire plan area for layout, which would let
+            // a trailing .contentShape(Circle()) inscribe in the whole
+            // parent and steal every tap.
             ForEach(displayedPrimaries) { dp in
                 stackOrSingle(dp,
                               primaryRview: primaryRview,
@@ -403,25 +392,14 @@ struct PlanViewerView: View {
         )
         .onChange(of: pendingRecenterID) { _, newID in
             guard let id = newID else { return }
-            // After the cluster refactor there's no single `markers` list
-            // — the displayed marker for a stacked photo is the cluster
-            // representative at the centroid, not the photo's own
-            // PlanMarker. Search tails first, then cluster reps (matching
-            // either the lead's ID or any stacked member's ID so a
-            // recenter request for a non-lead member still hits its
-            // stack).
-            let marker: PlanMarker?
-            if let tail = tailMarkers.first(where: { $0.photo.id == id }) {
-                marker = tail
-            } else if let dp = displayedPrimaries.first(where: {
+            // Locate the cluster representative whose lead — or any
+            // stacked member — has this photo ID, so a recenter request
+            // from inside a group or a stack still pans to the bubble
+            // that actually renders.
+            guard let dp = displayedPrimaries.first(where: {
                 $0.marker.photo.id == id || $0.stackPhotoIDs.contains(id)
-            }) {
-                marker = dp.marker
-            } else {
-                marker = nil
-            }
-            guard let m = marker else { return }
-            recenter(on: m, geo: geo, imgSize: imgSize, fit: fit)
+            }) else { return }
+            recenter(on: dp.marker, geo: geo, imgSize: imgSize, fit: fit)
             pendingRecenterID = nil
         }
     }
@@ -535,6 +513,18 @@ struct PlanViewerView: View {
             )
         }
         .frame(width: radius * 2, height: radius * 2)
+        .overlay {
+            // Black band: marks the bubble as a group lead so the
+            // engineer knows it represents N photos, not one. Drawn as
+            // a strokeBorder so the ring sits flush with the bubble's
+            // outer edge (occupies the outermost slice of the fill
+            // rather than extending into empty space).
+            if marker.groupSize > 1 {
+                Circle()
+                    .strokeBorder(Color.black,
+                                   lineWidth: max(2, radius * 0.18))
+            }
+        }
     }
 
     /// Resolve the bubble fill colour. Selected always wins (red) so the
@@ -559,8 +549,9 @@ struct PlanViewerView: View {
     // MARK: - Selection / centering
 
     private func select(photo: Photo, geo: GeometryProxy, imgSize: CGSize, fit: CGFloat) {
-        // Always pick the LEAD of the group when the user taps on the cluster
-        // (the tap may land on a tail since the tap bubbles overlap visually).
+        // Tap targets are always cluster representatives (group leads),
+        // but resolve to the lead defensively in case a caller passes
+        // a non-lead photo through select(photo:).
         let target = leadOfGroup(containing: photo) ?? photo
 
         // Compute marker position for the target — the lead always sits at its
@@ -571,7 +562,10 @@ struct PlanViewerView: View {
             x: target.planPixelX ?? 0,
             y: target.planPixelY ?? 0,
             isPrimary: true,
-            bearing: target.headingDegrees
+            bearing: target.headingDegrees,
+            // groupSize doesn't affect recenter math; pick 1 since
+            // this marker isn't used for drawing.
+            groupSize: 1
         )
 
         recenter(on: targetMarker, geo: geo, imgSize: imgSize, fit: fit)
@@ -721,9 +715,7 @@ struct PlanViewerView: View {
         }
     }
 
-    private func buildMarkers(project: Project,
-                              firstGapPlan: Double,
-                              stepGapPlan: Double) -> [PlanMarker] {
+    private func buildMarkers(project: Project) -> [PlanMarker] {
         let activeID = project.floorPlan?.id
         var groups: [String: [Photo]] = [:]
         for photo in project.photos {
@@ -740,44 +732,20 @@ struct PlanViewerView: View {
         var out: [PlanMarker] = []
         // Iterate by sorted key so the resulting markers array has a
         // deterministic order across renders — important for the cluster
-        // fanning pass which is sensitive to consistent grouping.
+        // detection pass which is sensitive to consistent grouping.
         for key in groups.keys.sorted() {
             let members = groups[key]!
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let primary = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
-            let px = primary.planPixelX ?? 0
-            let py = primary.planPixelY ?? 0
-            let bearing = primary.headingDegrees
-
             out.append(PlanMarker(
                 id: primary.id,
                 photo: primary,
-                x: px,
-                y: py,
+                x: primary.planPixelX ?? 0,
+                y: primary.planPixelY ?? 0,
                 isPrimary: true,
-                bearing: bearing
+                bearing: primary.headingDegrees,
+                groupSize: members.count
             ))
-
-            // Heading is plan-frame (independent of northDeg). Tail trails
-            // opposite the arrow direction so it stays consistent regardless
-            // of how north is set later.
-            let planFrameBearing = bearing ?? 0
-            let oppRad = (planFrameBearing + 90) * .pi / 180
-            let dx = cos(oppRad)
-            let dy = sin(oppRad)
-
-            let tail = sorted.filter { $0.id != primary.id }
-            for (i, t) in tail.enumerated() {
-                let dist = firstGapPlan + Double(i) * stepGapPlan
-                out.append(PlanMarker(
-                    id: t.id,
-                    photo: t,
-                    x: px + dx * dist,
-                    y: py + dy * dist,
-                    isPrimary: false,
-                    bearing: nil
-                ))
-            }
         }
         return out
     }
@@ -792,6 +760,12 @@ struct PlanMarker: Identifiable {
     let y: Double
     let isPrimary: Bool
     let bearing: Double?
+    /// How many photos this bubble represents — 1 for ungrouped photos,
+    /// N for grouped photos (the bubble is the group lead and the N-1
+    /// remaining group members are not rendered separately). Renderers
+    /// draw a black ring around the bubble when this is > 1 so the
+    /// engineer knows the bubble stands for a group.
+    let groupSize: Int
 }
 
 /// One displayed primary slot on the plan — either a single bubble or a

@@ -368,14 +368,10 @@ struct PhotoGroupPickerSheet: View {
         let basePrimaryRview = 18 * bubbleScale * digitScale
         let baseSecRview = 13 * bubbleScale * digitScale
         let primaryRview = basePrimaryRview * scale
-        let secRview = baseSecRview * scale
-        let firstGapView = basePrimaryRview + baseSecRview - 2 * bubbleScale
-        let stepGapView = baseSecRview * 2 - 2 * bubbleScale
 
-        let initialMarkers = buildMarkers(
-            firstGapPlan: firstGapView / fit,
-            stepGapPlan: stepGapView / fit
-        )
+        // Group leads only — tail bubbles no longer render; grouped
+        // photos are signalled by a black band on the lead.
+        let initialMarkers = buildMarkers()
 
         // MARK: cluster detection (mirrors PlanViewerView's stack-badge
         // approach — no rosette, no leader lines, no displacement).
@@ -389,14 +385,14 @@ struct PhotoGroupPickerSheet: View {
             collisionRadius: primaryRplan * 1.0
         )
 
-        let tailMarkers = initialMarkers.filter { !$0.isPrimary }
         let displayedPrimaries: [PickerDisplayedPrimary] = primaryClusters.map { cluster in
             let lead = cluster.members.min(by: { $0.photo.sequenceNumber < $1.photo.sequenceNumber })
                 ?? cluster.members[0]
             let leadAtCentroid = Marker(
                 id: lead.id, photo: lead.photo,
                 x: cluster.centroid.x, y: cluster.centroid.y,
-                isPrimary: true, bearing: lead.bearing
+                isPrimary: true, bearing: lead.bearing,
+                groupSize: lead.groupSize
             )
             return PickerDisplayedPrimary(
                 id: lead.photo.id,
@@ -405,7 +401,7 @@ struct PhotoGroupPickerSheet: View {
             )
         }
 
-        let allDisplayedForArrowMath = tailMarkers + displayedPrimaries.map { $0.marker }
+        let allDisplayedForArrowMath = displayedPrimaries.map { $0.marker }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
             markers: allDisplayedForArrowMath,
             id: { $0.photo.id },
@@ -445,25 +441,21 @@ struct PhotoGroupPickerSheet: View {
                 }
             }
 
-            // Tails first so leads draw on top of any visual overlap.
+            // Group-lead bubbles. Grouped photos render as a single
+            // banded bubble; the engineer picks the lead and the
+            // existing group-confirm flow handles all members.
             // contentShape + onTapGesture must come BEFORE .position(...) —
-            // .position reparents the view to fill the entire plan area for
-            // layout, which would make a trailing .contentShape(Circle())
-            // inscribe in the whole parent and steal every tap.
-            ForEach(tailMarkers) { m in
-                bubble(seq: m.photo.sequenceNumber, radius: secRview)
-                    .frame(width: secRview * 2, height: secRview * 2)
-                    .contentShape(Circle().inset(by: -8))
-                    .onTapGesture {
-                        pendingTargetID = m.photo.id
-                    }
-                    .position(x: effOX + m.x * effScale, y: effOY + m.y * effScale)
-            }
+            // .position reparents the view to fill the entire plan area
+            // for layout, which would make a trailing
+            // .contentShape(Circle()) inscribe in the whole parent and
+            // steal every tap.
             ForEach(displayedPrimaries) { dp in
                 let x = effOX + dp.marker.x * effScale
                 let y = effOY + dp.marker.y * effScale
                 if dp.stackCount == 1 {
-                    bubble(seq: dp.marker.photo.sequenceNumber, radius: primaryRview)
+                    bubble(seq: dp.marker.photo.sequenceNumber,
+                            radius: primaryRview,
+                            groupSize: dp.marker.groupSize)
                         .frame(width: primaryRview * 2, height: primaryRview * 2)
                         .contentShape(Circle().inset(by: -8))
                         .onTapGesture {
@@ -473,7 +465,8 @@ struct PhotoGroupPickerSheet: View {
                 } else {
                     pickerStackBadge(seq: dp.marker.photo.sequenceNumber,
                                       additionalCount: dp.stackCount - 1,
-                                      radius: primaryRview)
+                                      radius: primaryRview,
+                                      groupSize: dp.marker.groupSize)
                         .frame(width: primaryRview * 2, height: primaryRview * 2)
                         .contentShape(Circle().inset(by: -8))
                         .onTapGesture {
@@ -526,7 +519,7 @@ struct PhotoGroupPickerSheet: View {
     }
 
     @ViewBuilder
-    private func bubble(seq: Int, radius: CGFloat) -> some View {
+    private func bubble(seq: Int, radius: CGFloat, groupSize: Int = 1) -> some View {
         // Canvas keeps the digit text crisp at every zoom level by
         // resolving Text once at an integer point size and rasterising
         // via Metal. SwiftUI Text + .minimumScaleFactor would land at a
@@ -563,6 +556,14 @@ struct PhotoGroupPickerSheet: View {
             )
         }
         .frame(width: radius * 2, height: radius * 2)
+        .overlay {
+            // Group band — same treatment as PlanViewerView.
+            if groupSize > 1 {
+                Circle()
+                    .strokeBorder(Color.black,
+                                   lineWidth: max(2, radius * 0.18))
+            }
+        }
     }
 
     // MARK: - Marker layout (mirrors PlanViewerView)
@@ -574,6 +575,10 @@ struct PhotoGroupPickerSheet: View {
         let y: Double
         let isPrimary: Bool
         let bearing: Double?
+        /// How many photos this bubble represents. > 1 = grouped lead,
+        /// gets a black band overlay so the engineer knows the bubble
+        /// stands for a group rather than a single photo.
+        let groupSize: Int
     }
 
     /// Picker-mode equivalent of `DisplayedPrimary` in PlanViewerView.
@@ -597,9 +602,10 @@ struct PhotoGroupPickerSheet: View {
     @ViewBuilder
     private func pickerStackBadge(seq: Int,
                                    additionalCount: Int,
-                                   radius: CGFloat) -> some View {
+                                   radius: CGFloat,
+                                   groupSize: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            bubble(seq: seq, radius: radius)
+            bubble(seq: seq, radius: radius, groupSize: groupSize)
             let pillFont = max(10, radius * 0.5)
             Text("+\(additionalCount)")
                 .font(.system(size: pillFont, weight: .bold))
@@ -629,12 +635,11 @@ struct PhotoGroupPickerSheet: View {
         }
     }
 
-    private func buildMarkers(firstGapPlan: Double, stepGapPlan: Double) -> [Marker] {
+    private func buildMarkers() -> [Marker] {
         guard let project = store.project(withID: projectID) else { return [] }
         // Render bubbles only for photos placed on the plan the picker
         // is currently showing — multi-plan projects keep each plan's
-        // bubble set in isolation so the engineer doesn't accidentally
-        // tap a tail bubble from a different plan.
+        // bubble set in isolation.
         var groups: [String: [Photo]] = [:]
         for photo in project.photos {
             guard photo.floorPlanID == activePlanID,
@@ -649,26 +654,12 @@ struct PhotoGroupPickerSheet: View {
             let members = groups[key]!
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let lead = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
-            let lpx = lead.planPixelX ?? 0
-            let lpy = lead.planPixelY ?? 0
             markers.append(Marker(
-                id: lead.id, photo: lead, x: lpx, y: lpy,
-                isPrimary: true, bearing: lead.headingDegrees
+                id: lead.id, photo: lead,
+                x: lead.planPixelX ?? 0, y: lead.planPixelY ?? 0,
+                isPrimary: true, bearing: lead.headingDegrees,
+                groupSize: members.count
             ))
-
-            let bearing = lead.headingDegrees ?? 0
-            let oppRad = (bearing + 90) * .pi / 180
-            let dx = cos(oppRad)
-            let dy = sin(oppRad)
-            let tail = sorted.filter { $0.id != lead.id }
-            for (i, t) in tail.enumerated() {
-                let dist = firstGapPlan + Double(i) * stepGapPlan
-                markers.append(Marker(
-                    id: t.id, photo: t,
-                    x: lpx + dx * dist, y: lpy + dy * dist,
-                    isPrimary: false, bearing: nil
-                ))
-            }
         }
         return markers
     }

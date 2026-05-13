@@ -552,13 +552,12 @@ struct PDFExportService {
             }
         }()
         let primaryR = 18 * bs * sizeMultiplier * digitScale
+        // Secondary radius is no longer used to position tail bubbles
+        // (tails were dropped when grouped photos collapsed to a single
+        // ringed lead) but the arrow-shortening collision math still
+        // wants a "non-primary radius" value to compare against, so keep
+        // the constant.
         let secR     = 13 * bs * sizeMultiplier * digitScale
-        // Gaps are computed in PDF points first (same as screen), then converted
-        // to plan-pixel space so the buildMarkers offsets work in plan coords.
-        let firstGapView = primaryR + secR - 2 * bs * sizeMultiplier
-        let stepGapView  = secR * 2     - 2 * bs * sizeMultiplier
-        let firstGapPlan = Double(firstGapView) / Double(scale)
-        let stepGapPlan  = Double(stepGapView)  / Double(scale)
         let arrowLength  = primaryR + 38 * bs * sizeMultiplier
         let arrowBase    = 14 * bs * sizeMultiplier
         let strokeWidth  = 3 * bs * sizeMultiplier
@@ -569,7 +568,16 @@ struct PDFExportService {
             groups[key, default: []].append(p)
         }
 
-        struct M { var photo: Photo; var x, y: Double; var isPrimary: Bool; var bearing: Double? }
+        struct M {
+            var photo: Photo
+            var x, y: Double
+            var isPrimary: Bool
+            var bearing: Double?
+            /// Group size — > 1 means the bubble represents a group
+            /// lead, in which case the renderer paints a black ring
+            /// around the bubble. Tail bubbles are no longer rendered.
+            var groupSize: Int
+        }
         var markers: [M] = []
         // Iterate in stable key order — same defence-in-depth as PlanViewerView.
         for key in groups.keys.sorted() {
@@ -577,15 +585,8 @@ struct PDFExportService {
             let sorted = members.sorted { $0.sequenceNumber < $1.sequenceNumber }
             let lead = sorted.first(where: { $0.isPrimary }) ?? sorted.first!
             markers.append(M(photo: lead, x: lead.planPixelX!, y: lead.planPixelY!,
-                              isPrimary: true, bearing: lead.headingDegrees))
-            let oppRad = ((lead.headingDegrees ?? 0) + 90) * .pi / 180
-            for (i, t) in sorted.filter({ $0.id != lead.id }).enumerated() {
-                let d = firstGapPlan + Double(i) * stepGapPlan
-                markers.append(M(photo: t,
-                                  x: lead.planPixelX! + cos(oppRad) * d,
-                                  y: lead.planPixelY! + sin(oppRad) * d,
-                                  isPrimary: false, bearing: nil))
-            }
+                              isPrimary: true, bearing: lead.headingDegrees,
+                              groupSize: members.count))
         }
 
         // MARK: cluster detection — mirrors PlanViewerView's stack-badge
@@ -602,7 +603,6 @@ struct PDFExportService {
             collisionRadius: primaryRplan * 1.0
         )
 
-        let tailMarkers = markers.filter { !$0.isPrimary }
         // Lead-at-centroid for each cluster, plus the member list so the
         // legend pass can describe the stack.
         struct ClusterDraw {
@@ -616,10 +616,13 @@ struct PDFExportService {
             return ClusterDraw(lead: lead, centroid: cluster.centroid, members: cluster.members)
         }
 
-        let allDisplayedForArrowMath: [M] = tailMarkers + displayedPrimaries.map { dp in
+        // Arrow shortening — only cluster representatives exist now;
+        // there are no tail markers to consider as obstacles.
+        let allDisplayedForArrowMath: [M] = displayedPrimaries.map { dp in
             M(photo: dp.lead.photo,
               x: dp.centroid.x, y: dp.centroid.y,
-              isPrimary: true, bearing: dp.lead.bearing)
+              isPrimary: true, bearing: dp.lead.bearing,
+              groupSize: dp.lead.groupSize)
         }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
             markers: allDisplayedForArrowMath,
@@ -637,22 +640,11 @@ struct PDFExportService {
         // two stay in sync.
         let colorMode = PlanColorMode.stored
 
-        // Tail bubbles (unchanged — `groupID` tails always render at their
-        // computed offset positions, never participate in cluster detection).
-        for m in tailMarkers {
-            let color = PlanMarkerColors.cgColor(for: m.photo,
-                                                  mode: colorMode,
-                                                  project: project)
-            paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
-                        cy: originY + CGFloat(m.y) * scale,
-                        radius: secR, seq: m.photo.sequenceNumber, bearing: nil,
-                        arrowLength: arrowLength, arrowBase: arrowBase,
-                        strokeWidth: strokeWidth, color: color)
-        }
-
         // Cluster representatives. Singletons paint as a normal bubble at
         // the lead's position (centroid == position when N==1). Multi-
         // member clusters paint the same bubble + a "+N" pill badge.
+        // Group leads (groupSize > 1) get a black ring painted around
+        // the bubble.
         var stacks: [PhotoStack] = []
         for dp in displayedPrimaries {
             let cx = originX + CGFloat(dp.centroid.x) * scale
@@ -667,7 +659,8 @@ struct PDFExportService {
                         seq: dp.lead.photo.sequenceNumber,
                         bearing: dp.lead.bearing,
                         arrowLength: myArrowLength, arrowBase: arrowBase,
-                        strokeWidth: strokeWidth, color: color)
+                        strokeWidth: strokeWidth, color: color,
+                        groupSize: dp.lead.groupSize)
             if dp.members.count >= 2 {
                 paintStackBadge(ctx, cx: cx, cy: cy,
                                 radius: primaryR,
@@ -776,7 +769,8 @@ struct PDFExportService {
     private func paintBubble(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, radius: CGFloat,
                               seq: Int, bearing: Double?,
                               arrowLength: CGFloat, arrowBase: CGFloat, strokeWidth: CGFloat,
-                              color: CGColor) {
+                              color: CGColor,
+                              groupSize: Int = 1) {
         if let b = bearing {
             let ang = CGFloat((b - 90) * .pi / 180)
             let tipX = cx + cos(ang) * arrowLength
@@ -805,6 +799,25 @@ struct PDFExportService {
         ctx.setFillColor(color)
         ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius,
                                     width: radius * 2, height: radius * 2))
+
+        // Black band signalling this bubble represents a group of >1
+        // photos. Stroke sits on the bubble's perimeter — same
+        // strokeBorder geometry the SwiftUI bubble uses on screen.
+        if groupSize > 1 {
+            let ringWidth = max(2, radius * 0.18)
+            ctx.saveGState()
+            ctx.setStrokeColor(UIColor.black.cgColor)
+            ctx.setLineWidth(ringWidth)
+            // Inset by half the line width so the stroke's outer edge
+            // sits flush with the bubble's perimeter (CG strokes are
+            // centred on the path).
+            let inset = ringWidth / 2
+            ctx.strokeEllipse(in: CGRect(x: cx - radius + inset,
+                                          y: cy - radius + inset,
+                                          width: radius * 2 - 2 * inset,
+                                          height: radius * 2 - 2 * inset))
+            ctx.restoreGState()
+        }
 
         let numStr = String(seq) as NSString
         // Round to an integer point size so glyphs land on exact pixel
