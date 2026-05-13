@@ -366,7 +366,7 @@ struct AIPhotoAnalysis: Codable, Hashable {
     /// actually discriminate strong vs weak picks. Missing keys fall back
     /// to a neutral value at the call site.
     var tagConfidences: [String: Double]
-    /// Yes / Partial / No / unknown — whether a usable scale is present.
+    /// Yes / Relative / No / unknown — whether a usable scale is present.
     var scalePresent: ScalePresent
     /// Visible measurement transcribed exactly as shown (with units and
     /// sign). Nil when the photo shows no measurement.
@@ -493,14 +493,14 @@ protocol ConstrainedStringEnum: Hashable, Codable {
 /// the drift.
 enum ScalePresent: ConstrainedStringEnum {
     case yes
-    case partial
+    case relative
     case no
     case unknown(String)
 
     var displayName: String {
         switch self {
         case .yes:           return "Yes"
-        case .partial:       return "Partial"
+        case .relative:      return "Relative"
         case .no:            return "No"
         case .unknown(let s): return s
         }
@@ -513,10 +513,12 @@ enum ScalePresent: ConstrainedStringEnum {
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "yes":     self = .yes
-        case "partial": self = .partial
-        case "no":      self = .no
-        default:        self = .unknown(raw)
+        case "yes":                self = .yes
+        // Tolerate the legacy "partial" spelling from older manifests so
+        // they keep decoding to the known case after the rename.
+        case "relative", "partial": self = .relative
+        case "no":                  self = .no
+        default:                    self = .unknown(raw)
         }
     }
     func encode(to encoder: Encoder) throws {

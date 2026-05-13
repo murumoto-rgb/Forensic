@@ -144,7 +144,7 @@ enum AIResponseValidator {
 
         // 4. Constrained enums must have decoded to a known case.
         if !a.scalePresent.isKnown {
-            errors.append("scale_present has unknown value \"\(a.scalePresent.displayName)\" (expected Yes / Partial / No).")
+            errors.append("scale_present has unknown value \"\(a.scalePresent.displayName)\" (expected Yes / Relative / No).")
         }
         if !a.recommendedUse.isKnown {
             errors.append("recommended_use has unknown value \"\(a.recommendedUse.displayName)\" (expected Body figure / Appendix only / Context/locator / Re-shoot recommended).")
