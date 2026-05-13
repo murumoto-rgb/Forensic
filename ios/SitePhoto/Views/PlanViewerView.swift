@@ -422,12 +422,12 @@ struct PlanViewerView: View {
         )
         .onChange(of: pendingRecenterID) { _, newID in
             guard let id = newID else { return }
-            // Locate the cluster representative whose lead — or any
-            // stacked member — has this photo ID, so a recenter request
-            // from inside a group or a stack still pans to the bubble
-            // that actually renders.
+            // Map a non-lead group member's ID back to the lead so the
+            // recenter target points at the bubble that actually
+            // renders for this photo.
+            let bubbleID = bubblePhotoID(for: id) ?? id
             guard let dp = displayedPrimaries.first(where: {
-                $0.marker.photo.id == id || $0.stackPhotoIDs.contains(id)
+                $0.marker.photo.id == bubbleID || $0.stackPhotoIDs.contains(bubbleID)
             }) else { return }
             recenter(on: dp.marker, geo: geo, imgSize: imgSize, fit: fit)
             pendingRecenterID = nil
@@ -574,7 +574,12 @@ struct PlanViewerView: View {
     /// to 'View'" — view builders interpret every statement as a candidate
     /// view, and a `let fill: Color` assignment is `Void`.
     private func fillColor(for marker: PlanMarker) -> Color {
-        if marker.photo.id == selectedPhotoID {
+        // The bubble on the plan represents the LEAD of a group, never
+        // a non-lead member. When the engineer previews a non-lead
+        // group member (via the thumbnail strip or in-group swipe),
+        // resolve the selection back to its lead so the lead bubble
+        // stays highlighted while they cycle through members.
+        if marker.photo.id == bubblePhotoID(for: selectedPhotoID) {
             return Color(red: 0.92, green: 0.27, blue: 0.20)
         }
         if let project = store.project(withID: projectID) {
@@ -583,6 +588,17 @@ struct PlanViewerView: View {
                                             project: project)
         }
         return .green
+    }
+
+    /// Map a photo ID to the photo ID of the bubble that represents it
+    /// on the plan. For ungrouped photos, that's the photo itself;
+    /// for grouped photos, it's the group's lead. Used by the highlight
+    /// + recenter paths so previewing a non-lead member doesn't lose
+    /// the visual cue or pan the plan to nowhere.
+    private func bubblePhotoID(for photoID: UUID?) -> UUID? {
+        guard let photoID,
+              let photo = currentPhoto(for: photoID) else { return nil }
+        return leadOfGroup(containing: photo)?.id ?? photoID
     }
 
     // MARK: - Selection / centering
@@ -1015,6 +1031,12 @@ private struct PhotoPreviewBar: View {
                 Image(uiImage: thumb)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    // Mirror the main-image rotation so the strip
+                    // tracks what the engineer sees in the preview.
+                    // The 44×44 frame is square, so a simple
+                    // .rotationEffect is enough — the cropped portion
+                    // just reflects the rotated orientation.
+                    .rotationEffect(.degrees(Double(p.previewRotation)))
             } else {
                 Color.gray.opacity(0.3)
                 Image(systemName: "photo")
@@ -1053,12 +1075,30 @@ private struct PhotoPreviewBar: View {
                 .foregroundStyle(.white)
             case .loaded:
                 if let img = loadedImage {
-                    Image(uiImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .id(photo.id)
-                        .transition(.opacity)
+                    // Rotation handling: a 90/270° rotation swaps the
+                    // image's effective aspect, so a naive
+                    // .rotationEffect on a .fit image would either
+                    // overflow the container or shrink to a tiny strip.
+                    // Size the inner frame to a transposed container
+                    // (height × width) when quarter-turned, then rotate
+                    // — the post-rotation bounding box ends up matching
+                    // the container exactly.
+                    GeometryReader { geo in
+                        let quarterTurn = photo.previewRotation % 180 != 0
+                        let w = quarterTurn ? geo.size.height : geo.size.width
+                        let h = quarterTurn ? geo.size.width : geo.size.height
+                        Image(uiImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: w, height: h)
+                            .rotationEffect(.degrees(Double(photo.previewRotation)))
+                            .position(x: geo.size.width / 2,
+                                       y: geo.size.height / 2)
+                    }
+                    .id(photo.id)
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.2),
+                                value: photo.previewRotation)
                 }
             }
 
@@ -1093,13 +1133,24 @@ private struct PhotoPreviewBar: View {
                 .frame(maxHeight: .infinity)
             }
 
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.white, .black.opacity(0.6))
-                    .padding(8)
+            HStack(spacing: 4) {
+                Button {
+                    guard let project = store.project(withID: projectID) else { return }
+                    _ = store.rotatePhotoPreview(project, photoID: photo.id)
+                } label: {
+                    Image(systemName: "rotate.right")
+                        .font(.title2)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                        .padding(8)
+                }
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                        .padding(8)
+                }
             }
         }
         .contentShape(Rectangle())

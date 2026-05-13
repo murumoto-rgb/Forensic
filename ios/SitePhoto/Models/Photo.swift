@@ -92,6 +92,12 @@ struct Photo: Identifiable, Codable, Hashable {
     /// User-typed observation that overrides `aiAnalysis.summaryObservation`
     /// when set. Same nil/empty semantics as `userCaption`.
     var userObservation: String?
+    /// User-applied rotation (degrees CW) shown when previewing the
+    /// photo on the floor plan. Always one of {0, 90, 180, 270}.
+    /// Persisted so the rotation survives across preview sessions and
+    /// iCloud sync. Affects on-screen rendering only — the underlying
+    /// image file is unchanged.
+    var previewRotation: Int = 0
 
     init(id: UUID = UUID(), sequenceNumber: Int, imageFilename: String) {
         self.id = id
@@ -126,6 +132,7 @@ struct Photo: Identifiable, Codable, Hashable {
         self.markupOverlayFilename = nil
         self.markupDrawingFilename = nil
         self.reshootsPhotoID = nil
+        self.previewRotation = 0
     }
 
     /// Tolerate manifests written before tags existed — decode the new fields
@@ -184,6 +191,10 @@ struct Photo: Identifiable, Codable, Hashable {
                                                             forKey: .markupDrawingFilename)
         self.reshootsPhotoID       = try c.decodeIfPresent(UUID.self,
                                                             forKey: .reshootsPhotoID)
+        // Legacy manifests have no rotation; default to upright. Clamp
+        // to a quadrant in case a non-multiple-of-90 value sneaks in.
+        let raw = try c.decodeIfPresent(Int.self, forKey: .previewRotation) ?? 0
+        self.previewRotation       = (((raw % 360) + 360) % 360) / 90 * 90
     }
 
     /// Caption to show in exports / report surfaces. Prefers the user's

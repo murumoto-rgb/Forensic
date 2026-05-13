@@ -2394,6 +2394,18 @@ extension ProjectStore {
         return save(p)
     }
 
+    /// Bump the user's preview rotation by 90° (CW). Cycles
+    /// 0 → 90 → 180 → 270 → 0. Persists on the photo so the rotation
+    /// survives session restart + iCloud sync.
+    @discardableResult
+    func rotatePhotoPreview(_ project: Project, photoID: UUID) -> Project {
+        var p = project
+        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        let next = (p.photos[idx].previewRotation + 90) % 360
+        p.photos[idx].previewRotation = next
+        return save(p)
+    }
+
     /// Set or clear the user's caption override for a photo. Empty / blank
     /// strings revert to nil so the AI's `captionDraft` is used again.
     @discardableResult
