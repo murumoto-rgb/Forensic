@@ -173,12 +173,23 @@ enum PromptCompiler {
             for primary in pickedPrimaries {
                 let deselected = selection.deselectedSecondariesByPrimary[primary.id] ?? []
                 let activeSecondaries = primary.secondaries.filter { !deselected.contains($0.id) }
-                guard !activeSecondaries.isEmpty else { continue }
 
                 lines.append("")
                 lines.append("Primary tag: \(primary.name)")
-                let joined = activeSecondaries.map(\.name).joined(separator: ", ")
-                lines.append("Secondary tags: \(joined)")
+                if activeSecondaries.isEmpty {
+                    // Primary has no active secondaries (either none were
+                    // added in the library or every one was deselected).
+                    // Emit "None" explicitly so the model knows to return
+                    // ["None"] for this primary's entry — same sentinel
+                    // it uses for "no distress under this primary." Empty
+                    // primaries used to be silently dropped here, which
+                    // left the context heading bare and meant the model
+                    // never saw the primary at all.
+                    lines.append("Secondary tags: None")
+                } else {
+                    let joined = activeSecondaries.map(\.name).joined(separator: ", ")
+                    lines.append("Secondary tags: \(joined)")
+                }
             }
         }
 
