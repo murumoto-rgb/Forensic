@@ -2079,6 +2079,99 @@ final class ProjectStore {
         return restorePhotos(project, photoIDs: [photoID])
     }
 
+    /// Re-sort the project's active photos in ascending `timestamp`
+    /// order and reassign `sequenceNumber` to 1…N, renaming the
+    /// on-disk image + thumbnail files to match. Every other field on
+    /// each `Photo` — tags, AI analysis, bucket, plan position,
+    /// heading, group membership, favorites, markup — is preserved
+    /// untouched because none of them depend on sequence number
+    /// (groupID / bucketID are UUIDs). Use this after importing older
+    /// photos whose EXIF date is earlier than already-captured ones
+    /// to get a chronological numbering back.
+    @discardableResult
+    func renumberPhotosByDate(_ project: Project) -> Project {
+        var p = project
+        guard p.photos.count > 1 else { return p }
+
+        // Sort by timestamp; tie-break on current sequence so a stable
+        // burst of same-second captures keeps its existing order.
+        let sorted = p.photos.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.sequenceNumber < rhs.sequenceNumber
+        }
+
+        // No-op if already in order.
+        let alreadyOrdered = sorted.enumerated().allSatisfy { idx, photo in
+            photo.sequenceNumber == idx + 1
+        }
+        if alreadyOrdered { return p }
+
+        let photosDir = photosFolder(for: p)
+        let thumbsDir = thumbnailsFolder(for: p)
+
+        // Two-pass rename so any photo's old name can collide with any
+        // other photo's new name without clobbering. Pass 1 moves every
+        // file to a UUID-suffixed temp name; pass 2 renames temps to
+        // the canonical (project - seq - timestamp) filename.
+        struct StagedRename {
+            let tempImage: String
+            let tempThumb: String?
+        }
+        var staged: [StagedRename] = []
+        staged.reserveCapacity(sorted.count)
+
+        for photo in sorted {
+            let tempImage = "renumber_\(UUID().uuidString).jpg"
+            let oldImageURL = photosDir.appending(path: photo.imageFilename)
+            let stagingImageURL = photosDir.appending(path: tempImage)
+            try? fileManager.moveItem(at: oldImageURL, to: stagingImageURL)
+
+            var tempThumb: String? = nil
+            if let oldThumb = photo.thumbnailFilename {
+                let t = "renumber_\(UUID().uuidString).jpg"
+                let oldThumbURL = thumbsDir.appending(path: oldThumb)
+                let stagingThumbURL = thumbsDir.appending(path: t)
+                try? fileManager.moveItem(at: oldThumbURL, to: stagingThumbURL)
+                tempThumb = t
+            }
+
+            staged.append(StagedRename(tempImage: tempImage, tempThumb: tempThumb))
+        }
+
+        // Build the new photo list with updated sequence numbers +
+        // canonical filenames. `sorted` and `staged` are index-aligned.
+        var renumbered: [Photo] = []
+        renumbered.reserveCapacity(staged.count)
+        for (idx, entry) in staged.enumerated() {
+            let newSeq = idx + 1
+            var photo = sorted[idx]
+            photo.sequenceNumber = newSeq
+
+            let newImageName = Self.makePhotoFilename(
+                sequenceNumber: newSeq,
+                timestamp: photo.timestamp,
+                projectName: p.name
+            )
+            let stagingImageURL = photosDir.appending(path: entry.tempImage)
+            let newImageURL = photosDir.appending(path: newImageName)
+            try? fileManager.moveItem(at: stagingImageURL, to: newImageURL)
+            photo.imageFilename = newImageName
+
+            if let tempThumb = entry.tempThumb {
+                let newThumbName = "thumb_\(newImageName)"
+                let stagingThumbURL = thumbsDir.appending(path: tempThumb)
+                let newThumbURL = thumbsDir.appending(path: newThumbName)
+                try? fileManager.moveItem(at: stagingThumbURL, to: newThumbURL)
+                photo.thumbnailFilename = newThumbName
+            }
+
+            renumbered.append(photo)
+        }
+
+        p.photos = renumbered
+        return save(p)
+    }
+
     /// Permanently remove trashed photos: drop them from
     /// `project.trashedPhotos` and delete their image + thumbnail +
     /// markup files from disk. Cannot be undone — callers should

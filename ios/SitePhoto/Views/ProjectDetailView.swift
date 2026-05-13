@@ -117,6 +117,11 @@ struct ProjectDetailView: View {
     @State private var batchTagSummary: String?
     @State private var batchTagFailureReport: BatchTagFailureReport?
     @State private var batchBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    /// Confirmation gate for the bulk "Renumber by date" action — it
+    /// renames every photo's on-disk file so the user gets a chance
+    /// to back out before iCloud sees a full project's worth of
+    /// renames.
+    @State private var confirmingRenumberByDate: Bool = false
     /// Comparison-view anchor — when non-nil, the comparison sheet opens
     /// for this photo's reshoot lineage.
     @State private var comparingPhoto: PhotoTarget?
@@ -422,6 +427,25 @@ struct ProjectDetailView: View {
         .task(id: projectID) {
             await captureLocationIfNeeded()
         }
+        .confirmationDialog(
+            "Renumber photos by date/time?",
+            isPresented: $confirmingRenumberByDate,
+            titleVisibility: .visible
+        ) {
+            Button("Renumber") {
+                renumberPhotosByDate()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Photos will be reordered by their capture timestamp and numbered 1…N. Tags, locations, buckets, AI analysis, and groupings stay attached to each photo. The on-disk image files are renamed, which may take a moment on large projects.")
+        }
+    }
+
+    private func renumberPhotosByDate() {
+        guard let project = store.project(withID: projectID) else { return }
+        let updated = store.renumberPhotosByDate(project)
+        Haptics.confirm()
+        toastCenter.post("Renumbered \(updated.photos.count) photos by date.", kind: .info)
     }
 
     private func deletePhoto(_ photo: Photo) {
@@ -649,6 +673,23 @@ struct ProjectDetailView: View {
 
     // MARK: - Photo import helpers
 
+    /// One staged import waiting to be written to disk. Holds the raw
+    /// bytes + parsed capture date so the batch can be sorted by date
+    /// before any `importPhoto` calls — that way newly imported photos
+    /// take sequence numbers in chronological order regardless of the
+    /// picker's selection order.
+    private struct StagedImport {
+        let data: Data
+        let date: Date
+    }
+
+    /// Sequence numbers go to the photo with the oldest timestamp
+    /// first. Ties keep the iteration order so a same-second burst
+    /// from the picker stays grouped.
+    private func sortedByCaptureDate(_ staged: [StagedImport]) -> [StagedImport] {
+        staged.sorted { $0.date < $1.date }
+    }
+
     @MainActor
     private func importFromPhotosLibrary(_ items: [PhotosPickerItem]) async {
         defer {
@@ -656,15 +697,30 @@ struct ProjectDetailView: View {
             importing = false
         }
         importing = true
+
+        // Pre-load every selected item so the batch can be ordered by
+        // capture date before we start writing files. Holding the bytes
+        // in memory adds a temporary footprint (≈ data × items.count)
+        // but typical picker batches are small; the alternative would
+        // be writing each item to a temp file just to sort, which costs
+        // disk + iCloud churn.
+        var staged: [StagedImport] = []
+        staged.reserveCapacity(items.count)
+        for (i, item) in items.enumerated() {
+            importStatus = "Reading \(i + 1) of \(items.count)…"
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
+            staged.append(StagedImport(data: data, date: date))
+        }
+        staged = sortedByCaptureDate(staged)
+
         var added = 0
         var newIDs: Set<UUID> = []
-        for (i, item) in items.enumerated() {
-            importStatus = "Importing \(i + 1) of \(items.count)…"
-            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+        for (i, entry) in staged.enumerated() {
+            importStatus = "Importing \(i + 1) of \(staged.count)…"
             guard let project = store.project(withID: projectID) else { return }
-            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
             do {
-                let updated = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                let updated = try store.importPhoto(to: project, imageData: entry.data, capturedAt: entry.date)
                 if let newID = updated.photos.last?.id { newIDs.insert(newID) }
                 added += 1
             } catch {
@@ -687,17 +743,29 @@ struct ProjectDetailView: View {
             importing = false
         }
         importing = true
-        var added = 0
-        var newIDs: Set<UUID> = []
+
+        // Same date-sort pass as photos-library imports. Files may
+        // arrive in alphabetical filename order from the document
+        // picker, which often isn't chronological.
+        var staged: [StagedImport] = []
+        staged.reserveCapacity(urls.count)
         for (i, url) in urls.enumerated() {
-            importStatus = "Importing \(i + 1) of \(urls.count)…"
+            importStatus = "Reading \(i + 1) of \(urls.count)…"
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? Data(contentsOf: url) else { continue }
-            guard let project = store.project(withID: projectID) else { return }
             let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
+            staged.append(StagedImport(data: data, date: date))
+        }
+        staged = sortedByCaptureDate(staged)
+
+        var added = 0
+        var newIDs: Set<UUID> = []
+        for (i, entry) in staged.enumerated() {
+            importStatus = "Importing \(i + 1) of \(staged.count)…"
+            guard let project = store.project(withID: projectID) else { return }
             do {
-                let updated = try store.importPhoto(to: project, imageData: data, capturedAt: date)
+                let updated = try store.importPhoto(to: project, imageData: entry.data, capturedAt: entry.date)
                 if let newID = updated.photos.last?.id { newIDs.insert(newID) }
                 added += 1
             } catch {
@@ -896,11 +964,13 @@ struct ProjectDetailView: View {
         let projectTags = store.tagsUsed(in: project, minConfidence: tagConfidenceThreshold)
         let visiblePhotos = filteredPhotos(project)
         Section {
-            if !projectTags.isEmpty {
-                tagFilterBar(allTags: projectTags)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    .listRowBackground(Color.clear)
-            }
+            // Filter row is always available so Level / Location / Not-in-bucket
+            // / Favorites / Date / Needs-review / bucket chips stay reachable
+            // even before any AI tagging has happened. The tag-chip ForEach
+            // inside renders nothing when `projectTags` is empty.
+            tagFilterBar(allTags: projectTags)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .listRowBackground(Color.clear)
             if project.photos.isEmpty {
                 Text("No photos yet.")
                     .foregroundStyle(.secondary)
@@ -1112,6 +1182,18 @@ struct ProjectDetailView: View {
                 if !project.photos.isEmpty {
                     Button("Select") {
                         selectionMode = true
+                    }
+                    .textCase(nil)
+                    .font(.caption)
+                    Menu {
+                        Button {
+                            confirmingRenumberByDate = true
+                        } label: {
+                            Label("Renumber by date/time",
+                                  systemImage: "number.circle")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
                     .textCase(nil)
                     .font(.caption)
