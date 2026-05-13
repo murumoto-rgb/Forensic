@@ -409,7 +409,6 @@ struct PlanViewerView: View {
         }
     }
 
-    @ViewBuilder
     /// Render either a single primary bubble (cluster of 1) or a
     /// stack-badge bubble that opens BubbleStackSheet on tap (cluster
     /// of ≥ 2). The displayed primary's marker is positioned at the
