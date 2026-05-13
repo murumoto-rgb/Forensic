@@ -1604,31 +1604,34 @@ struct ProjectDetailView: View {
                 bucketFilterMenu(userBuckets: userBuckets,
                                   recommendedUseChips: recommendedUseChips,
                                   activeCount: bucketFilterCount)
-                if !allTags.isEmpty {
-                    tagFilterMenu(allTags: allTags, activeCount: tagFilterCount)
+                // Tags / Favorites / Needs-review render unconditionally
+                // so the engineer can see every available filter at a
+                // glance. Pills are .disabled when the underlying source
+                // is empty (no tags yet, no favorites, nothing flagged)
+                // — visible but un-clickable until the project produces
+                // something to filter by.
+                tagFilterMenu(allTags: allTags, activeCount: tagFilterCount)
+                    .disabled(allTags.isEmpty)
+                Button {
+                    favoritesOnly.toggle()
+                } label: {
+                    Image(systemName: "star.fill")
+                        .font(.caption)
                 }
-                if favoritesCount > 0 {
-                    Button {
-                        favoritesOnly.toggle()
-                    } label: {
-                        Image(systemName: "star.fill")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(favoritesOnly ? .yellow : .secondary)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(favoritesOnly ? .yellow : .secondary)
+                .disabled(favoritesCount == 0 && !favoritesOnly)
+                Button {
+                    showOnlyNeedsReview.toggle()
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
                 }
-                if needsReviewCount > 0 {
-                    Button {
-                        showOnlyNeedsReview.toggle()
-                    } label: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(showOnlyNeedsReview ? .orange : .secondary)
-                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(showOnlyNeedsReview ? .orange : .secondary)
+                .disabled(needsReviewCount == 0 && !showOnlyNeedsReview)
             }
             .padding(.vertical, 2)
         }
