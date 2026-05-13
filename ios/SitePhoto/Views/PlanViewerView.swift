@@ -6,6 +6,15 @@ struct PlanViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("sitephoto.bubbleScale") private var bubbleScale: Double = 1.5
+    /// Persisted preview-bar navigation mode: when set to `.group` the
+    /// engineer swipes / scrolls within the current photo's group; when
+    /// set to `.all` the swipe ranges over every located photo on the
+    /// active plan. Survives across sessions. Default `.group` so
+    /// tapping a grouped bubble immediately surfaces its members.
+    @AppStorage("sitephoto.photoPreviewNavMode") private var navModeRaw: String = PreviewNavMode.group.rawValue
+    private var navMode: PreviewNavMode {
+        get { PreviewNavMode(rawValue: navModeRaw) ?? .group }
+    }
     /// Persisted color mode for the plan markers — `status` (single green,
     /// historical default), `bucket`, or `primaryTag`. Stored under
     /// `PlanColorMode.storageKey` so `PDFExportService` reads the same value
@@ -36,16 +45,26 @@ struct PlanViewerView: View {
 
                 if let selectedID = selectedPhotoID,
                    let photo = currentPhoto(for: selectedID) {
-                    let allLocated = locatedPhotosOrdered()
-                    let idx = allLocated.firstIndex(where: { $0.id == photo.id }) ?? 0
                     PhotoPreviewBar(
                         photo: photo,
-                        index: idx,
-                        totalCount: allLocated.count,
-                        groupCount: currentGroup(for: photo).count,
+                        activeSet: activeNavSet(for: photo),
+                        navMode: Binding(
+                            get: { navMode },
+                            set: { navModeRaw = $0.rawValue }
+                        ),
                         projectID: projectID,
-                        onSwipeNext: { navigateAll(direction: +1) },
-                        onSwipePrevious: { navigateAll(direction: -1) },
+                        onSwipeNext: { navigate(direction: +1) },
+                        onSwipePrevious: { navigate(direction: -1) },
+                        onSelectPhoto: { id in
+                            // Quiet recenter — same mechanism the bubble
+                            // tap path uses, but without re-entering
+                            // select() (which would lock the preview to
+                            // a group lead and skip non-lead members).
+                            pendingRecenterID = id
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                selectedPhotoID = id
+                            }
+                        },
                         onDismiss: { closePreview() }
                     )
                     .environment(store)
@@ -116,7 +135,7 @@ struct PlanViewerView: View {
         ToolbarItem(placement: .topBarTrailing) {
             HStack {
                 Button {
-                    bubbleScale = max(0.15, bubbleScale * 0.8)
+                    bubbleScale = max(0.075, bubbleScale * 0.8)
                 } label: {
                     Image(systemName: "minus.circle")
                 }
@@ -130,7 +149,18 @@ struct PlanViewerView: View {
         }
     }
 
-    private var previewHeight: CGFloat { 280 }
+    private var previewHeight: CGFloat { 364 }
+
+    /// Photos the preview-bar's swipe + thumbnail strip walks across.
+    /// Driven by the persisted nav mode: `.group` returns the current
+    /// photo's group (or `[photo]` if ungrouped); `.all` returns every
+    /// located photo on the active plan in sequence-number order.
+    private func activeNavSet(for photo: Photo) -> [Photo] {
+        switch navMode {
+        case .group: return currentGroup(for: photo)
+        case .all:   return locatedPhotosOrdered()
+        }
+    }
 
     @ViewBuilder
     private var planArea: some View {
@@ -482,12 +512,21 @@ struct PlanViewerView: View {
         // the Text once at an integer point size and draws via Metal,
         // so glyphs land on exact pixel boundaries.
         let fill = fillColor(for: marker)
+        // When the bubble carries a group band, the band's stroke eats
+        // the outer slice of the fill area. Use a band-aware "effective
+        // radius" for the text-fit math so 3-digit sequence numbers
+        // shrink to clear the band's inner edge instead of being clipped
+        // by it. The 3pt floor is the smallest practical rasterised
+        // glyph and lets text scale down as the engineer drops
+        // bubbleScale below the previous 0.15 floor.
+        let bandWidth: CGFloat = marker.groupSize > 1 ? max(2, radius * 0.18) : 0
+        let effR = max(1, radius - bandWidth)
         Canvas { context, size in
             context.fill(
                 Path(ellipseIn: CGRect(origin: .zero, size: size)),
                 with: .color(fill)
             )
-            let maxSize = max(8, floor(radius * 1.1))
+            let maxSize = max(3, floor(effR * 1.1))
             let str = "\(marker.photo.sequenceNumber)"
             var fontSize = maxSize
             var resolved = context.resolve(
@@ -496,10 +535,10 @@ struct PlanViewerView: View {
                     .foregroundColor(.white)
             )
             let measured = resolved.measure(in: size)
-            let widthCap = radius * 1.75
+            let widthCap = effR * 1.75
             if measured.width > widthCap {
                 let factor = max(0.6, widthCap / measured.width)
-                fontSize = max(8, floor(maxSize * factor))
+                fontSize = max(3, floor(maxSize * factor))
                 resolved = context.resolve(
                     Text(str)
                         .font(.system(size: fontSize, weight: .bold))
@@ -619,20 +658,19 @@ struct PlanViewerView: View {
         pendingRecenterID = nextPhoto.id
     }
 
-    /// Navigate across every located photo in the project, sorted by sequence number.
-    private func navigateAll(direction: Int) {
-        let all = locatedPhotosOrdered()
-        guard !all.isEmpty else { return }
-        let count = all.count
-
-        let currentIdx: Int
-        if let id = selectedPhotoID, let i = all.firstIndex(where: { $0.id == id }) {
-            currentIdx = i
-        } else {
-            currentIdx = 0
-        }
+    /// Navigate across whichever set the preview-bar is currently bound
+    /// to — `.group` walks within the current photo's group, `.all`
+    /// walks every located photo on the active plan in sequence order.
+    /// Wraps at the ends.
+    private func navigate(direction: Int) {
+        guard let id = selectedPhotoID,
+              let current = currentPhoto(for: id) else { return }
+        let set = activeNavSet(for: current)
+        guard !set.isEmpty else { return }
+        let count = set.count
+        let currentIdx = set.firstIndex(where: { $0.id == id }) ?? 0
         let nextIdx = ((currentIdx + direction) % count + count) % count
-        let nextPhoto = all[nextIdx]
+        let nextPhoto = set[nextIdx]
         selectedPhotoID = nextPhoto.id
         pendingRecenterID = nextPhoto.id
     }
@@ -865,14 +903,26 @@ private struct NorthIndicator: View {
 
 // MARK: - Preview bar with swipe-through-group
 
+/// Navigation set the preview bar's swipe / thumbnail strip is bound
+/// to. `.group` only walks within the current photo's group (or just
+/// the photo itself when ungrouped); `.all` walks every located photo
+/// on the active plan in sequence-number order. Persisted via
+/// @AppStorage so the engineer's preference survives across sessions.
+enum PreviewNavMode: String { case group, all }
+
 private struct PhotoPreviewBar: View {
     let photo: Photo
-    let index: Int          // 0-based index within ALL located photos in the project
-    let totalCount: Int     // total number of located photos in the project
-    let groupCount: Int     // number of photos in this photo's group (1 if not grouped)
+    /// Photos the engineer can navigate between — derived in
+    /// PlanViewerView from `navMode` (group or all). The bar's index /
+    /// total are computed off this set.
+    let activeSet: [Photo]
+    @Binding var navMode: PreviewNavMode
     let projectID: UUID
     let onSwipeNext: () -> Void
     let onSwipePrevious: () -> Void
+    /// Invoked when the engineer taps a thumbnail in the strip — the
+    /// host wires this to its own `selectedPhotoID` + recenter path.
+    let onSelectPhoto: (UUID) -> Void
     let onDismiss: () -> Void
 
     @Environment(ProjectStore.self) private var store
@@ -881,7 +931,107 @@ private struct PhotoPreviewBar: View {
 
     private enum LoadState { case loading, loaded, missing }
 
+    private var index: Int {
+        activeSet.firstIndex(where: { $0.id == photo.id }) ?? 0
+    }
+    private var totalCount: Int { activeSet.count }
+
     var body: some View {
+        VStack(spacing: 0) {
+            // Group / All mode picker. Always visible, even when the
+            // current photo has no group — Group then degenerates to a
+            // single-thumbnail strip, which keeps the control's position
+            // stable as the engineer cycles through photos.
+            Picker("Navigation", selection: $navMode) {
+                Text("Group").tag(PreviewNavMode.group)
+                Text("All").tag(PreviewNavMode.all)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(Color.black)
+
+            // Horizontal thumbnail strip. Tap to jump; current photo
+            // gets an accent-coloured stroke so its position is obvious
+            // as the strip scrolls.
+            thumbnailStrip
+                .frame(height: 60)
+                .background(Color.black)
+
+            // Main photo area — unchanged from the original bar layout
+            // except it now occupies the remaining vertical space
+            // instead of the full bar height.
+            mainPhotoArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color.black)
+        .task(id: photo.id) {
+            await loadCurrentPhoto()
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnailStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(activeSet, id: \.id) { p in
+                        thumbnailView(for: p, isCurrent: p.id == photo.id)
+                            .id(p.id)
+                            .onTapGesture { onSelectPhoto(p.id) }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .onChange(of: photo.id) { _, newID in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(newID, anchor: .center)
+                }
+            }
+            .onChange(of: navMode) { _, _ in
+                // After a mode flip the active set changes; nudge the
+                // current photo back into view in the new set.
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(photo.id, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func thumbnailView(for p: Photo, isCurrent: Bool) -> some View {
+        let thumb: UIImage? = {
+            guard let project = store.project(withID: projectID),
+                  let url = store.thumbnailURL(for: p, in: project),
+                  let data = try? Data(contentsOf: url) else { return nil }
+            return UIImage(data: data)
+        }()
+        ZStack {
+            if let thumb {
+                Image(uiImage: thumb)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.gray.opacity(0.3)
+                Image(systemName: "photo")
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(isCurrent ? Color.accentColor : Color.white.opacity(0.15),
+                         lineWidth: isCurrent ? 2 : 1)
+        }
+    }
+
+    @ViewBuilder
+    private var mainPhotoArea: some View {
         ZStack(alignment: .topTrailing) {
             Color.black
 
@@ -919,11 +1069,6 @@ private struct PhotoPreviewBar: View {
                         .foregroundStyle(.white)
                     if totalCount > 1 {
                         Text("\(index + 1) of \(totalCount)")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
-                    if groupCount > 1 {
-                        Text("group of \(groupCount)")
                             .font(.caption2.monospaced())
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -974,9 +1119,6 @@ private struct PhotoPreviewBar: View {
                     }
                 }
         )
-        .task(id: photo.id) {
-            await loadCurrentPhoto()
-        }
     }
 
     private func loadCurrentPhoto() async {

@@ -822,7 +822,10 @@ struct PlanLocateCanvas: View {
                 with: .color(Color.white.opacity(strokeOpacity)),
                 lineWidth: strokeWidth
             )
-            let maxSize = max(8, floor(radius * 1.05))
+            // 3pt floor matches PlanViewerView so tiny bubbles still
+            // render legibly when bubbleScale is at the lower bound.
+            // LocateSheet doesn't draw a group band, so no effR shrink.
+            let maxSize = max(3, floor(radius * 1.05))
             let str = "\(seq)"
             var fontSize = maxSize
             var resolved = context.resolve(
@@ -834,7 +837,7 @@ struct PlanLocateCanvas: View {
             let widthCap = radius * 1.75
             if measured.width > widthCap {
                 let factor = max(0.6, widthCap / measured.width)
-                fontSize = max(8, floor(maxSize * factor))
+                fontSize = max(3, floor(maxSize * factor))
                 resolved = context.resolve(
                     Text(str)
                         .font(.system(size: fontSize, weight: .bold))

@@ -525,12 +525,16 @@ struct PhotoGroupPickerSheet: View {
         // via Metal. SwiftUI Text + .minimumScaleFactor would land at a
         // fractional point size and be re-rasterised by the layer tree
         // on each frame — both produce soft edges.
+        // Band-aware effective radius for text math (see PlanViewerView's
+        // bubble for the full rationale).
+        let bandWidth: CGFloat = groupSize > 1 ? max(2, radius * 0.18) : 0
+        let effR = max(1, radius - bandWidth)
         Canvas { context, size in
             context.fill(
                 Path(ellipseIn: CGRect(origin: .zero, size: size)),
                 with: .color(.green)
             )
-            let maxSize = max(8, floor(radius * 1.1))
+            let maxSize = max(3, floor(effR * 1.1))
             let str = "\(seq)"
             var fontSize = maxSize
             var resolved = context.resolve(
@@ -539,10 +543,10 @@ struct PhotoGroupPickerSheet: View {
                     .foregroundColor(.white)
             )
             let measured = resolved.measure(in: size)
-            let widthCap = radius * 1.75
+            let widthCap = effR * 1.75
             if measured.width > widthCap {
                 let factor = max(0.6, widthCap / measured.width)
-                fontSize = max(8, floor(maxSize * factor))
+                fontSize = max(3, floor(maxSize * factor))
                 resolved = context.resolve(
                     Text(str)
                         .font(.system(size: fontSize, weight: .bold))

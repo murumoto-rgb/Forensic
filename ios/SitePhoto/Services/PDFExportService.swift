@@ -820,11 +820,15 @@ struct PDFExportService {
         }
 
         let numStr = String(seq) as NSString
-        // Round to an integer point size so glyphs land on exact pixel
-        // boundaries during PDF rasterisation — matches the SwiftUI
-        // Canvas bubble renderers in PlanViewerView / PhotoGroupPickerSheet
-        // / LocateSheet, which also use floor(radius * 1.1).
-        var fontSize = max(8, floor(radius * 1.1))
+        // Band-aware effective radius — when the bubble carries a group
+        // band, the band's stroke eats the outer slice of the fill, so
+        // text sized to the full radius would clip on the band's inner
+        // edge. Matches the SwiftUI math in PlanViewerView /
+        // PhotoGroupPickerSheet. 3pt floor matches the on-screen path
+        // so PDF and screen agree on tiny-bubble rendering.
+        let bandWidth = groupSize > 1 ? max(2, radius * 0.18) : 0
+        let effR = max(1, radius - bandWidth)
+        var fontSize = max(3, floor(effR * 1.1))
         // SF Pro Text (non-rounded, bold) holds shape at small sizes
         // better than the rounded design — matches the SwiftUI bubble
         // renderers in PlanViewerView et al.
@@ -832,13 +836,13 @@ struct PDFExportService {
             .font: UIFont.systemFont(ofSize: fontSize, weight: .bold),
             .foregroundColor: UIColor.white
         ]
-        let maxW = radius * 1.75
+        let maxW = effR * 1.75
         var measured = numStr.size(withAttributes: attrs)
         if measured.width > maxW {
             // Match SwiftUI's minimumScaleFactor(0.6); also round so
             // the shrunken size stays integer.
             let factor = max(0.6, maxW / measured.width)
-            fontSize = max(8, floor(fontSize * factor))
+            fontSize = max(3, floor(fontSize * factor))
             attrs[.font] = UIFont.systemFont(ofSize: fontSize, weight: .bold)
             measured = numStr.size(withAttributes: attrs)
         }
