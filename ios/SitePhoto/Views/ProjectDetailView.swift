@@ -1329,7 +1329,8 @@ struct ProjectDetailView: View {
         let planFilterActive = planFilter != .all
         let locationFilterActive = locationFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
-            && !showOnlyNeedsReview && !favoritesOnly && !searchActive
+            && !showOnlyNeedsReview && !favoritesOnly && !measurementsOnly
+            && !searchActive
             && dateBounds == nil && !planFilterActive && !notInBucketOnly
             && !locationFilterActive {
             return project.photos
