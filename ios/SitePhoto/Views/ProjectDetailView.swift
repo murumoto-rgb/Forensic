@@ -1703,21 +1703,17 @@ struct ProjectDetailView: View {
                 }
             }
         } label: {
-            if activeCount > 0 {
-                Label("\(activeCount)", systemImage: "folder.fill")
-                    .font(.caption)
-            } else {
-                Image(systemName: "folder")
-                    .font(.caption)
-            }
+            Image(systemName: activeCount > 0 ? "folder.fill" : "folder")
+                .font(.caption)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(activeCount > 0 ? .accentColor : .secondary)
     }
 
-    /// Consolidated tag filter pill. Tag icon + count badge; the menu
-    /// lists every confirmed tag in the project with a multi-select
+    /// Consolidated tag filter pill. Tag icon flips to its filled
+    /// variant + accent tint when any tag filter is on; the menu lists
+    /// every confirmed tag in the project with a multi-select
     /// checkmark UI.
     @ViewBuilder
     private func tagFilterMenu(allTags: [String], activeCount: Int) -> some View {
@@ -1736,13 +1732,8 @@ struct ProjectDetailView: View {
                 }
             }
         } label: {
-            if activeCount > 0 {
-                Label("\(activeCount)", systemImage: "tag.fill")
-                    .font(.caption)
-            } else {
-                Image(systemName: "tag")
-                    .font(.caption)
-            }
+            Image(systemName: activeCount > 0 ? "tag.fill" : "tag")
+                .font(.caption)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
