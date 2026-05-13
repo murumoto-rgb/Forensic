@@ -357,17 +357,29 @@ struct PDFExportService {
         y += 22
 
         let contentW = pageRect.width - 2 * margin
-        let areaH = pageRect.height - y - margin
+        // Reserve a bit of bottom space in case a "Photo stacks" legend
+        // needs to render below the image. Cheap to reserve even when no
+        // stacks exist on this plan — the image just sits a few points
+        // higher than before.
+        let legendReserve: CGFloat = 80
+        let areaH = pageRect.height - y - margin - legendReserve
         let imgSize = planImage.size
         let scale = min(contentW / imgSize.width, areaH / imgSize.height)
         let dispW = imgSize.width * scale
         let dispH = imgSize.height * scale
         let imgX = margin + (contentW - dispW) / 2
-        let imgY = y + (areaH - dispH) / 2
+        // Top-align the image inside the area so any leftover space sits
+        // beneath the image, where the photo-stacks legend goes.
+        let imgY = y
 
         planImage.draw(in: CGRect(x: imgX, y: imgY, width: dispW, height: dispH))
-        drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY,
-                    scale: scale, imgSize: imgSize)
+        let stacks = drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY,
+                                  scale: scale, imgSize: imgSize)
+        if !stacks.isEmpty {
+            drawPhotoStacksLegend(ctx, pageRect: pageRect, margin: margin,
+                                   stacks: stacks,
+                                   topY: imgY + dispH + 12)
+        }
     }
 
     // MARK: - Contact sheet page
@@ -501,9 +513,13 @@ struct PDFExportService {
         return v > 0 ? CGFloat(v) : 1.5
     }
 
+    /// Draws bubbles (singletons + stack badges) on the floor plan and
+    /// returns the list of multi-member stacks so the caller can render
+    /// the legend below the plan image.
+    @discardableResult
     private func drawBubbles(_ ctx: CGContext, plan: FloorPlan,
                               originX: CGFloat, originY: CGFloat,
-                              scale: CGFloat, imgSize: CGSize) {
+                              scale: CGFloat, imgSize: CGSize) -> [PhotoStack] {
         let bs = bubbleScale
 
         // Bubbles/arrows are sized in PDF points to occupy the same fraction
@@ -572,35 +588,41 @@ struct PDFExportService {
             }
         }
 
-        // MARK: cluster-fanning (matches PlanViewerView)
+        // MARK: cluster detection — mirrors PlanViewerView's stack-badge
+        // approach. No rosette, no leader lines: each overlap cluster
+        // renders ONE bubble at the centroid with a "+N" pill badge, and
+        // the photo-stacks legend below the plan lists the members.
         let primaryRplan    = Double(primaryR    / scale)
         let secRplan        = Double(secR        / scale)
         let arrowLengthPlan = Double(arrowLength / scale)
-        // Detection threshold and fan layout both scale with the user's
-        // actual bubble size — mirrors PlanViewerView so the PDF matches
-        // what the engineer previews on-screen. See that file for the
-        // rationale behind preferring position fidelity over fanning
-        // tight clusters at small bubble scales.
-        let fanResult = ClusterFanning.apply(
+        let primaryClusters = ClusterFanning.detectPrimaryClusters(
             markers: markers,
-            sortKey: { $0.photo.sequenceNumber },
-            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
-            setPosition: { m, p in
-                M(photo: m.photo, x: p.x, y: p.y,
-                  isPrimary: m.isPrimary, bearing: m.bearing)
-            },
-            // collisionRadius tightened from 2·R → 1·R so only truly-
-            // overlapping bubbles fan; see PlanViewerView for rationale.
-            collisionRadius: primaryRplan * 1.0,
-            bubbleRadius: primaryRplan,
-            minSpacing: primaryRplan * 1.0
+            collisionRadius: primaryRplan * 1.0
         )
-        markers = fanResult.adjusted
 
+        let tailMarkers = markers.filter { !$0.isPrimary }
+        // Lead-at-centroid for each cluster, plus the member list so the
+        // legend pass can describe the stack.
+        struct ClusterDraw {
+            let lead: M
+            let centroid: CGPoint
+            let members: [M]
+        }
+        let displayedPrimaries: [ClusterDraw] = primaryClusters.map { cluster in
+            let lead = cluster.members.min(by: { $0.photo.sequenceNumber < $1.photo.sequenceNumber })
+                ?? cluster.members[0]
+            return ClusterDraw(lead: lead, centroid: cluster.centroid, members: cluster.members)
+        }
+
+        let allDisplayedForArrowMath: [M] = tailMarkers + displayedPrimaries.map { dp in
+            M(photo: dp.lead.photo,
+              x: dp.centroid.x, y: dp.centroid.y,
+              isPrimary: true, bearing: dp.lead.bearing)
+        }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
-            markers: markers,
+            markers: allDisplayedForArrowMath,
             id: { $0.photo.id },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
@@ -609,34 +631,15 @@ struct PDFExportService {
             secondaryRadius: secRplan,
             defaultArrowLength: arrowLengthPlan
         )
-        // MARK: end cluster-fanning
-
-        // MARK: cluster-fanning leader lines
-        // Match PlanViewerView's leader-line styling exactly so the
-        // dashed connector reads the same on screen and on paper.
-        ctx.saveGState()
-        ctx.setStrokeColor(UIColor(white: 1, alpha: 0.4).cgColor)
-        ctx.setLineWidth(1.0 * sizeMultiplier)
-        ctx.setLineDash(phase: 0, lengths: [4 * sizeMultiplier, 3 * sizeMultiplier])
-        for line in fanResult.leaderLines {
-            ctx.beginPath()
-            ctx.move(to: CGPoint(
-                x: originX + CGFloat(line.from.x) * scale,
-                y: originY + CGFloat(line.from.y) * scale))
-            ctx.addLine(to: CGPoint(
-                x: originX + CGFloat(line.to.x) * scale,
-                y: originY + CGFloat(line.to.y) * scale))
-            ctx.strokePath()
-        }
-        ctx.restoreGState()
-        // MARK: end cluster-fanning leader lines
 
         // Look up the user's plan colour mode once per render. The PDF and
         // the on-screen plan resolve colours through the same helper so the
         // two stay in sync.
         let colorMode = PlanColorMode.stored
 
-        for m in markers where !m.isPrimary {
+        // Tail bubbles (unchanged — `groupID` tails always render at their
+        // computed offset positions, never participate in cluster detection).
+        for m in tailMarkers {
             let color = PlanMarkerColors.cgColor(for: m.photo,
                                                   mode: colorMode,
                                                   project: project)
@@ -646,19 +649,127 @@ struct PDFExportService {
                         arrowLength: arrowLength, arrowBase: arrowBase,
                         strokeWidth: strokeWidth, color: color)
         }
-        for m in markers where m.isPrimary {
-            // MARK: cluster-fanning per-marker arrow length
-            let myArrowLengthPlan = arrowLengthsByID[m.photo.id] ?? arrowLengthPlan
+
+        // Cluster representatives. Singletons paint as a normal bubble at
+        // the lead's position (centroid == position when N==1). Multi-
+        // member clusters paint the same bubble + a "+N" pill badge.
+        var stacks: [PhotoStack] = []
+        for dp in displayedPrimaries {
+            let cx = originX + CGFloat(dp.centroid.x) * scale
+            let cy = originY + CGFloat(dp.centroid.y) * scale
+            let myArrowLengthPlan = arrowLengthsByID[dp.lead.photo.id] ?? arrowLengthPlan
             let myArrowLength = CGFloat(myArrowLengthPlan) * scale
-            // MARK: end cluster-fanning per-marker arrow length
-            let color = PlanMarkerColors.cgColor(for: m.photo,
+            let color = PlanMarkerColors.cgColor(for: dp.lead.photo,
                                                   mode: colorMode,
                                                   project: project)
-            paintBubble(ctx, cx: originX + CGFloat(m.x) * scale,
-                        cy: originY + CGFloat(m.y) * scale,
-                        radius: primaryR, seq: m.photo.sequenceNumber, bearing: m.bearing,
+            paintBubble(ctx, cx: cx, cy: cy,
+                        radius: primaryR,
+                        seq: dp.lead.photo.sequenceNumber,
+                        bearing: dp.lead.bearing,
                         arrowLength: myArrowLength, arrowBase: arrowBase,
                         strokeWidth: strokeWidth, color: color)
+            if dp.members.count >= 2 {
+                paintStackBadge(ctx, cx: cx, cy: cy,
+                                radius: primaryR,
+                                additionalCount: dp.members.count - 1,
+                                sizeMultiplier: sizeMultiplier)
+                let seqs = dp.members.map { $0.photo.sequenceNumber }.sorted()
+                stacks.append(PhotoStack(memberSeqs: seqs))
+            }
+        }
+
+        return stacks
+    }
+
+    struct PhotoStack {
+        let memberSeqs: [Int]
+    }
+
+    /// Pill badge in the top-right corner of a stack bubble. Mirrors the
+    /// SwiftUI `stackBadge` view in `PlanViewerView` so the PDF and the
+    /// on-screen plan match. Drawn AFTER the underlying bubble so the
+    /// pill always sits on top.
+    private func paintStackBadge(_ ctx: CGContext, cx: CGFloat, cy: CGFloat,
+                                  radius: CGFloat, additionalCount: Int,
+                                  sizeMultiplier: CGFloat) {
+        let badgeFontSize = max(8, floor(radius * 0.5))
+        let text = "+\(additionalCount)" as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: badgeFontSize, weight: .bold),
+            .foregroundColor: UIColor.white
+        ]
+        let textSize = text.size(withAttributes: attrs)
+        let padH = max(3, radius * 0.18)
+        let padV = max(1, radius * 0.05)
+        let badgeW = textSize.width + 2 * padH
+        let badgeH = textSize.height + 2 * padV
+        // Anchor at the top-right corner of the bubble, similar to a
+        // notification count badge.
+        let centerOffsetX = radius * 0.25
+        let centerOffsetY = -radius * 0.25
+        let badgeRect = CGRect(
+            x: cx + centerOffsetX - badgeW / 2,
+            y: cy + centerOffsetY - badgeH / 2,
+            width: badgeW, height: badgeH
+        )
+
+        ctx.saveGState()
+        let path = CGPath(roundedRect: badgeRect,
+                           cornerWidth: badgeH / 2,
+                           cornerHeight: badgeH / 2,
+                           transform: nil)
+        ctx.setFillColor(UIColor(white: 0, alpha: 0.78).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setStrokeColor(UIColor(white: 1, alpha: 0.9).cgColor)
+        ctx.setLineWidth(1.0 * sizeMultiplier)
+        ctx.addPath(path)
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        text.draw(at: CGPoint(x: badgeRect.minX + padH,
+                               y: badgeRect.minY + padV),
+                   withAttributes: attrs)
+    }
+
+    /// Draw the "Photo stacks" legend below the floor plan image. Lists
+    /// every cluster of size ≥ 2 so the reader of a static PDF can see
+    /// the inventory of overlapping photos (no popover available on
+    /// paper). Truncates with "+ N more" when the legend would overflow
+    /// the available vertical space; engineers reading the truncated
+    /// form can re-export with a smaller plan image area.
+    private func drawPhotoStacksLegend(_ ctx: CGContext,
+                                        pageRect: CGRect,
+                                        margin: CGFloat,
+                                        stacks: [PhotoStack],
+                                        topY: CGFloat) {
+        guard !stacks.isEmpty else { return }
+        let availableH = pageRect.height - topY - margin
+        guard availableH > 18 else { return }
+
+        let headingFont = UIFont.boldSystemFont(ofSize: 10)
+        let lineFont = UIFont.systemFont(ofSize: 9)
+        let lineHeight: CGFloat = 12
+        let headingHeight: CGFloat = 14
+
+        let heading = "Photo stacks (\(stacks.count) on this plan)" as NSString
+        heading.draw(at: CGPoint(x: margin, y: topY),
+                      withAttributes: [.font: headingFont, .foregroundColor: UIColor.black])
+        var y = topY + headingHeight
+
+        let availableLines = max(0, Int((availableH - headingHeight) / lineHeight))
+        let visible = stacks.prefix(availableLines)
+        for (i, stack) in visible.enumerated() {
+            let nums = stack.memberSeqs.map { "#\($0)" }.joined(separator: ", ")
+            let line = "Stack \(i + 1): \(nums) (\(stack.memberSeqs.count) photos)" as NSString
+            line.draw(at: CGPoint(x: margin + 12, y: y),
+                       withAttributes: [.font: lineFont, .foregroundColor: UIColor.darkGray])
+            y += lineHeight
+        }
+        if stacks.count > availableLines {
+            let more = "+ \(stacks.count - availableLines) more stack\(stacks.count - availableLines == 1 ? "" : "s")" as NSString
+            more.draw(at: CGPoint(x: margin + 12, y: y),
+                       withAttributes: [.font: lineFont, .foregroundColor: UIColor.gray])
         }
     }
 

@@ -15,6 +15,10 @@ struct PlanViewerView: View {
         PlanColorMode(rawValue: planColorModeRaw) ?? .status
     }
     @State private var selectedPhotoID: UUID?
+    /// Drives the BubbleStackSheet — non-nil when the engineer has tapped
+    /// a stack-badge bubble. The sheet lists every photo whose center
+    /// falls inside that overlap cluster.
+    @State private var stackTarget: PlanStackTarget?
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
@@ -55,6 +59,19 @@ struct PlanViewerView: View {
             .toolbar { toolbar }
             .task(id: planTaskID) {
                 await loadPlanImage()
+            }
+            .sheet(item: $stackTarget) { target in
+                BubbleStackSheet(
+                    projectID: projectID,
+                    photoIDs: target.photoIDs,
+                    actionLabel: "View",
+                    onSelect: { id in
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            selectedPhotoID = id
+                        }
+                    }
+                )
+                .environment(store)
             }
         }
     }
@@ -231,45 +248,51 @@ struct PlanViewerView: View {
             stepGapPlan: stepGapView / fit
         )
 
-        // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
+        // MARK: cluster detection (replaces the old fanning rosette)
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
-        // collisionRadius is the center-to-center distance at which two
-        // primaries are treated as a single cluster and fanned into a
-        // rosette around their centroid. Tightened from 2·R (= bubble
-        // diameter, which catches every bubble that *touches* a
-        // neighbour) to 1·R (= bubble radius, which only catches bubbles
-        // whose centers truly overlap). Fewer photos cluster, clusters
-        // stay small, the fan radius — which grows as
-        // chord / 2·sin(π/N) — stays compact, and photos placed
-        // close-but-not-on-top render at their placed locations instead
-        // of being rotated onto a ring around the cluster centroid.
-        let fanResult = ClusterFanning.apply(
+        // Photos whose centers fall within one bubble RADIUS of each
+        // other are considered a single visual stack. The previous
+        // rosette-fanning rendering displaced bubbles far from their
+        // placed positions; the stack-badge approach instead renders ONE
+        // representative bubble at the cluster centroid with a +N count
+        // badge and surfaces the stack contents through a tap-to-expand
+        // sheet. Position fidelity > visual spread.
+        let primaryClusters = ClusterFanning.detectPrimaryClusters(
             markers: initialMarkers,
-            sortKey: { $0.photo.sequenceNumber },
-            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
-            setPosition: { m, p in
-                PlanMarker(id: m.id, photo: m.photo,
-                           x: p.x, y: p.y,
-                           isPrimary: m.isPrimary, bearing: m.bearing)
-            },
-            collisionRadius: primaryRplan * 1.0,
-            bubbleRadius: primaryRplan,
-            // Bumped from 0.55 → 1.0 so neighbouring bubbles have a full
-            // bubble-radius of breathing room — fewer arrows end up
-            // shortened by the per-arrow obstacle pass below.
-            minSpacing: primaryRplan * 1.0
+            collisionRadius: primaryRplan * 1.0
         )
-        let markers = fanResult.adjusted
-        // MARK: end cluster-fanning
+
+        let tailMarkers = initialMarkers.filter { !$0.isPrimary }
+        // For each cluster build a "displayed primary" — the lowest-seq
+        // member acting as the cluster's lead, positioned at the cluster
+        // centroid. Singletons keep their natural position (centroid ==
+        // member position).
+        let displayedPrimaries: [DisplayedPrimary] = primaryClusters.map { cluster in
+            let lead = cluster.members.min(by: { $0.photo.sequenceNumber < $1.photo.sequenceNumber })
+                ?? cluster.members[0]
+            let leadAtCentroid = PlanMarker(
+                id: lead.id, photo: lead.photo,
+                x: cluster.centroid.x, y: cluster.centroid.y,
+                isPrimary: true, bearing: lead.bearing
+            )
+            return DisplayedPrimary(
+                id: lead.photo.id,
+                marker: leadAtCentroid,
+                stackPhotoIDs: cluster.members.map { $0.photo.id }
+            )
+        }
 
         let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
 
-        // MARK: cluster-fanning arrow shortening (experimental)
+        // Arrow shortening considers everything that's actually drawn
+        // — tail bubbles plus the cluster representatives at their
+        // displayed positions.
+        let allDisplayedForArrowMath = tailMarkers + displayedPrimaries.map { $0.marker }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
-            markers: markers,
+            markers: allDisplayedForArrowMath,
             id: { $0.photo.id },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
@@ -278,7 +301,6 @@ struct PlanViewerView: View {
             secondaryRadius: secRplan,
             defaultArrowLength: arrowLengthPlan
         )
-        // MARK: end cluster-fanning arrow shortening
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -286,48 +308,28 @@ struct PlanViewerView: View {
                 .frame(width: effW, height: effH)
                 .offset(x: effOX, y: effOY)
 
-            // MARK: cluster-fanning leader lines (experimental)
-            ForEach(fanResult.leaderLines, id: \.self) { line in
-                Path { p in
-                    p.move(to: CGPoint(
-                        x: effOX + line.from.x * effScale,
-                        y: effOY + line.from.y * effScale
-                    ))
-                    p.addLine(to: CGPoint(
-                        x: effOX + line.to.x * effScale,
-                        y: effOY + line.to.y * effScale
-                    ))
+            ForEach(displayedPrimaries) { dp in
+                if let bearing = dp.marker.bearing {
+                    let planFrame = bearing
+                    let centerX = effOX + dp.marker.x * effScale
+                    let centerY = effOY + dp.marker.y * effScale
+                    let myArrowLengthPlan = arrowLengthsByID[dp.marker.photo.id] ?? arrowLengthPlan
+                    // Arrow scales with zoom so it stays plan-anchored —
+                    // same rule as the bubble radius. Multiply the plan-
+                    // pixel length by effScale (= fit · zoom) instead of
+                    // just fit.
+                    let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
+                    ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
+                        .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
+                        .frame(width: 1, height: 1)
+                        .position(x: centerX, y: centerY)
+                    ArrowHead(bearingDegrees: planFrame,
+                              length: myArrowLengthView,
+                              baseRadius: 14 * bubbleScale * scale)
+                        .fill(Color.green)
+                        .frame(width: 1, height: 1)
+                        .position(x: centerX, y: centerY)
                 }
-                .stroke(Color.white.opacity(0.4),
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            }
-            // MARK: end cluster-fanning leader lines
-
-            ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
-                // Heading is stored in plan-frame (CW from page-up at the time of
-                // capture). Changing the plan's northDeg afterwards must NOT
-                // rotate existing arrows, so draw with the heading as-is.
-                let planFrame = marker.bearing ?? 0
-                let centerX = effOX + marker.x * effScale
-                let centerY = effOY + marker.y * effScale
-                // MARK: cluster-fanning per-marker arrow length (experimental)
-                let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? arrowLengthPlan
-                // Arrow scales with zoom so it stays plan-anchored —
-                // same rule as the bubble radius. Multiply the plan-
-                // pixel length by effScale (= fit · zoom) instead of
-                // just fit.
-                let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
-                // MARK: end cluster-fanning per-marker arrow length
-                ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
-                    .frame(width: 1, height: 1)
-                    .position(x: centerX, y: centerY)
-                ArrowHead(bearingDegrees: planFrame,
-                          length: myArrowLengthView,
-                          baseRadius: 14 * bubbleScale * scale)
-                    .fill(Color.green)
-                    .frame(width: 1, height: 1)
-                    .position(x: centerX, y: centerY)
             }
 
             // Tail bubbles first (under), then leads on top so a tap on a stack hits the lead.
@@ -336,7 +338,7 @@ struct PlanViewerView: View {
             // layout, so a trailing .contentShape(Circle()) would inscribe in
             // the whole parent and steal every tap (always selecting the
             // last-drawn bubble).
-            ForEach(markers.filter { !$0.isPrimary }) { marker in
+            ForEach(tailMarkers) { marker in
                 bubble(for: marker, radius: secRview)
                     .frame(width: secRview * 2, height: secRview * 2)
                     .contentShape(Circle().inset(by: -8))
@@ -346,15 +348,12 @@ struct PlanViewerView: View {
                     .position(x: effOX + marker.x * effScale,
                                y: effOY + marker.y * effScale)
             }
-            ForEach(markers.filter { $0.isPrimary }) { marker in
-                bubble(for: marker, radius: primaryRview)
-                    .frame(width: primaryRview * 2, height: primaryRview * 2)
-                    .contentShape(Circle().inset(by: -8))
-                    .onTapGesture {
-                        select(photo: marker.photo, geo: geo, imgSize: imgSize, fit: fit)
-                    }
-                    .position(x: effOX + marker.x * effScale,
-                               y: effOY + marker.y * effScale)
+            ForEach(displayedPrimaries) { dp in
+                stackOrSingle(dp,
+                              primaryRview: primaryRview,
+                              effOX: effOX, effOY: effOY,
+                              effScale: effScale,
+                              geo: geo, imgSize: imgSize, fit: fit)
             }
 
             NorthIndicator(northDeg: plan.northDeg)
@@ -411,6 +410,75 @@ struct PlanViewerView: View {
     }
 
     @ViewBuilder
+    /// Render either a single primary bubble (cluster of 1) or a
+    /// stack-badge bubble that opens BubbleStackSheet on tap (cluster
+    /// of ≥ 2). The displayed primary's marker is positioned at the
+    /// cluster centroid, so both branches share the same `.position`
+    /// math.
+    @ViewBuilder
+    private func stackOrSingle(_ dp: DisplayedPrimary,
+                                primaryRview: CGFloat,
+                                effOX: CGFloat, effOY: CGFloat,
+                                effScale: CGFloat,
+                                geo: GeometryProxy,
+                                imgSize: CGSize,
+                                fit: CGFloat) -> some View {
+        let x = effOX + dp.marker.x * effScale
+        let y = effOY + dp.marker.y * effScale
+        if dp.stackCount == 1 {
+            bubble(for: dp.marker, radius: primaryRview)
+                .frame(width: primaryRview * 2, height: primaryRview * 2)
+                .contentShape(Circle().inset(by: -8))
+                .onTapGesture {
+                    select(photo: dp.marker.photo, geo: geo, imgSize: imgSize, fit: fit)
+                }
+                .position(x: x, y: y)
+        } else {
+            stackBadge(for: dp.marker,
+                        additionalCount: dp.stackCount - 1,
+                        radius: primaryRview)
+                .frame(width: primaryRview * 2, height: primaryRview * 2)
+                .contentShape(Circle().inset(by: -8))
+                .onTapGesture {
+                    stackTarget = PlanStackTarget(
+                        id: dp.id,
+                        photoIDs: dp.stackPhotoIDs
+                    )
+                }
+                .position(x: x, y: y)
+        }
+    }
+
+    /// Stack-badge bubble: the standard primary bubble plus a small
+    /// pill in the top-right corner showing `+N` where N is the number
+    /// of other photos at the same spot.
+    @ViewBuilder
+    private func stackBadge(for marker: PlanMarker,
+                             additionalCount: Int,
+                             radius: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
+            bubble(for: marker, radius: radius)
+            // Pill badge — size tracks the bubble radius so it stays
+            // proportional across the zoom + bubbleScale settings.
+            let pillFont = max(10, radius * 0.5)
+            Text("+\(additionalCount)")
+                .font(.system(size: pillFont, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, max(4, radius * 0.18))
+                .padding(.vertical, max(1, radius * 0.05))
+                .background(
+                    Capsule().fill(Color.black.opacity(0.78))
+                )
+                .overlay(
+                    Capsule().stroke(Color.white.opacity(0.9), lineWidth: 1)
+                )
+                // Offset half outside the bubble so the badge sits
+                // visually on the bubble's rim, like a notification
+                // count badge.
+                .offset(x: radius * 0.25, y: -radius * 0.25)
+        }
+    }
+
     private func bubble(for marker: PlanMarker, radius: CGFloat) -> some View {
         // Canvas-based rendering keeps the text crisp at every zoom
         // level. SwiftUI Text + .minimumScaleFactor lets the text land
@@ -707,6 +775,27 @@ struct PlanMarker: Identifiable {
     let y: Double
     let isPrimary: Bool
     let bearing: Double?
+}
+
+/// One displayed primary slot on the plan — either a single bubble or a
+/// stack-badge representing N overlapping photos. `marker` is the lead
+/// member (lowest sequence number) with its position replaced by the
+/// cluster centroid so the badge renders dead-centre across the overlap
+/// region. `stackPhotoIDs` carries every member's ID so a tap can hand
+/// the full list off to BubbleStackSheet.
+struct DisplayedPrimary: Identifiable {
+    let id: UUID
+    let marker: PlanMarker
+    let stackPhotoIDs: [UUID]
+    var stackCount: Int { stackPhotoIDs.count }
+}
+
+/// Sheet-presentation target — `Identifiable` so SwiftUI's
+/// `.sheet(item:)` knows when to swap content if the engineer taps a
+/// second stack while the first is still presented.
+struct PlanStackTarget: Identifiable {
+    let id: UUID            // lead photo's ID
+    let photoIDs: [UUID]
 }
 
 struct ArrowShape: Shape {

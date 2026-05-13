@@ -35,6 +35,89 @@ enum ClusterFanning {
         let leaderLines: [LeaderLine]
     }
 
+    /// One cluster of overlapping primary markers, with the centroid
+    /// already computed so the caller can render a single representative
+    /// at that point without recomputing.
+    ///
+    /// `members` order matches the input markers' order — stable across
+    /// renders so SwiftUI ForEach keeps view identity steady.
+    struct PrimaryCluster<M> {
+        let members: [M]
+        let centroid: CGPoint
+    }
+
+    /// Detect clusters of overlapping primary markers WITHOUT applying
+    /// any displacement. Returns one entry per primary in `markers` —
+    /// singletons (no overlap) come back as a one-member cluster, real
+    /// overlap groups come back with their members. Use this when the
+    /// caller wants to render a stack badge / popover at the cluster
+    /// centroid instead of fanning the members onto a rosette.
+    ///
+    /// `collisionRadius` and the union-find logic match what `apply(...)`
+    /// uses, so a project that's clean under one will be clean under the
+    /// other.
+    static func detectPrimaryClusters<M>(
+        markers: [M],
+        position: (M) -> CGPoint,
+        isPrimary: (M) -> Bool,
+        collisionRadius: Double
+    ) -> [PrimaryCluster<M>] {
+        let primaryIdx = markers.indices.filter { isPrimary(markers[$0]) }
+        guard !primaryIdx.isEmpty else { return [] }
+
+        // Union-find — same shape as apply(...).
+        var parent = [Int: Int]()
+        for i in primaryIdx { parent[i] = i }
+        func find(_ x: Int) -> Int {
+            var root = x
+            while parent[root]! != root { root = parent[root]! }
+            var cur = x
+            while parent[cur]! != root {
+                let next = parent[cur]!
+                parent[cur] = root
+                cur = next
+            }
+            return root
+        }
+        func union(_ a: Int, _ b: Int) {
+            let ra = find(a), rb = find(b)
+            if ra != rb { parent[ra] = rb }
+        }
+
+        let collisionSqr = collisionRadius * collisionRadius
+        for i in primaryIdx {
+            for j in primaryIdx where j > i {
+                let pi = position(markers[i])
+                let pj = position(markers[j])
+                let dx = pi.x - pj.x, dy = pi.y - pj.y
+                if dx * dx + dy * dy < collisionSqr { union(i, j) }
+            }
+        }
+
+        // Group by root, preserving the input ordering of the first
+        // member so the resulting array is stable across re-renders.
+        var bucketByRoot: [Int: [Int]] = [:]
+        var rootOrder: [Int] = []
+        for i in primaryIdx {
+            let r = find(i)
+            if bucketByRoot[r] == nil {
+                bucketByRoot[r] = []
+                rootOrder.append(r)
+            }
+            bucketByRoot[r]!.append(i)
+        }
+
+        return rootOrder.map { root -> PrimaryCluster<M> in
+            let memberIdx = bucketByRoot[root]!
+            let members = memberIdx.map { markers[$0] }
+            let n = Double(memberIdx.count)
+            let sumX = memberIdx.reduce(0.0) { $0 + position(markers[$1]).x }
+            let sumY = memberIdx.reduce(0.0) { $0 + position(markers[$1]).y }
+            let centroid = CGPoint(x: sumX / n, y: sumY / n)
+            return PrimaryCluster(members: members, centroid: centroid)
+        }
+    }
+
     /// Fan clusters of overlapping primaries around their centroid.
     ///
     /// - `sortKey`: a stable, render-independent key (e.g. photo sequence

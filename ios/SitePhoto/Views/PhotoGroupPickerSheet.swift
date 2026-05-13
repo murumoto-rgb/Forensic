@@ -26,6 +26,10 @@ struct PhotoGroupPickerSheet: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var pendingTargetID: UUID?
+    /// Drives the BubbleStackSheet in plan mode — non-nil when the
+    /// engineer has tapped a stack badge. The sheet offers "Pick #N"
+    /// rows that set `pendingTargetID` to the chosen member's ID.
+    @State private var stackTarget: PickerStackTarget?
     /// Which floor plan is being shown in plan mode. Defaults to the
     /// `fromPhoto`'s plan when the photo being grouped is already
     /// placed; otherwise falls back to the project's `activeFloorPlanID`.
@@ -104,6 +108,21 @@ struct PhotoGroupPickerSheet: View {
                         dismiss()
                     },
                     onCancel: { pendingTargetID = nil }
+                )
+                .environment(store)
+            }
+            .sheet(item: $stackTarget) { target in
+                BubbleStackSheet(
+                    projectID: projectID,
+                    photoIDs: target.photoIDs,
+                    actionLabel: "Pick",
+                    onSelect: { id in
+                        // Same path the on-bubble tap follows — set
+                        // pendingTargetID so the ConfirmGroupSheet opens
+                        // next, asking the engineer to confirm the
+                        // group join.
+                        pendingTargetID = id
+                    }
                 )
                 .environment(store)
             }
@@ -358,35 +377,37 @@ struct PhotoGroupPickerSheet: View {
             stepGapPlan: stepGapView / fit
         )
 
-        // MARK: cluster-fanning (matches PlanViewerView)
+        // MARK: cluster detection (mirrors PlanViewerView's stack-badge
+        // approach — no rosette, no leader lines, no displacement).
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
         let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
-        // Detection threshold and fan layout both scale with the user's
-        // actual bubble size — mirrors PlanViewerView. See that file for
-        // the rationale behind preferring position fidelity over fanning
-        // tight clusters at small bubble scales.
-        let fanResult = ClusterFanning.apply(
+        let primaryClusters = ClusterFanning.detectPrimaryClusters(
             markers: initialMarkers,
-            sortKey: { $0.photo.sequenceNumber },
-            groupKey: { ($0.photo.groupID ?? $0.photo.id).uuidString },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
-            setPosition: { m, p in
-                Marker(id: m.id, photo: m.photo,
-                       x: p.x, y: p.y,
-                       isPrimary: m.isPrimary, bearing: m.bearing)
-            },
-            // collisionRadius tightened from 2·R → 1·R so only truly-
-            // overlapping bubbles fan; see PlanViewerView for rationale.
-            collisionRadius: primaryRplan * 1.0,
-            bubbleRadius: primaryRplan,
-            minSpacing: primaryRplan * 1.0
+            collisionRadius: primaryRplan * 1.0
         )
-        let markers = fanResult.adjusted
 
+        let tailMarkers = initialMarkers.filter { !$0.isPrimary }
+        let displayedPrimaries: [PickerDisplayedPrimary] = primaryClusters.map { cluster in
+            let lead = cluster.members.min(by: { $0.photo.sequenceNumber < $1.photo.sequenceNumber })
+                ?? cluster.members[0]
+            let leadAtCentroid = Marker(
+                id: lead.id, photo: lead.photo,
+                x: cluster.centroid.x, y: cluster.centroid.y,
+                isPrimary: true, bearing: lead.bearing
+            )
+            return PickerDisplayedPrimary(
+                id: lead.photo.id,
+                marker: leadAtCentroid,
+                stackPhotoIDs: cluster.members.map { $0.photo.id }
+            )
+        }
+
+        let allDisplayedForArrowMath = tailMarkers + displayedPrimaries.map { $0.marker }
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
-            markers: markers,
+            markers: allDisplayedForArrowMath,
             id: { $0.photo.id },
             position: { CGPoint(x: $0.x, y: $0.y) },
             isPrimary: { $0.isPrimary },
@@ -395,7 +416,7 @@ struct PhotoGroupPickerSheet: View {
             secondaryRadius: secRplan,
             defaultArrowLength: Double(arrowLengthPlan)
         )
-        // MARK: end cluster-fanning
+        // MARK: end cluster detection
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -403,44 +424,25 @@ struct PhotoGroupPickerSheet: View {
                 .frame(width: effW, height: effH)
                 .offset(x: effOX, y: effOY)
 
-            // MARK: cluster-fanning leader lines
-            ForEach(fanResult.leaderLines, id: \.self) { line in
-                Path { p in
-                    p.move(to: CGPoint(
-                        x: effOX + line.from.x * effScale,
-                        y: effOY + line.from.y * effScale
-                    ))
-                    p.addLine(to: CGPoint(
-                        x: effOX + line.to.x * effScale,
-                        y: effOY + line.to.y * effScale
-                    ))
+            // Direction arrows for primary bubbles with a stored bearing.
+            ForEach(displayedPrimaries) { dp in
+                if let bearing = dp.marker.bearing {
+                    let planFrame = bearing
+                    let centerX = effOX + dp.marker.x * effScale
+                    let centerY = effOY + dp.marker.y * effScale
+                    let myArrowLengthPlan = arrowLengthsByID[dp.marker.photo.id] ?? Double(arrowLengthPlan)
+                    let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
+                    ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
+                        .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
+                        .frame(width: 1, height: 1)
+                        .position(x: centerX, y: centerY)
+                    ArrowHead(bearingDegrees: planFrame,
+                              length: myArrowLengthView,
+                              baseRadius: 14 * bubbleScale * scale)
+                        .fill(Color.green)
+                        .frame(width: 1, height: 1)
+                        .position(x: centerX, y: centerY)
                 }
-                .stroke(Color.white.opacity(0.4),
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            }
-            // MARK: end cluster-fanning leader lines
-
-            // Direction arrows on primary bubbles with a stored bearing.
-            ForEach(markers.filter { $0.isPrimary && $0.bearing != nil }) { marker in
-                let planFrame = marker.bearing ?? 0
-                let centerX = effOX + marker.x * effScale
-                let centerY = effOY + marker.y * effScale
-                // MARK: cluster-fanning per-marker arrow length
-                let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? Double(arrowLengthPlan)
-                // Arrow scales with zoom (effScale = fit · zoom) so it
-                // stays plan-anchored — same rule as bubble radius.
-                let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
-                // MARK: end cluster-fanning per-marker arrow length
-                ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
-                    .frame(width: 1, height: 1)
-                    .position(x: centerX, y: centerY)
-                ArrowHead(bearingDegrees: planFrame,
-                          length: myArrowLengthView,
-                          baseRadius: 14 * bubbleScale * scale)
-                    .fill(Color.green)
-                    .frame(width: 1, height: 1)
-                    .position(x: centerX, y: centerY)
             }
 
             // Tails first so leads draw on top of any visual overlap.
@@ -448,7 +450,7 @@ struct PhotoGroupPickerSheet: View {
             // .position reparents the view to fill the entire plan area for
             // layout, which would make a trailing .contentShape(Circle())
             // inscribe in the whole parent and steal every tap.
-            ForEach(markers.filter { !$0.isPrimary }) { m in
+            ForEach(tailMarkers) { m in
                 bubble(seq: m.photo.sequenceNumber, radius: secRview)
                     .frame(width: secRview * 2, height: secRview * 2)
                     .contentShape(Circle().inset(by: -8))
@@ -457,14 +459,31 @@ struct PhotoGroupPickerSheet: View {
                     }
                     .position(x: effOX + m.x * effScale, y: effOY + m.y * effScale)
             }
-            ForEach(markers.filter { $0.isPrimary }) { m in
-                bubble(seq: m.photo.sequenceNumber, radius: primaryRview)
-                    .frame(width: primaryRview * 2, height: primaryRview * 2)
-                    .contentShape(Circle().inset(by: -8))
-                    .onTapGesture {
-                        pendingTargetID = m.photo.id
-                    }
-                    .position(x: effOX + m.x * effScale, y: effOY + m.y * effScale)
+            ForEach(displayedPrimaries) { dp in
+                let x = effOX + dp.marker.x * effScale
+                let y = effOY + dp.marker.y * effScale
+                if dp.stackCount == 1 {
+                    bubble(seq: dp.marker.photo.sequenceNumber, radius: primaryRview)
+                        .frame(width: primaryRview * 2, height: primaryRview * 2)
+                        .contentShape(Circle().inset(by: -8))
+                        .onTapGesture {
+                            pendingTargetID = dp.marker.photo.id
+                        }
+                        .position(x: x, y: y)
+                } else {
+                    pickerStackBadge(seq: dp.marker.photo.sequenceNumber,
+                                      additionalCount: dp.stackCount - 1,
+                                      radius: primaryRview)
+                        .frame(width: primaryRview * 2, height: primaryRview * 2)
+                        .contentShape(Circle().inset(by: -8))
+                        .onTapGesture {
+                            stackTarget = PickerStackTarget(
+                                id: dp.id,
+                                photoIDs: dp.stackPhotoIDs
+                            )
+                        }
+                        .position(x: x, y: y)
+                }
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -555,6 +574,46 @@ struct PhotoGroupPickerSheet: View {
         let y: Double
         let isPrimary: Bool
         let bearing: Double?
+    }
+
+    /// Picker-mode equivalent of `DisplayedPrimary` in PlanViewerView.
+    private struct PickerDisplayedPrimary: Identifiable {
+        let id: UUID
+        let marker: Marker
+        let stackPhotoIDs: [UUID]
+        var stackCount: Int { stackPhotoIDs.count }
+    }
+
+    /// Sheet-presentation target for the stack-expand sheet.
+    fileprivate struct PickerStackTarget: Identifiable {
+        let id: UUID
+        let photoIDs: [UUID]
+    }
+
+    /// Picker variant of the stack-badge bubble — mirrors
+    /// `stackBadge(for:additionalCount:radius:)` in PlanViewerView but
+    /// uses the picker's `bubble(seq:radius:)` helper instead. The pill
+    /// math is identical so the on-screen look matches across surfaces.
+    @ViewBuilder
+    private func pickerStackBadge(seq: Int,
+                                   additionalCount: Int,
+                                   radius: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
+            bubble(seq: seq, radius: radius)
+            let pillFont = max(10, radius * 0.5)
+            Text("+\(additionalCount)")
+                .font(.system(size: pillFont, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, max(4, radius * 0.18))
+                .padding(.vertical, max(1, radius * 0.05))
+                .background(
+                    Capsule().fill(Color.black.opacity(0.78))
+                )
+                .overlay(
+                    Capsule().stroke(Color.white.opacity(0.9), lineWidth: 1)
+                )
+                .offset(x: radius * 0.25, y: -radius * 0.25)
+        }
     }
 
     /// Match `PlanViewerView.bubbleDigitScale`: when the project's
