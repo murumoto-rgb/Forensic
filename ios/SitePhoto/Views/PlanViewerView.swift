@@ -234,15 +234,16 @@ struct PlanViewerView: View {
         // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
         let primaryRplan = Double(basePrimaryRview / fit)
         let secRplan     = Double(baseSecRview     / fit)
-        // Cluster detection threshold and fan layout both scale with the
-        // user's actual bubble size. An earlier revision floored these at
-        // the default scale so tight clusters of tiny bubbles still got
-        // fanned — but that displaced bubbles far from where the engineer
-        // placed them and broke the "I know which photo is which because
-        // of where it sits on the plan" mental model. Position fidelity
-        // wins: at very small bubble sizes some tightly-placed photos
-        // will visually overlap again, but every bubble renders at the
-        // location it was actually placed.
+        // collisionRadius is the center-to-center distance at which two
+        // primaries are treated as a single cluster and fanned into a
+        // rosette around their centroid. Tightened from 2·R (= bubble
+        // diameter, which catches every bubble that *touches* a
+        // neighbour) to 1·R (= bubble radius, which only catches bubbles
+        // whose centers truly overlap). Fewer photos cluster, clusters
+        // stay small, the fan radius — which grows as
+        // chord / 2·sin(π/N) — stays compact, and photos placed
+        // close-but-not-on-top render at their placed locations instead
+        // of being rotated onto a ring around the cluster centroid.
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -254,7 +255,7 @@ struct PlanViewerView: View {
                            x: p.x, y: p.y,
                            isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: primaryRplan * 2.0,
+            collisionRadius: primaryRplan * 1.0,
             bubbleRadius: primaryRplan,
             // Bumped from 0.55 → 1.0 so neighbouring bubbles have a full
             // bubble-radius of breathing room — fewer arrows end up

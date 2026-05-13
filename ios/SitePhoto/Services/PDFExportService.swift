@@ -591,7 +591,9 @@ struct PDFExportService {
                 M(photo: m.photo, x: p.x, y: p.y,
                   isPrimary: m.isPrimary, bearing: m.bearing)
             },
-            collisionRadius: primaryRplan * 2.0,
+            // collisionRadius tightened from 2·R → 1·R so only truly-
+            // overlapping bubbles fan; see PlanViewerView for rationale.
+            collisionRadius: primaryRplan * 1.0,
             bubbleRadius: primaryRplan,
             minSpacing: primaryRplan * 1.0
         )
