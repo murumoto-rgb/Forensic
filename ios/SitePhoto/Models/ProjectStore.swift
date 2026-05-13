@@ -1064,6 +1064,17 @@ final class ProjectStore {
             print("Failed to save project: \(error)")
             #endif
         }
+        commitInMemory(project)
+        checkForUnresolvedConflicts(at: manifest, projectName: project.name)
+        return project
+    }
+
+    /// Update the in-memory `activeProjects` / `deletedProjects` arrays
+    /// without touching disk. Lets long-running batch flows (e.g. AI
+    /// tagging) accumulate many per-photo mutations and flush them with
+    /// a single `save(_:)` at checkpoints instead of paying the full
+    /// project-encode + atomic-write cost on every photo.
+    private func commitInMemory(_ project: Project) {
         // Keep existing projects in their current list; new projects go into
         // Active Projects.
         if let idx = activeProjects.firstIndex(where: { $0.id == project.id }) {
@@ -1073,8 +1084,6 @@ final class ProjectStore {
         } else {
             activeProjects.insert(project, at: 0)
         }
-        checkForUnresolvedConflicts(at: manifest, projectName: project.name)
-        return project
     }
 
     /// Surface a toast when iCloud reports the project manifest has been
@@ -2404,7 +2413,10 @@ extension ProjectStore {
     /// Replace the full tag list for a photo. Trims + dedupes by
     /// (parentTag, label).
     @discardableResult
-    func setTags(_ project: Project, photoID: UUID, tags: [Tag]) -> Project {
+    func setTags(_ project: Project,
+                  photoID: UUID,
+                  tags: [Tag],
+                  autoSave: Bool = true) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         var seen: [String: Int] = [:]
@@ -2423,7 +2435,9 @@ extension ProjectStore {
             out.append(Tag(label: trimmed, confidence: t.confidence, parentTag: t.parentTag))
         }
         p.photos[idx].tags = out
-        return save(p)
+        if autoSave { return save(p) }
+        commitInMemory(p)
+        return p
     }
 
     /// Merge a list of incoming Tags into the photo's existing tags,
@@ -2432,7 +2446,8 @@ extension ProjectStore {
     @discardableResult
     func mergeTags(_ project: Project,
                     photoID: UUID,
-                    additions: [Tag]) -> Project {
+                    additions: [Tag],
+                    autoSave: Bool = true) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         var lookup: [String: Int] = [:]
@@ -2455,7 +2470,9 @@ extension ProjectStore {
                 p.photos[idx].tags.append(newTag)
             }
         }
-        return save(p)
+        if autoSave { return save(p) }
+        commitInMemory(p)
+        return p
     }
 
     /// Replace the photo's pending AI suggestions, dropping any candidates
@@ -2522,7 +2539,8 @@ extension ProjectStore {
     @discardableResult
     func setPhotoAIAnalysis(_ project: Project,
                              photoID: UUID,
-                             analysis: AIPhotoAnalysis) -> Project {
+                             analysis: AIPhotoAnalysis,
+                             autoSave: Bool = true) -> Project {
         var p = project
         guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         p.photos[idx].aiAnalysis = analysis
@@ -2530,7 +2548,9 @@ extension ProjectStore {
         p.photos[idx].aiObservation = obs.isEmpty ? nil : obs
         p.photos[idx].aiSeverity = nil
         p.photos[idx].aiFollowUp = nil
-        return save(p)
+        if autoSave { return save(p) }
+        commitInMemory(p)
+        return p
     }
 
     /// Wipe everything an AI run can have left behind on the given photos:
@@ -3032,6 +3052,23 @@ extension ProjectStore {
         var failures: [BatchTagFailure] = []
         var completed = 0
 
+        // Defer disk writes during the batch — per-photo `save()` calls
+        // encode the entire project JSON twice per photo (once for tags,
+        // once for analysis), which dominates wall-clock time on large
+        // projects. Apply mutations in-memory and flush every
+        // `checkpointInterval` photos so an interrupted run never loses
+        // more than that many photos' worth of work. A final flush at
+        // the end (and an error/cancel flush via `defer`) makes sure
+        // everything lands on disk regardless of how the loop exits.
+        let checkpointInterval = 25
+        var unflushedSinceCheckpoint = 0
+        func flushPendingChanges() {
+            if let p = self.project(withID: projectID) {
+                _ = self.save(p)
+            }
+            unflushedSinceCheckpoint = 0
+        }
+
         // Rich-summary accumulators. Filled as each successful response
         // lands; assembled into `BatchTagResult` when the run finishes.
         var primaryCounts: [String: Int] = [:]
@@ -3040,6 +3077,15 @@ extension ProjectStore {
         var reviewerFlagged: [BatchPhotoRef] = []
         var validationIssues: [BatchPhotoRef] = []
         var parseFailedRefs: [BatchPhotoRef] = []
+
+        // Ensure any work accumulated in-memory but not yet checkpointed
+        // gets written, even on error, cancellation, or early throw.
+        // Runs once when the outer function returns or throws.
+        defer {
+            if unflushedSinceCheckpoint > 0 {
+                flushPendingChanges()
+            }
+        }
 
         try await withThrowingTaskGroup(of: PhotoTagResult.self) { group in
             var iterator = work.makeIterator()
@@ -3108,12 +3154,14 @@ extension ProjectStore {
                             switch mode {
                             case .add:
                                 p = self.mergeTags(p, photoID: result.photoID,
-                                                   additions: additions)
+                                                   additions: additions,
+                                                   autoSave: false)
                             case .overwrite:
                                 // Replace the photo's existing tag list
                                 // entirely with what Claude returned.
                                 p = self.setTags(p, photoID: result.photoID,
-                                                 tags: additions)
+                                                 tags: additions,
+                                                 autoSave: false)
                             }
                             tagged += 1
                         } else if mode == .overwrite {
@@ -3122,7 +3170,9 @@ extension ProjectStore {
                             // response would silently leave old tags in
                             // place — the opposite of what overwrite
                             // promises.
-                            p = self.setTags(p, photoID: result.photoID, tags: [])
+                            p = self.setTags(p, photoID: result.photoID,
+                                             tags: [],
+                                             autoSave: false)
                         }
                         // Persist the full analysis (or the parse-failure
                         // record), even on photos with no tags returned —
@@ -3130,8 +3180,10 @@ extension ProjectStore {
                         // reviewer flag, raw response) is still useful.
                         _ = self.setPhotoAIAnalysis(
                             p, photoID: result.photoID,
-                            analysis: r.analysis
+                            analysis: r.analysis,
+                            autoSave: false
                         )
+                        unflushedSinceCheckpoint += 1
                     }
                     // Accumulate into the rich-summary buckets.
                     let a = r.analysis
@@ -3183,6 +3235,15 @@ extension ProjectStore {
                 }
 
                 onProgress(completed, total, result.sequenceNumber)
+
+                // Periodic disk-flush so an interrupted run never loses
+                // more than `checkpointInterval` photos of work. The
+                // outer `defer` handles the final flush on normal exit
+                // or thrown error.
+                if unflushedSinceCheckpoint >= checkpointInterval {
+                    flushPendingChanges()
+                }
+
                 _ = launchNext()
             }
         }
