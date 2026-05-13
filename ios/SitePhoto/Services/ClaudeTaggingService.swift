@@ -38,9 +38,11 @@ enum ClaudeTaggingService {
     /// Default model. Overridable per call so callers can honour the
     /// user's "Tagging model" Settings pick (see `AITaggingModel`).
     private static let defaultModel = AITaggingModel.sonnet.modelIdentifier
-    /// 1024 px on the longest side keeps image-token cost in the $0.003–
-    /// $0.005 range while preserving enough detail for damage recognition.
-    private static let maxImageDimension: CGFloat = 1024
+    /// 1600 px on the longest side. The earlier 1024 px setting missed
+    /// fine surface detail (hairline cracks, sealant texture, mortar joint
+    /// staining) that the engineer cares about; 1600 px adds ~50% to image
+    /// tokens but materially improves discrimination on detail shots.
+    private static let maxImageDimension: CGFloat = 1600
 
     /// Result returned by a single Claude vision call. Tags flow into
     /// `Photo.tags` via the existing TagSuggestion/Tag pipeline; the full
@@ -229,11 +231,12 @@ enum ClaudeTaggingService {
         }
     }
 
-    /// Confidence assigned to every tag Claude emits. The schema doesn't
-    /// ask Claude to qualify its individual tag picks (per-tag probability)
-    /// — `aiAnalysis.confidence` covers that at the photo level. We use a
-    /// single high score that comfortably clears the default 50% threshold.
-    private static let bucketConfidence: Double = 0.9
+    /// Fallback confidence assigned to a tag when Claude's per-tag
+    /// `tag_confidences` map doesn't carry an entry for it (e.g. the
+    /// model skipped one, or an older prompt is still in use). Picked so
+    /// any orphaned tag still clears the default 50% threshold but lands
+    /// below the "model is sure" band so the engineer can spot it.
+    private static let fallbackTagConfidence: Double = 0.7
 
     /// Decode the Anthropic envelope, extract the JSON object Claude
     /// emitted, decode it, validate it, and convert it into a `Result`.
@@ -296,8 +299,8 @@ enum ClaudeTaggingService {
             photoID: payload.resolvedPhotoID(fallback: fallbackPhotoID),
             primaryTags: payload.primary_tags ?? [],
             secondaryTagsByPrimary: payload.secondary_tags_by_primary ?? [:],
+            tagConfidences: payload.tag_confidences ?? [:],
             locationInferred: payload.location_inferred?.trimmed ?? "",
-            orientationCue: payload.orientation_cue?.trimmed ?? "",
             scalePresent: payload.scale_present ?? .unknown(""),
             measurementVisible: payload.measurement_visible?.trimmed.nonEmpty,
             summaryObservation: payload.summary_observation?.trimmed ?? "",
@@ -305,7 +308,6 @@ enum ClaudeTaggingService {
             recommendedUse: payload.recommended_use ?? .unknown(""),
             confidence: payload.confidence ?? .unknown(""),
             confidenceNote: payload.confidence_note?.trimmed ?? "",
-            likelyCompanion: payload.likely_companion ?? .unknown(""),
             reviewerFlag: payload.reviewer_flag?.trimmed ?? "",
             validationErrors: [],   // filled by validator below
             rawResponse: text,
@@ -341,9 +343,28 @@ enum ClaudeTaggingService {
     /// pipeline so the rest of the app's tag UI works unchanged. Each
     /// primary becomes a primary-level suggestion (parentTag = nil), each
     /// non-"None" secondary becomes a secondary-level suggestion linked
-    /// back to its primary via parentTag.
+    /// back to its primary via parentTag. Confidence comes from the
+    /// model's per-tag `tag_confidences` map; if it didn't supply one we
+    /// fall back to `fallbackTagConfidence`.
     private static func suggestions(from a: AIPhotoAnalysis) -> [TagSuggestion] {
         var out: [TagSuggestion] = []
+        // Lowercase index of the confidence map so lookups tolerate the
+        // model writing keys in slightly different casing than primary_tags
+        // / secondary_tags_by_primary.
+        let confByLowercase: [String: Double] = Dictionary(
+            a.tagConfidences.map { (key, value) in
+                (key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), value)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        func confidence(for label: String) -> Double {
+            let key = stripLeadingNumber(label).lowercased()
+            if let raw = confByLowercase[key] {
+                return max(0, min(1, raw))
+            }
+            return fallbackTagConfidence
+        }
+
         for primary in a.primaryTags {
             let pTrim = stripLeadingNumber(
                 primary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -351,7 +372,7 @@ enum ClaudeTaggingService {
             guard !pTrim.isEmpty else { continue }
             out.append(TagSuggestion(
                 label: pTrim,
-                confidence: bucketConfidence,
+                confidence: confidence(for: pTrim),
                 source: .claude,
                 parentTag: nil
             ))
@@ -369,7 +390,7 @@ enum ClaudeTaggingService {
                 guard !sTrim.isEmpty, sTrim.lowercased() != "none" else { continue }
                 out.append(TagSuggestion(
                     label: sTrim,
-                    confidence: bucketConfidence,
+                    confidence: confidence(for: sTrim),
                     source: .claude,
                     parentTag: pTrim
                 ))
@@ -401,8 +422,8 @@ enum ClaudeTaggingService {
         let photo_id: String?
         let primary_tags: [String]?
         let secondary_tags_by_primary: [String: [String]]?
+        let tag_confidences: [String: Double]?
         let location_inferred: String?
-        let orientation_cue: String?
         let scale_present: ScalePresent?
         let measurement_visible: String?
         let summary_observation: String?
@@ -410,7 +431,6 @@ enum ClaudeTaggingService {
         let recommended_use: RecommendedUse?
         let confidence: Confidence?
         let confidence_note: String?
-        let likely_companion: LikelyCompanion?
         let reviewer_flag: String?
 
         func resolvedPhotoID(fallback: String) -> String {

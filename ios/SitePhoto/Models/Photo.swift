@@ -359,9 +359,13 @@ struct AIPhotoAnalysis: Codable, Hashable {
     /// Best-guess room/elevation/area from visible cues. "Unknown" when
     /// the model couldn't tell.
     var locationInferred: String
-    /// Short phrase explaining what cued the location (e.g. "double oven
-    /// and island visible"). "Not determinable" when no cue is visible.
-    var orientationCue: String
+    /// Per-tag confidence (0…1) for every primary and non-"None" secondary
+    /// emitted. Keys are the tag names exactly as written in `primaryTags`
+    /// / `secondaryTagsByPrimary`. Used to populate `Tag.confidence` on the
+    /// applied suggestions so the Settings confidence-threshold slider can
+    /// actually discriminate strong vs weak picks. Missing keys fall back
+    /// to a neutral value at the call site.
+    var tagConfidences: [String: Double]
     /// Yes / Partial / No / unknown — whether a usable scale is present.
     var scalePresent: ScalePresent
     /// Visible measurement transcribed exactly as shown (with units and
@@ -377,9 +381,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
     var confidence: Confidence
     /// Short clause explaining a Medium / Low rating. Empty for High.
     var confidenceNote: String
-    /// Whether the photo looks like a close-up, an overview, or
-    /// standalone.
-    var likelyCompanion: LikelyCompanion
     /// Short note when the engineer should look at this photo directly.
     /// Empty when nothing flagged.
     var reviewerFlag: String
@@ -402,8 +403,8 @@ struct AIPhotoAnalysis: Codable, Hashable {
         photoID: "",
         primaryTags: [],
         secondaryTagsByPrimary: [:],
+        tagConfidences: [:],
         locationInferred: "",
-        orientationCue: "",
         scalePresent: .unknown(""),
         measurementVisible: nil,
         summaryObservation: "",
@@ -411,7 +412,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         recommendedUse: .unknown(""),
         confidence: .unknown(""),
         confidenceNote: "",
-        likelyCompanion: .unknown(""),
         reviewerFlag: "",
         validationErrors: [],
         rawResponse: nil,
@@ -425,8 +425,8 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.photoID                = (try? c.decodeIfPresent(String.self, forKey: .photoID)) ?? ""
         self.primaryTags            = (try? c.decodeIfPresent([String].self, forKey: .primaryTags)) ?? []
         self.secondaryTagsByPrimary = (try? c.decodeIfPresent([String: [String]].self, forKey: .secondaryTagsByPrimary)) ?? [:]
+        self.tagConfidences         = (try? c.decodeIfPresent([String: Double].self, forKey: .tagConfidences)) ?? [:]
         self.locationInferred       = (try? c.decodeIfPresent(String.self, forKey: .locationInferred)) ?? ""
-        self.orientationCue         = (try? c.decodeIfPresent(String.self, forKey: .orientationCue)) ?? ""
         self.scalePresent           = (try? c.decodeIfPresent(ScalePresent.self, forKey: .scalePresent)) ?? .unknown("")
         self.measurementVisible     = try? c.decodeIfPresent(String.self, forKey: .measurementVisible)
         self.summaryObservation     = (try? c.decodeIfPresent(String.self, forKey: .summaryObservation)) ?? ""
@@ -434,7 +434,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.recommendedUse         = (try? c.decodeIfPresent(RecommendedUse.self, forKey: .recommendedUse)) ?? .unknown("")
         self.confidence             = (try? c.decodeIfPresent(Confidence.self, forKey: .confidence)) ?? .unknown("")
         self.confidenceNote         = (try? c.decodeIfPresent(String.self, forKey: .confidenceNote)) ?? ""
-        self.likelyCompanion        = (try? c.decodeIfPresent(LikelyCompanion.self, forKey: .likelyCompanion)) ?? .unknown("")
         self.reviewerFlag           = (try? c.decodeIfPresent(String.self, forKey: .reviewerFlag)) ?? ""
         self.validationErrors       = (try? c.decodeIfPresent([String].self, forKey: .validationErrors)) ?? []
         self.rawResponse            = try? c.decodeIfPresent(String.self, forKey: .rawResponse)
@@ -444,8 +443,8 @@ struct AIPhotoAnalysis: Codable, Hashable {
     init(photoID: String,
          primaryTags: [String],
          secondaryTagsByPrimary: [String: [String]],
+         tagConfidences: [String: Double],
          locationInferred: String,
-         orientationCue: String,
          scalePresent: ScalePresent,
          measurementVisible: String?,
          summaryObservation: String,
@@ -453,7 +452,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
          recommendedUse: RecommendedUse,
          confidence: Confidence,
          confidenceNote: String,
-         likelyCompanion: LikelyCompanion,
          reviewerFlag: String,
          validationErrors: [String] = [],
          rawResponse: String? = nil,
@@ -461,8 +459,8 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.photoID = photoID
         self.primaryTags = primaryTags
         self.secondaryTagsByPrimary = secondaryTagsByPrimary
+        self.tagConfidences = tagConfidences
         self.locationInferred = locationInferred
-        self.orientationCue = orientationCue
         self.scalePresent = scalePresent
         self.measurementVisible = measurementVisible
         self.summaryObservation = summaryObservation
@@ -470,7 +468,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.recommendedUse = recommendedUse
         self.confidence = confidence
         self.confidenceNote = confidenceNote
-        self.likelyCompanion = likelyCompanion
         self.reviewerFlag = reviewerFlag
         self.validationErrors = validationErrors
         self.rawResponse = rawResponse
@@ -480,7 +477,7 @@ struct AIPhotoAnalysis: Codable, Hashable {
 
 // MARK: - Constrained-string enums
 
-/// Marker so all four constrained-string enums can share a `displayName`
+/// Marker so the constrained-string enums can share a `displayName`
 /// rendering helper and the `unknown(String)` decode pattern.
 protocol ConstrainedStringEnum: Hashable, Codable {
     /// Human-facing label. For known cases this is the canonical spelling;
@@ -614,38 +611,3 @@ enum Confidence: ConstrainedStringEnum {
     }
 }
 
-/// Whether the photo looks like a detail shot, a context shot, or a
-/// standalone frame.
-enum LikelyCompanion: ConstrainedStringEnum {
-    case closeUp
-    case overview
-    case standalone
-    case unknown(String)
-
-    var displayName: String {
-        switch self {
-        case .closeUp:        return "Close-up"
-        case .overview:       return "Overview"
-        case .standalone:     return "Standalone"
-        case .unknown(let s): return s
-        }
-    }
-    var isKnown: Bool {
-        if case .unknown = self { return false }
-        return true
-    }
-
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "close-up", "closeup": self = .closeUp
-        case "overview":            self = .overview
-        case "standalone":          self = .standalone
-        default:                    self = .unknown(raw)
-        }
-    }
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        try c.encode(displayName)
-    }
-}
