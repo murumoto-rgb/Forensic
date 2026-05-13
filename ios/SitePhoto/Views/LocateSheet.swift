@@ -591,13 +591,18 @@ struct PlanLocateCanvas: View {
                         x: effOX + bubble.position.x * effScale,
                         y: effOY + bubble.position.y * effScale
                     )
-                    let baseRadius: CGFloat = (bubble.isTappable
+                    // Bubble radius scales with zoom so existing
+                    // markers keep a fixed plan-pixel footprint as the
+                    // user pinches in/out — bigger when zoomed in,
+                    // smaller when zoomed out. Matches PlanViewerView
+                    // / PhotoGroupPickerSheet.
+                    let baseRadius: CGFloat = ((bubble.isTappable
                         ? 18 * bubbleScale
-                        : 13 * bubbleScale) * digitScale
+                        : 13 * bubbleScale) * digitScale) * zoom
                     if let h = bubble.bearing, bubble.isTappable {
                         existingBubbleArrow(at: center,
                                              headingDegrees: h,
-                                             length: baseRadius + 36 * bubbleScale)
+                                             length: baseRadius + 36 * bubbleScale * zoom)
                     }
                     existingBubble(seq: bubble.sequenceNumber,
                                     radius: baseRadius,
@@ -641,7 +646,10 @@ struct PlanLocateCanvas: View {
                 // ignored so the engineer can refine direction without
                 // accidentally triggering a group prompt.
                 if step == .position {
-                    let hitRadiusPt: CGFloat = 22 * bubbleScale + 8
+                    // Match the bubble's visible radius (which scales
+                    // with zoom) plus a small fixed-pt slack so the
+                    // tap zone follows the bubble as the user pinches.
+                    let hitRadiusPt: CGFloat = 22 * bubbleScale * zoom + 8
                     let hitRadiusImg = hitRadiusPt / effScale
                     if let hit = nearestTappableBubble(to: inImage,
                                                          within: hitRadiusImg) {

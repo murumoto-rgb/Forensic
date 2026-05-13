@@ -342,10 +342,16 @@ struct PhotoGroupPickerSheet: View {
         // per-project digit scale so picker bubbles and viewer
         // bubbles render at the same size.
         let digitScale = bubbleDigitScale()
-        let primaryRview = 18 * bubbleScale * digitScale
-        let secRview = 13 * bubbleScale * digitScale
-        let firstGapView = primaryRview + secRview - 2 * bubbleScale
-        let stepGapView = secRview * 2 - 2 * bubbleScale
+        // Base radius at fit-to-screen (zoom=1); plan-pixel footprint
+        // = base / fit, zoom-independent. Rendered radius scales with
+        // zoom so the bubble stays plan-anchored. Same pattern as
+        // PlanViewerView.
+        let basePrimaryRview = 18 * bubbleScale * digitScale
+        let baseSecRview = 13 * bubbleScale * digitScale
+        let primaryRview = basePrimaryRview * scale
+        let secRview = baseSecRview * scale
+        let firstGapView = basePrimaryRview + baseSecRview - 2 * bubbleScale
+        let stepGapView = baseSecRview * 2 - 2 * bubbleScale
 
         let initialMarkers = buildMarkers(
             firstGapPlan: firstGapView / fit,
@@ -353,9 +359,9 @@ struct PhotoGroupPickerSheet: View {
         )
 
         // MARK: cluster-fanning (matches PlanViewerView)
-        let primaryRplan = Double(primaryRview / fit)
-        let secRplan     = Double(secRview     / fit)
-        let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
+        let primaryRplan = Double(basePrimaryRview / fit)
+        let secRplan     = Double(baseSecRview     / fit)
+        let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -414,17 +420,17 @@ struct PhotoGroupPickerSheet: View {
                 let centerY = effOY + marker.y * effScale
                 // MARK: cluster-fanning per-marker arrow length
                 let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? Double(arrowLengthPlan)
-                // Keep arrows at their natural fit-to-screen size
-                // (no zoom) so they don't visually outgrow the bubble.
-                let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
+                // Arrow scales with zoom (effScale = fit · zoom) so it
+                // stays plan-anchored — same rule as bubble radius.
+                let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
                 // MARK: end cluster-fanning per-marker arrow length
                 ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
+                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
                 ArrowHead(bearingDegrees: planFrame,
                           length: myArrowLengthView,
-                          baseRadius: 14 * bubbleScale)
+                          baseRadius: 14 * bubbleScale * scale)
                     .fill(Color.green)
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)

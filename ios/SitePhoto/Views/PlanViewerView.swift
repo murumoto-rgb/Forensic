@@ -210,10 +210,20 @@ struct PlanViewerView: View {
         // numbers grow to 3+ digits so text doesn't have to shrink as
         // hard. All bubbles within a single render use the same scale.
         let digitScale = bubbleDigitScale(for: project)
-        let primaryRview = 18 * bubbleScale * digitScale
-        let secRview = 13 * bubbleScale * digitScale
-        let firstGapView = primaryRview + secRview - 2 * bubbleScale
-        let stepGapView = secRview * 2 - 2 * bubbleScale
+        // Base radius at fit-to-screen (zoom=1). The plan-pixel
+        // footprint = base / fit — independent of zoom, so the cluster
+        // fanning algorithm and tail-gap math use this directly.
+        let basePrimaryRview = 18 * bubbleScale * digitScale
+        let baseSecRview = 13 * bubbleScale * digitScale
+        // Rendered radius scales with zoom so the bubble keeps a fixed
+        // plan-pixel footprint as the user pinches in/out — bigger when
+        // zoomed in, smaller when zoomed out — mirroring how the old
+        // .scaleEffect approach behaved, just without the rasterised-
+        // pixel blur. Same for arrow length / stroke / arrowhead size.
+        let primaryRview = basePrimaryRview * scale
+        let secRview = baseSecRview * scale
+        let firstGapView = basePrimaryRview + baseSecRview - 2 * bubbleScale
+        let stepGapView = baseSecRview * 2 - 2 * bubbleScale
 
         let initialMarkers = buildMarkers(
             project: project,
@@ -222,8 +232,8 @@ struct PlanViewerView: View {
         )
 
         // MARK: cluster-fanning (experimental — see ClusterFanning.swift)
-        let primaryRplan = Double(primaryRview / fit)
-        let secRplan     = Double(secRview     / fit)
+        let primaryRplan = Double(basePrimaryRview / fit)
+        let secRplan     = Double(baseSecRview     / fit)
         let fanResult = ClusterFanning.apply(
             markers: initialMarkers,
             sortKey: { $0.photo.sequenceNumber },
@@ -244,7 +254,7 @@ struct PlanViewerView: View {
         let markers = fanResult.adjusted
         // MARK: end cluster-fanning
 
-        let arrowLengthPlan = (primaryRview + 38 * bubbleScale) / fit
+        let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
 
         // MARK: cluster-fanning arrow shortening (experimental)
         let arrowLengthsByID = ClusterFanning.arrowLengthAdjustments(
@@ -291,18 +301,19 @@ struct PlanViewerView: View {
                 let centerY = effOY + marker.y * effScale
                 // MARK: cluster-fanning per-marker arrow length (experimental)
                 let myArrowLengthPlan = arrowLengthsByID[marker.photo.id] ?? arrowLengthPlan
-                // Arrow length stays at its "fit-to-screen" natural
-                // size regardless of zoom — same rationale as
-                // keeping bubble size constant during zoom.
-                let myArrowLengthView = CGFloat(myArrowLengthPlan) * fit
+                // Arrow scales with zoom so it stays plan-anchored —
+                // same rule as the bubble radius. Multiply the plan-
+                // pixel length by effScale (= fit · zoom) instead of
+                // just fit.
+                let myArrowLengthView = CGFloat(myArrowLengthPlan) * effScale
                 // MARK: end cluster-fanning per-marker arrow length
                 ArrowShape(bearingDegrees: planFrame, length: myArrowLengthView)
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale, lineCap: .round))
+                    .stroke(Color.green, style: StrokeStyle(lineWidth: 3 * bubbleScale * scale, lineCap: .round))
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
                 ArrowHead(bearingDegrees: planFrame,
                           length: myArrowLengthView,
-                          baseRadius: 14 * bubbleScale)
+                          baseRadius: 14 * bubbleScale * scale)
                     .fill(Color.green)
                     .frame(width: 1, height: 1)
                     .position(x: centerX, y: centerY)
