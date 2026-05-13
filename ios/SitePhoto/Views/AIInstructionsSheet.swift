@@ -18,6 +18,7 @@ struct AIInstructionsSheet: View {
     @State private var showingTemplatePicker: Bool = false
     @State private var showingTemplateManager: Bool = false
     @State private var showingSavePrompt: Bool = false
+    @State private var showingPreview: Bool = false
     @State private var saveTemplateName: String = ""
 
     private var project: Project? {
@@ -74,6 +75,18 @@ struct AIInstructionsSheet: View {
                             .disabled(!dirty)
                     }
                 }
+                ToolbarItem(placement: .bottomBar) {
+                    Button {
+                        showingPreview = true
+                    } label: {
+                        Label("Preview Prompt", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingPreview) {
+                AIPromptPreviewSheet(projectID: projectID,
+                                      draftAINotes: dirty ? draft : nil)
+                    .environment(store)
             }
             .alert("Save as template",
                    isPresented: $showingSavePrompt) {

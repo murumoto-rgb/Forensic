@@ -22,6 +22,7 @@ struct ProjectTagSelectionSheet: View {
     @State private var draft: ProjectTagSelection = ProjectTagSelection()
     @State private var loaded: Bool = false
     @State private var showingLibrary: Bool = false
+    @State private var showingPreview: Bool = false
     @State private var expandedPrimaries: Set<UUID> = []
 
     private var project: Project? { store.project(withID: projectID) }
@@ -77,10 +78,18 @@ struct ProjectTagSelectionSheet: View {
                         .disabled(!dirty)
                 }
                 ToolbarItem(placement: .bottomBar) {
-                    Button {
-                        showingLibrary = true
-                    } label: {
-                        Label("Manage Library", systemImage: "slider.horizontal.3")
+                    HStack {
+                        Button {
+                            showingLibrary = true
+                        } label: {
+                            Label("Manage Library", systemImage: "slider.horizontal.3")
+                        }
+                        Spacer()
+                        Button {
+                            showingPreview = true
+                        } label: {
+                            Label("Preview Prompt", systemImage: "doc.text.magnifyingglass")
+                        }
                     }
                 }
             }
@@ -88,6 +97,11 @@ struct ProjectTagSelectionSheet: View {
                 TagLibraryManagerSheet()
                     .environment(store)
                     .environment(toastCenter)
+            }
+            .sheet(isPresented: $showingPreview) {
+                AIPromptPreviewSheet(projectID: projectID,
+                                      draftSelection: dirty ? draft : nil)
+                    .environment(store)
             }
             .onAppear { loadIfNeeded() }
         }
