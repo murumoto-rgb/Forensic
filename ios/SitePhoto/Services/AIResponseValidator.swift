@@ -105,11 +105,13 @@ enum AIResponseValidator {
                           vocabulary: ValidationVocabulary = .fallback) -> [String] {
         var errors: [String] = []
 
-        // 1. Primary tag count must be 1 or 2.
-        switch a.primaryTags.count {
-        case 1, 2: break
-        case 0:    errors.append("primary_tags is empty (need 1 or 2 entries).")
-        default:   errors.append("primary_tags has \(a.primaryTags.count) entries (max 2).")
+        // 1. Primary tag count must be 0, 1, or 2. The empty case is
+        //    valid when the photo's main subject doesn't match any
+        //    primary in the project's vocabulary — the prompt tells the
+        //    model to prefer [] over a misleading best-fit and to use
+        //    reviewer_flag + confidence_note to surface the gap.
+        if a.primaryTags.count > 2 {
+            errors.append("primary_tags has \(a.primaryTags.count) entries (max 2).")
         }
 
         // 2. Each primary must be in the project's scoped vocabulary.
