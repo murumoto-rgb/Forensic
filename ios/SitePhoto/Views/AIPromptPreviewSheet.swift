@@ -22,6 +22,15 @@ struct AIPromptPreviewSheet: View {
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
+    /// Outcome of compiling the current store + draft overrides into a
+    /// prompt. Plain enum instead of `Result<_, Error>` so the failure
+    /// branch can carry a user-facing message string directly without a
+    /// throw-away Error wrapper.
+    private enum CompileOutcome {
+        case success(PromptCompiler.Result)
+        case failure(String)
+    }
+
     var body: some View {
         NavigationStack {
             content
@@ -58,7 +67,7 @@ struct AIPromptPreviewSheet: View {
     /// no I/O) and guarantees the preview reflects unsaved edits to
     /// the underlying state as soon as they're written back to the
     /// store.
-    private var compileResult: Result<PromptCompiler.Result, String> {
+    private var compileResult: CompileOutcome {
         guard var project = store.project(withID: projectID) else {
             return .failure("Project not found.")
         }
