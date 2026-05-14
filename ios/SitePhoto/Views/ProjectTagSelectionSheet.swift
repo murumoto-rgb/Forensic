@@ -299,7 +299,16 @@ struct ProjectTagSelectionSheet: View {
 
     private func loadIfNeeded() {
         guard !loaded, let project else { return }
-        draft = project.tagSelection ?? ProjectTagSelection()
+        // Prune stale references against the current library before
+        // loading into the draft. Without this, contexts / primaries /
+        // secondaries that were removed from the library (e.g. via
+        // "Restore to default seed" or a vocab reshape) still sit in
+        // the project's tagSelection and inflate the header counter
+        // even though they don't render as toggle rows. Pruning here
+        // also means a subsequent Save persists a clean selection
+        // back to disk.
+        let persisted = project.tagSelection ?? ProjectTagSelection()
+        draft = persisted.pruning(against: store.tagLibrary)
         loaded = true
     }
 

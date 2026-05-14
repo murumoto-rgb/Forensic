@@ -146,8 +146,35 @@ final class ProjectStore {
         loadAIPromptTemplatesFromDisk()
         loadTagLibraryFromDisk()
         loadAIRulesTemplateFromDisk()
+        pruneStaleTagSelections()
         purgeOldTrash()
         isReady = true
+    }
+
+    /// Walk every project (active + trashed) and remove any context,
+    /// primary, or secondary reference in its `tagSelection` that no
+    /// longer resolves in the current `tagLibrary`. Cheap on small
+    /// libraries; runs once per launch right after the library is
+    /// loaded. Only persists projects whose pruned selection actually
+    /// differs from what's on disk — engineers whose selections are
+    /// already clean pay zero write cost.
+    ///
+    /// Pruning is intentionally narrower than the old seed-version
+    /// migration: it only removes dangling references, never resets
+    /// or replaces engineer-curated state. Stale references are
+    /// effectively data-rot — they don't refer to anything the user
+    /// could ever see — so removing them is housekeeping, not loss.
+    private func pruneStaleTagSelections() {
+        let library = tagLibrary
+        for project in activeProjects + deletedProjects {
+            guard let selection = project.tagSelection else { continue }
+            let pruned = selection.pruning(against: library)
+            if pruned != selection {
+                var p = project
+                p.tagSelection = pruned.contextIDs.isEmpty ? nil : pruned
+                _ = save(p)
+            }
+        }
     }
 
     private static var localProjectsURL: URL {

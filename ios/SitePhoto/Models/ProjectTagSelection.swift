@@ -52,4 +52,53 @@ struct ProjectTagSelection: Codable, Hashable, Sendable {
     func isSecondaryActive(_ secondaryID: UUID, under primaryID: UUID) -> Bool {
         !(deselectedSecondariesByPrimary[primaryID]?.contains(secondaryID) ?? false)
     }
+
+    /// Return a copy with every context, primary, and secondary ID
+    /// that no longer resolves in `library` removed. Used to clean up
+    /// stale references left over after a library reshape — e.g. the
+    /// "Restore to default seed" action in the Tag Library Manager,
+    /// a manual delete of a context/primary, or an app-update vocab
+    /// change. Pruning is safe (never adds references, only removes
+    /// dangling ones) and is the only path that touches stored
+    /// selections at app launch — the seed-version migration that
+    /// used to overwrite selections was removed in d7d306c.
+    func pruning(against library: TagLibrary) -> ProjectTagSelection {
+        let liveContextIDs = Set(library.contexts.map(\.id))
+        let livePrimariesByContext: [UUID: Set<UUID>] = Dictionary(
+            uniqueKeysWithValues: library.contexts.map { ($0.id, Set($0.primaries.map(\.id))) }
+        )
+        let liveSecondariesByPrimary: [UUID: Set<UUID>] = Dictionary(
+            uniqueKeysWithValues: library.contexts
+                .flatMap(\.primaries)
+                .map { ($0.id, Set($0.secondaries.map(\.id))) }
+        )
+
+        var prunedContextIDs: [UUID] = []
+        var prunedPrimariesByContext: [UUID: Set<UUID>] = [:]
+        for contextID in contextIDs where liveContextIDs.contains(contextID) {
+            prunedContextIDs.append(contextID)
+            if let livePrimaries = livePrimariesByContext[contextID] {
+                let picked = (primariesByContext[contextID] ?? [])
+                    .intersection(livePrimaries)
+                if !picked.isEmpty {
+                    prunedPrimariesByContext[contextID] = picked
+                }
+            }
+        }
+
+        var prunedDeselected: [UUID: Set<UUID>] = [:]
+        for (primaryID, deselectedSecIDs) in deselectedSecondariesByPrimary {
+            guard let liveSecs = liveSecondariesByPrimary[primaryID] else { continue }
+            let stillValid = deselectedSecIDs.intersection(liveSecs)
+            if !stillValid.isEmpty {
+                prunedDeselected[primaryID] = stillValid
+            }
+        }
+
+        return ProjectTagSelection(
+            contextIDs: prunedContextIDs,
+            primariesByContext: prunedPrimariesByContext,
+            deselectedSecondariesByPrimary: prunedDeselected
+        )
+    }
 }
