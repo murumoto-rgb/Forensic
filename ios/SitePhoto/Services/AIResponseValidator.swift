@@ -20,12 +20,20 @@ struct ValidationVocabulary: Sendable {
     let secondariesByPrimary: [String: Set<String>]
 
     /// Resolve the project-scoped vocabulary from `library` +
-    /// `selection`. Returns an empty vocabulary if `selection` is empty
-    /// — call sites should have caught that earlier via
-    /// `PromptCompiler.compile`, but the fallback keeps the validator
-    /// safe.
+    /// `selection`, with optional per-project extras merged in.
+    /// Returns an empty vocabulary if `selection` is empty and no
+    /// extras are present — call sites should have caught the
+    /// nothing-picked case earlier via `PromptCompiler.compile`, but
+    /// the fallback keeps the validator safe.
+    ///
+    /// `extras` carries `Project.aiExtraVocabulary` and is merged
+    /// directly into the same primaries / secondaries sets — Claude
+    /// sees a single flat vocabulary on the wire, so the validator
+    /// can't distinguish (and doesn't care) whether a tag came from
+    /// the library + selection or the per-project extras.
     static func resolve(library: TagLibrary,
-                          selection: ProjectTagSelection) -> ValidationVocabulary {
+                          selection: ProjectTagSelection,
+                          extras: ProjectExtraVocabulary? = nil) -> ValidationVocabulary {
         var primaries: Set<String> = []
         var secondariesByPrimary: [String: Set<String>] = [:]
         for contextID in selection.contextIDs {
@@ -38,6 +46,26 @@ struct ValidationVocabulary: Sendable {
                 var secs: Set<String> = ["none"]
                 for s in primary.secondaries where !deselected.contains(s.id) {
                     secs.insert(s.name.lowercased())
+                }
+                secondariesByPrimary[key] = secs
+            }
+        }
+        // Merge per-project extras. Skip primaries with a blank
+        // name (defensive — editor shouldn't allow it). For a
+        // primary name that ALSO exists in the library + selection,
+        // union the secondary sets so the engineer can extend an
+        // existing primary's vocabulary on a per-project basis.
+        if let extras {
+            for primary in extras.primaries {
+                let trimmedName = primary.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedName.isEmpty else { continue }
+                let key = trimmedName.lowercased()
+                primaries.insert(key)
+                var secs = secondariesByPrimary[key] ?? ["none"]
+                for s in primary.secondaries {
+                    let secName = s.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !secName.isEmpty else { continue }
+                    secs.insert(secName.lowercased())
                 }
                 secondariesByPrimary[key] = secs
             }

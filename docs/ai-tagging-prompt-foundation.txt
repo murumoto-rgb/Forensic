@@ -295,6 +295,40 @@ Secondary tags: Ruler / tape visible, Crack comparator visible, Digital level vi
 Primary tag: Photo Quality / Re-shoot
 Secondary tags: Blurry image, Too dark, Overexposed
 
+----- BLOCK 2.5 [cacheable] : job-specific additions (optional) -----
+
+Only present when the project's `aiExtraVocabulary` is non-empty.
+Carries per-project additions that haven't been (and shouldn't be)
+added to the app-wide TagLibrary. Rendered in the same
+`Primary tag: / Secondary tags:` shape as the main vocabulary
+block so Claude doesn't need to learn a second format, and merged
+into ValidationVocabulary so the response validator accepts the
+extras for this project's responses.
+
+Format Claude sees (example for a project with one extra primary):
+
+    Job-specific additions to the controlled vocabulary:
+
+    INVESTIGATION CONTEXT: Job-Specific Additions
+
+    Primary tag: Custom site condition
+    Secondary tags: Observation A, Observation B
+
+Behaviour properties:
+
+- Block ordering: preamble+rules → main vocabulary → job-specific
+  additions (this block) → notes → output contract. Always-on for
+  the project that owns it; never appears in other projects.
+- Always-on for the project. No AI Tags picker toggle. Adding an
+  extra primary in the Job-Specific Vocabulary editor is the only
+  way to populate this block.
+- Cache control: cacheable. A per-project extras edit invalidates
+  this block + the notes block downstream but leaves the preamble
+  + main vocabulary warm across projects.
+- Synthetic context heading. Engineers cannot name their own
+  context; the wire format always says "Job-Specific Additions"
+  so the format stays uniform.
+
 ----- BLOCK 3 [not cacheable] : output contract reinforcement -----
 
 OUTPUT FORMAT (reinforces the rules above; do not contradict them):
@@ -318,10 +352,12 @@ Analyse this site photo using the schema and rules in the system message above. 
 NOTES
 ------------------------------------------------------------
 
-- If the engineer has added per-project "AI Notes" (PromptCompiler.compileNotesBlock), an extra cacheable block is inserted between the vocabulary and the output contract, formatted as:
+- If the engineer has added per-project "AI Notes" (PromptCompiler.compileNotesBlock), an extra cacheable block is inserted between the job-specific additions (if any) and the output contract, formatted as:
 
     Additional notes for this project:
     <engineer's free-text notes>
+
+- If the project carries `aiExtraVocabulary` (per-project additions to the controlled vocabulary, edited via the Job-Specific Vocabulary sheet), the Block 2.5 section documented above is inserted between the main vocabulary block and the notes block. Those entries are merged into ValidationVocabulary for this project's responses so they pass `isValidPrimary` / `isValidSecondary` the same as library entries — without ever modifying TagLibrary.
 
 - The rules template (Block 1, after the preamble) is user-editable from Settings → AI Tagging → Rules Template. The text above is the seed default shipped with the app. If your project has been customised, the rendered prompt will differ accordingly.
 

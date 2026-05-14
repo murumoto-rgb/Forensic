@@ -55,6 +55,14 @@ struct Project: Identifiable, Codable, Hashable {
     /// hasn't picked anything yet — AI tagging refuses to run until at
     /// least one investigation context is picked.
     var tagSelection: ProjectTagSelection?
+    /// Per-project additions to the controlled vocabulary. Always-on
+    /// for the project that owns them: every primary + secondary
+    /// listed here is sent to Claude alongside the main vocabulary
+    /// block and accepted by `AIResponseValidator` for this project's
+    /// responses. Never touches the app-wide `TagLibrary`. `nil` (or
+    /// an empty `primaries` array) means the project doesn't add any
+    /// custom vocabulary.
+    var aiExtraVocabulary: ProjectExtraVocabulary?
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -74,6 +82,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.aiInstructions = nil
         self.buckets = []
         self.tagSelection = nil
+        self.aiExtraVocabulary = nil
     }
 
     /// Explicit keys so the decoder can read the legacy singular
@@ -88,6 +97,7 @@ struct Project: Identifiable, Codable, Hashable {
         case floorPlans         // new multi-plan array
         case activeFloorPlanID  // new sticky plan ID
         case folderName, aiInstructions, buckets, tagSelection
+        case aiExtraVocabulary
     }
 
     /// Tolerate manifests written before any of the optional fields
@@ -129,6 +139,8 @@ struct Project: Identifiable, Codable, Hashable {
         self.buckets         = try c.decodeIfPresent([Bucket].self, forKey: .buckets) ?? []
         self.tagSelection    = try c.decodeIfPresent(ProjectTagSelection.self,
                                                        forKey: .tagSelection)
+        self.aiExtraVocabulary = try c.decodeIfPresent(ProjectExtraVocabulary.self,
+                                                         forKey: .aiExtraVocabulary)
     }
 
     /// Encoder mirrors the new on-disk shape (no legacy `floorPlan`
@@ -153,6 +165,7 @@ struct Project: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(aiInstructions,     forKey: .aiInstructions)
         try c.encode(buckets,                     forKey: .buckets)
         try c.encodeIfPresent(tagSelection,       forKey: .tagSelection)
+        try c.encodeIfPresent(aiExtraVocabulary,  forKey: .aiExtraVocabulary)
     }
 
     var isActive: Bool { startedAt != nil && !stopped }

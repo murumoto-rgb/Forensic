@@ -117,6 +117,7 @@ struct ProjectDetailView: View {
 
     @State private var showingAIInstructions = false
     @State private var showingTagSelection = false
+    @State private var showingExtraVocabulary = false
     @State private var showingTagFilter = false
     @State private var showingClearAITags = false
     @State private var batchTagConfirm: BatchTagPrompt?
@@ -302,6 +303,10 @@ struct ProjectDetailView: View {
                 }
                 .sheet(isPresented: $showingAIInstructions) {
                     AIInstructionsSheet(projectID: projectID)
+                        .environment(store)
+                }
+                .sheet(isPresented: $showingExtraVocabulary) {
+                    ProjectExtraVocabularySheet(projectID: projectID)
                         .environment(store)
                 }
                 .sheet(isPresented: $showingTagSelection) {
@@ -1938,6 +1943,22 @@ struct ProjectDetailView: View {
             }
 
             Button {
+                showingExtraVocabulary = true
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Job-Specific Vocabulary")
+                        Text(extraVocabSubtitle(for: project))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: hasExtras(project)
+                          ? "tag.circle.fill" : "tag.circle")
+                }
+            }
+
+            Button {
                 showingAIInstructions = true
             } label: {
                 Label {
@@ -2124,6 +2145,22 @@ struct ProjectDetailView: View {
         let trimmed = (project.aiInstructions ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty
+    }
+
+    /// Subtitle under the "Job-Specific Vocabulary" row — shows the
+    /// number of project-scoped primaries / secondaries Claude will
+    /// see on top of the main library vocabulary.
+    private func extraVocabSubtitle(for project: Project) -> String {
+        guard let extras = project.aiExtraVocabulary, !extras.isEmpty else {
+            return "Optional project-only tags appended to the AI vocabulary"
+        }
+        let pCount = extras.primaries.count
+        let sCount = extras.secondaryCount
+        return "\(pCount) primar\(pCount == 1 ? "y" : "ies"), \(sCount) secondar\(sCount == 1 ? "y" : "ies")"
+    }
+
+    private func hasExtras(_ project: Project) -> Bool {
+        !(project.aiExtraVocabulary?.isEmpty ?? true)
     }
 
     /// Build a `BatchTagPrompt` for the multi-select "Tag with AI"

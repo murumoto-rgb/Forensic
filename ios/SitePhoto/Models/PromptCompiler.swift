@@ -119,6 +119,7 @@ enum PromptCompiler {
         }
 
         let rules = rulesTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let extrasBlock = compileExtraVocabularyBlock(project.aiExtraVocabulary)
         let notesBlock = compileNotesBlock(project.aiInstructions)
 
         // Block layout — see the `Block` docstring for the rationale.
@@ -126,10 +127,20 @@ enum PromptCompiler {
         // to either doesn't cost an extra cache slot, and so the
         // combined block easily exceeds Anthropic's 1024-token cache
         // minimum even when the rules template is tiny.
+        //
+        // Job-specific additions slot between the main vocabulary
+        // and the notes block: Claude treats them as part of the
+        // vocabulary contract (not advisory text), and putting them
+        // after the main vocab means a project-only extras edit
+        // invalidates the cache for this block + notes downstream
+        // but keeps the preamble + main vocab warm across projects.
         var blocks: [Block] = [
             Block(text: systemPreamble + "\n\n" + rules, cacheable: true),
             Block(text: vocabularyBlock,                  cacheable: true)
         ]
+        if let extrasBlock {
+            blocks.append(Block(text: extrasBlock, cacheable: true))
+        }
         if let notesBlock {
             blocks.append(Block(text: notesBlock, cacheable: true))
         }
@@ -138,7 +149,8 @@ enum PromptCompiler {
         return Result(
             blocks: blocks,
             vocabulary: ValidationVocabulary.resolve(library: tagLibrary,
-                                                       selection: selection)
+                                                       selection: selection,
+                                                       extras: project.aiExtraVocabulary)
         )
     }
 
@@ -215,5 +227,51 @@ enum PromptCompiler {
         let trimmed = (notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return "Additional notes for this project:\n\(trimmed)"
+    }
+
+    /// Render the optional per-project extra vocabulary as a labelled
+    /// block that mirrors the main `compileVocabularyBlock` format —
+    /// `INVESTIGATION CONTEXT: …` heading, then `Primary tag: …` /
+    /// `Secondary tags: …` lines. Claude needs no special instruction
+    /// to read it because the shape is identical to the main block.
+    ///
+    /// Returns nil when `extras` is nil, has no primaries, or every
+    /// primary has been emptied to an empty `secondaries` array (in
+    /// which case the block would degrade to bare headings, which the
+    /// cross-check rule can't validate against).
+    private static func compileExtraVocabularyBlock(_ extras: ProjectExtraVocabulary?) -> String? {
+        guard let extras, !extras.primaries.isEmpty else { return nil }
+
+        // Drop primaries with no name (defensive — the editor should
+        // prevent this, but defending here keeps stale data from
+        // sneaking blank "Primary tag:" lines into the prompt).
+        let cleanPrimaries = extras.primaries.filter {
+            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !cleanPrimaries.isEmpty else { return nil }
+
+        var lines: [String] = [
+            "Job-specific additions to the controlled vocabulary:",
+            "",
+            "INVESTIGATION CONTEXT: Job-Specific Additions"
+        ]
+        for primary in cleanPrimaries {
+            // Match the main block's "None" filter so a legacy extras
+            // entry that picked up a "None" secondary from the picker
+            // wouldn't ship that sentinel to Claude.
+            let secondaries = primary.secondaries.filter { sec in
+                let n = sec.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return !n.isEmpty && n != "none"
+            }
+            lines.append("")
+            lines.append("Primary tag: \(primary.name)")
+            if secondaries.isEmpty {
+                lines.append("Secondary tags: (no specific secondaries — tag the primary alone if visible)")
+            } else {
+                let joined = secondaries.map(\.name).joined(separator: ", ")
+                lines.append("Secondary tags: \(joined)")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }

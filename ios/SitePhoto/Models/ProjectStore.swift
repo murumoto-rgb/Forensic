@@ -2310,6 +2310,136 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - Per-project extra vocabulary (Project.aiExtraVocabulary)
+
+    /// Replace the entire `ProjectExtraVocabulary` for a project. Pass
+    /// `nil` (or an empty list of primaries) to clear it. Used by the
+    /// editor's bulk-load path; the granular add/rename/delete helpers
+    /// below cover incremental edits.
+    @discardableResult
+    func setExtraVocabulary(_ project: Project,
+                              _ extras: ProjectExtraVocabulary?) -> Project {
+        var p = project
+        if let extras, !extras.isEmpty {
+            p.aiExtraVocabulary = extras
+        } else {
+            p.aiExtraVocabulary = nil
+        }
+        return save(p)
+    }
+
+    /// Append a new primary to the project's extras. Trims the name,
+    /// ignores empty input, and returns the project unchanged in that
+    /// case. The minted `PrimaryTagEntry` carries a fresh UUID so the
+    /// editor's drill-down navigation can identify it by id.
+    @discardableResult
+    func addExtraPrimary(_ project: Project, name rawName: String) -> Project {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return project }
+        var p = project
+        var extras = p.aiExtraVocabulary ?? ProjectExtraVocabulary()
+        extras.primaries.append(PrimaryTagEntry(name: name, secondaries: []))
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func renameExtraPrimary(_ project: Project,
+                              primaryID: UUID,
+                              to rawName: String) -> Project {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return project }
+        var p = project
+        guard var extras = p.aiExtraVocabulary,
+              let idx = extras.primaries.firstIndex(where: { $0.id == primaryID })
+        else { return project }
+        extras.primaries[idx].name = name
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func deleteExtraPrimary(_ project: Project, primaryID: UUID) -> Project {
+        var p = project
+        guard var extras = p.aiExtraVocabulary else { return project }
+        extras.primaries.removeAll { $0.id == primaryID }
+        p.aiExtraVocabulary = extras.isEmpty ? nil : extras
+        return save(p)
+    }
+
+    /// Reorder the project's extras primaries. Mirrors
+    /// `ProjectStore.reorderTagPrimaries` semantics so the editor can
+    /// expose `.onMove` from SwiftUI's edit mode.
+    @discardableResult
+    func reorderExtraPrimaries(_ project: Project,
+                                 from source: IndexSet,
+                                 to dest: Int) -> Project {
+        var p = project
+        guard var extras = p.aiExtraVocabulary else { return project }
+        extras.primaries.move(fromOffsets: source, toOffset: dest)
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func addExtraSecondary(_ project: Project,
+                             primaryID: UUID,
+                             name rawName: String) -> Project {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return project }
+        var p = project
+        guard var extras = p.aiExtraVocabulary,
+              let idx = extras.primaries.firstIndex(where: { $0.id == primaryID })
+        else { return project }
+        extras.primaries[idx].secondaries.append(SecondaryTagEntry(name: name))
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func renameExtraSecondary(_ project: Project,
+                                primaryID: UUID,
+                                secondaryID: UUID,
+                                to rawName: String) -> Project {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return project }
+        var p = project
+        guard var extras = p.aiExtraVocabulary,
+              let pIdx = extras.primaries.firstIndex(where: { $0.id == primaryID }),
+              let sIdx = extras.primaries[pIdx].secondaries.firstIndex(where: { $0.id == secondaryID })
+        else { return project }
+        extras.primaries[pIdx].secondaries[sIdx].name = name
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func deleteExtraSecondary(_ project: Project,
+                                primaryID: UUID,
+                                secondaryID: UUID) -> Project {
+        var p = project
+        guard var extras = p.aiExtraVocabulary,
+              let pIdx = extras.primaries.firstIndex(where: { $0.id == primaryID })
+        else { return project }
+        extras.primaries[pIdx].secondaries.removeAll { $0.id == secondaryID }
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
+    @discardableResult
+    func reorderExtraSecondaries(_ project: Project,
+                                   primaryID: UUID,
+                                   from source: IndexSet,
+                                   to dest: Int) -> Project {
+        var p = project
+        guard var extras = p.aiExtraVocabulary,
+              let pIdx = extras.primaries.firstIndex(where: { $0.id == primaryID })
+        else { return project }
+        extras.primaries[pIdx].secondaries.move(fromOffsets: source, toOffset: dest)
+        p.aiExtraVocabulary = extras
+        return save(p)
+    }
+
     /// Heuristic: does this project's AI Notes text look like it's the
     /// stale legacy prompt that used to live in `Project.aiInstructions`
     /// before the rules-template refactor? Used by `AIInstructionsSheet`
