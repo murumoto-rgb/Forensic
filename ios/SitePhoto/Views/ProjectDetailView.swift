@@ -689,7 +689,7 @@ struct ProjectDetailView: View {
     /// before any `importPhoto` calls — that way newly imported photos
     /// take sequence numbers in chronological order regardless of the
     /// picker's selection order.
-    private struct StagedImport {
+    private struct StagedImport: Sendable {
         let data: Data
         let date: Date
     }
@@ -755,18 +755,39 @@ struct ProjectDetailView: View {
         }
         importing = true
 
+        // Keep the import alive across a brief backgrounding event so
+        // a cloud download (Dropbox / iCloud / OneDrive) doesn't get
+        // killed if the user switches apps mid-import. iOS grants
+        // ~30 seconds by default; not enough for huge cloud imports
+        // but covers the common "check Messages then come back" case.
+        let bgTask = UIApplication.shared.beginBackgroundTask(
+            withName: "SitePhoto.ImportFromFiles"
+        ) { /* expiration handler — nothing to do; bg task ID is
+             cleaned up by the defer below either way */ }
+        defer {
+            if bgTask != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTask)
+            }
+        }
+
         // Same date-sort pass as photos-library imports. Files may
         // arrive in alphabetical filename order from the document
         // picker, which often isn't chronological.
+        //
+        // Each file's `Data(contentsOf:)` runs in a detached Task
+        // off the main actor — cloud-backed file-provider URLs
+        // (Dropbox, iCloud Drive, OneDrive) block until the system
+        // finishes downloading, which on the main thread froze the
+        // entire UI for the duration of the import. Off-main it
+        // also lets the `importStatus = "Reading …"` text actually
+        // render each iteration; before this fix, it was being set
+        // but never repainted because the runloop never got a turn.
         var staged: [StagedImport] = []
         staged.reserveCapacity(urls.count)
         for (i, url) in urls.enumerated() {
             importStatus = "Reading \(i + 1) of \(urls.count)…"
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
-            staged.append(StagedImport(data: data, date: date))
+            guard let entry = await Self.readFileForImport(url: url) else { continue }
+            staged.append(entry)
         }
         staged = sortedByCaptureDate(staged)
 
@@ -791,6 +812,39 @@ struct ProjectDetailView: View {
            !project.floorPlans.isEmpty {
             pendingPlanAssignment = newIDs
         }
+    }
+
+    /// Read a file-provider URL off the main thread. NSFileCoordinator
+    /// is used to coordinate with cloud-backed providers (Dropbox,
+    /// iCloud, OneDrive) so the read triggers a proper download-then-
+    /// read rather than returning a stub or failing fast. Returns nil
+    /// on coordination or read failure — the caller silently skips
+    /// that URL and reports the final count.
+    ///
+    /// `nonisolated` so it doesn't get pinned to the MainActor —
+    /// `Task.detached` inside picks a background thread from the
+    /// concurrency pool. Captured `url` is a value type; security-
+    /// scoped resource access is bracketed inside the detached task.
+    private nonisolated static func readFileForImport(url: URL) async -> StagedImport? {
+        await Task.detached(priority: .userInitiated) { () -> StagedImport? in
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+
+            let coordinator = NSFileCoordinator()
+            var coordinationError: NSError?
+            var readData: Data?
+            coordinator.coordinate(
+                readingItemAt: url,
+                options: [],
+                error: &coordinationError
+            ) { localURL in
+                readData = try? Data(contentsOf: localURL)
+            }
+
+            guard let data = readData else { return nil }
+            let date = ProjectStore.extractCaptureDate(from: data) ?? Date()
+            return StagedImport(data: data, date: date)
+        }.value
     }
 
     /// One-shot: when a project is opened that doesn't yet have a GPS fix,
