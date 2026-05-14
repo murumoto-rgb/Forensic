@@ -93,7 +93,7 @@ struct TagLibrary: Codable, Hashable, Sendable {
     /// `ProjectStore.loadTagLibraryFromDisk` compares the persisted
     /// value against `currentSeedVersion` on launch and re-runs
     /// migration when the persisted blob is behind.
-    static let currentSeedVersion: Int = 3
+    static let currentSeedVersion: Int = 4
 }
 
 extension TagLibrary {

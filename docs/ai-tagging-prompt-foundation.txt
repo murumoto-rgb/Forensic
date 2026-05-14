@@ -1,5 +1,5 @@
 ============================================================
-AI TAGGING PROMPT — Foundation Performance Evaluation (seedVersion 3)
+AI TAGGING PROMPT — Foundation Performance Evaluation (seedVersion 4)
 ============================================================
 
 This is the exact set of instructions sent to Claude when the app
@@ -16,20 +16,18 @@ Order matches what Claude sees on the wire. Blocks marked
 [cacheable] carry `cache_control: ephemeral` so Anthropic's prompt
 cache can reuse them across photos in the same batch.
 
-Recent shape changes worth knowing:
-  - Investigation context is "Foundation Performance Evaluation".
-  - Vocabulary: 22 primaries / 136 secondaries, taken
-    verbatim from the engineer's markup workbook.
-  - Prompt vocabulary block renders as a flat list of
-    fully-qualified `Context::Primary::Secondary` triples.
-  - Worded confidence enum (High/Medium/Low) is gone.
-    `confidence` and `confidence_note` are no longer fields on
-    the JSON. Per-tag numerical `tag_confidences` is the only
-    confidence signal.
-  - `tag_confidences` keys are SECONDARIES only. Primary tags
-    don't carry their own confidence — confidence is a leaf-
-    level concept, inherited by the primary through the triple
-    the secondary came from.
+What's new in seedVersion 4:
+  - Rules template gains a 'What each level means' paragraph
+    making the Context / Primary / Secondary roles explicit:
+    Context = overall purpose of investigation, Primary =
+    system/view/material/feature container, Secondary =
+    specific distress OR documentation observation.
+  - The prior 'Context photos are valuable… do not force a
+    distress tag' core rule rewritten as a positive expectation:
+    documentation triples are the right answer for clean photos,
+    not a fallback.
+  - Vocabulary, JSON schema, and worked examples unchanged from
+    seedVersion 3.
 
 ------------------------------------------------------------
 SYSTEM MESSAGE
@@ -48,6 +46,10 @@ Use only the primary and secondary tags listed in the controlled vocabulary belo
 Triples are atomic
 
 The controlled vocabulary below is a flat list of `Context::Primary::Secondary` triples, one per line. Read every triple as one indivisible choice — the Context and the Primary travel with the Secondary as a single unit. When you select a secondary tag, you are committing to the exact primary and context the triple's `::`-delimited path names. Never detach a secondary from its primary, never pair a secondary with a different primary even if the names look similar, and never refer to a secondary in isolation. Think and decide in triples.
+
+What each level means
+
+Context names the overall purpose of the investigation — the job the engineer is doing on this project. Primary tag names the system, view, material, or feature category where we look for findings (e.g. a foundation grade beam, a masonry veneer wall, a site / yard view) — think of it as the *container* the specific finding lives in. Secondary tag names the specific thing observed inside that primary — either a distress (a crack, separation, displacement, spall, stain, distortion, poor connection, etc.) OR a documentation observation (an overall view of an elevation, a yard overview, an interior overview, a measurement readout). Many site photos show no distress at all; they're taken for overall-view documentation or orientation. The right answer for those is still a triple — a context-class primary plus an overall-view secondary — not an absent or low-confidence distress guess.
 
 Output JSON shape
 
@@ -80,7 +82,7 @@ Required workflow before tagging
 
 Core rules
 
-- Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site Overview`) and the most specific overall-view / context secondary listed under that primary (e.g. `Front elevation overall view`, `Interior overall view`). Do not force a distress tag onto a clean overview photo.
+- Expect a meaningful fraction of photos to be documentation / orientation only. The correct answer for those is a context-class primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site Overview`) plus the most specific overall-view / context secondary listed under that primary (e.g. `Front elevation overall view`, `Interior overall view`, `Yard overview`). A documentation triple IS the right answer for a clean photo — it is not a fallback, and it is not a signal of low confidence. Do not invent or force a distress tag onto a clean overview photo.
 - Prefer the component actually shown. For example, tag a crack in brick veneer as `Masonry Veneer`, not `Foundation / Grade Beam`, unless the concrete grade beam crack is visible.
 - Prefer directly visible geometry over mechanism. Use `Marginal or flat drainage adjacent to foundation`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
 - Do not state `caused by`, `due to`, `resulting from`, `settlement`, `heave`, or `soil movement` in `summary_observation` or `caption_draft` unless those words are visible text in the photo. The report writer can connect the photographs to engineering opinions later.
