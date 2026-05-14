@@ -95,6 +95,13 @@ struct ProjectDetailView: View {
     /// returned a response that failed validation. ANDed with the tag
     /// filter and the recommended-use filter.
     @State private var showOnlyNeedsReview: Bool = false
+    /// True when the "Validation issues only" chip is on. Stricter than
+    /// `showOnlyNeedsReview` — surfaces only photos whose AI response
+    /// actually tripped a vocabulary or schema rule in
+    /// `AIResponseValidator`, ignoring reviewer flags / low confidence /
+    /// parse failures. Useful for triaging vocab regressions after a
+    /// rules-template change.
+    @State private var validationIssuesOnly: Bool = false
     /// True when the "Has measurement" chip is on. Surfaces only photos
     /// whose AI analysis transcribed a visible measurement readout
     /// (level / moisture meter / ruler etc). ANDed with everything else.
@@ -1174,6 +1181,7 @@ struct ProjectDetailView: View {
                     || !recommendedUseFilter.isEmpty
                     || !activeBucketFilter.isEmpty
                     || showOnlyNeedsReview
+                    || validationIssuesOnly
                     || favoritesOnly
                     || planFilter != .all
                     || notInBucketOnly
@@ -1329,7 +1337,8 @@ struct ProjectDetailView: View {
         let planFilterActive = planFilter != .all
         let locationFilterActive = locationFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
-            && !showOnlyNeedsReview && !favoritesOnly && !measurementsOnly
+            && !showOnlyNeedsReview && !validationIssuesOnly
+            && !favoritesOnly && !measurementsOnly
             && !searchActive
             && dateBounds == nil && !planFilterActive && !notInBucketOnly
             && !locationFilterActive {
@@ -1362,6 +1371,9 @@ struct ProjectDetailView: View {
             }
             if showOnlyNeedsReview {
                 if !needsReview(photo) { return false }
+            }
+            if validationIssuesOnly {
+                if !hasValidationIssue(photo) { return false }
             }
             if favoritesOnly && !photo.isFavorite {
                 return false
@@ -1501,6 +1513,17 @@ struct ProjectDetailView: View {
         return false
     }
 
+    /// Stricter twin of `needsReview` used by the "Validation issues
+    /// only" chip — true only when the validator actually flagged
+    /// vocabulary/schema problems on the AI response. Parse failures
+    /// are not counted here (they trip `needsReview` instead) because
+    /// they're a different failure mode and the engineer triaging
+    /// vocab regressions doesn't want them mixed in.
+    private func hasValidationIssue(_ photo: Photo) -> Bool {
+        guard let a = photo.aiAnalysis, !a.parseFailed else { return false }
+        return !a.validationErrors.isEmpty
+    }
+
     /// Date-window chip rendered into the filter bar. Always present —
     /// even when no filter is applied it shows "Any date" so the
     /// engineer can discover the feature. Tapping opens a menu of
@@ -1566,6 +1589,7 @@ struct ProjectDetailView: View {
     private func tagFilterBar(allTags: [String]) -> some View {
         let project = store.project(withID: projectID)
         let needsReviewCount = project?.photos.filter { needsReview($0) }.count ?? 0
+        let validationIssuesCount = project?.photos.filter { hasValidationIssue($0) }.count ?? 0
         let favoritesCount = project?.photos.filter { $0.isFavorite }.count ?? 0
         let measurementCount = project?.photos.filter { hasMeasurement($0) }.count ?? 0
         let recommendedUseChips = bucketsInUseFor(projectID: projectID)
@@ -1578,6 +1602,7 @@ struct ProjectDetailView: View {
             || !recommendedUseFilter.isEmpty
             || !activeBucketFilter.isEmpty
             || showOnlyNeedsReview
+            || validationIssuesOnly
             || favoritesOnly
             || measurementsOnly
             || planFilter != .all
@@ -1593,6 +1618,7 @@ struct ProjectDetailView: View {
                         recommendedUseFilter.removeAll()
                         activeBucketFilter.removeAll()
                         showOnlyNeedsReview = false
+                        validationIssuesOnly = false
                         favoritesOnly = false
                         measurementsOnly = false
                         planFilter = .all
@@ -1643,6 +1669,16 @@ struct ProjectDetailView: View {
                 .controlSize(.small)
                 .tint(showOnlyNeedsReview ? .orange : .secondary)
                 .disabled(needsReviewCount == 0 && !showOnlyNeedsReview)
+                Button {
+                    validationIssuesOnly.toggle()
+                } label: {
+                    Image(systemName: "exclamationmark.octagon.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(validationIssuesOnly ? .red : .secondary)
+                .disabled(validationIssuesCount == 0 && !validationIssuesOnly)
                 Button {
                     measurementsOnly.toggle()
                 } label: {
