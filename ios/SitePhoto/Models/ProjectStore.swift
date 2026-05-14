@@ -704,14 +704,121 @@ final class ProjectStore {
     /// starter pack (`TagLibrary.defaultSeeds`) when no file exists
     /// (fresh install). The starter pack is persisted immediately on
     /// first launch so subsequent reads are consistent.
+    ///
+    /// When the persisted library is older than `currentSeedVersion`
+    /// (i.e. the pre-flatten v1 layout with seven separate contexts),
+    /// the loader replaces it with the v2 defaults and walks every
+    /// project to rewrite its `tagSelection` from the old UUID space
+    /// into the new one. Engineer customisations to the v1 library are
+    /// not preserved — the flatten is intentional and additive
+    /// customisation can be redone against the v2 library.
     fileprivate func loadTagLibraryFromDisk() {
         if let data = try? Data(contentsOf: tagLibraryURL),
            let decoded = try? decoder().decode(TagLibrary.self, from: data) {
-            tagLibrary = decoded
+            if decoded.seedVersion < TagLibrary.currentSeedVersion {
+                migrateLegacyTagLibraryToV2(oldLibrary: decoded)
+            } else {
+                tagLibrary = decoded
+            }
             return
         }
         tagLibrary = TagLibrary.defaultSeeds
         persistTagLibrary()
+    }
+
+    /// Build a "select every primary in every context" selection
+    /// against the current library. Used for new projects so they
+    /// don't ship with no vocabulary picked (which would trip the
+    /// `noContextsPicked` guard before the engineer can even tag a
+    /// photo). After the v2 flatten there's a single context, so this
+    /// degenerates to "every primary selected in the Forensic
+    /// Investigation context."
+    func defaultTagSelection() -> ProjectTagSelection {
+        var selection = ProjectTagSelection()
+        for ctx in tagLibrary.contexts {
+            selection.contextIDs.append(ctx.id)
+            selection.primariesByContext[ctx.id] = Set(ctx.primaries.map(\.id))
+        }
+        return selection
+    }
+
+    /// One-shot migration: persisted v1 library → v2 flat library.
+    /// Snapshots the v1 primary + secondary names by UUID, replaces
+    /// the on-disk library with v2 defaults, then walks every project
+    /// (active and trashed) and rewrites its tagSelection by mapping
+    /// v1 primary names through `TagLibrary.v2PrimaryNameMigration`
+    /// to v2 primary UUIDs.
+    private func migrateLegacyTagLibraryToV2(oldLibrary: TagLibrary) {
+        var oldPrimaryNameByID: [UUID: String] = [:]
+        var oldSecondaryNameByID: [UUID: String] = [:]
+        for ctx in oldLibrary.contexts {
+            for p in ctx.primaries {
+                oldPrimaryNameByID[p.id] = p.name
+                for s in p.secondaries {
+                    oldSecondaryNameByID[s.id] = s.name
+                }
+            }
+        }
+
+        // Replace the library wholesale. Custom additions in the
+        // engineer's persisted v1 library are dropped — the user
+        // signed off on this scope.
+        tagLibrary = TagLibrary.defaultSeeds
+        persistTagLibrary()
+
+        guard let v2Context = tagLibrary.contexts.first else { return }
+        let v2PrimaryByName: [String: PrimaryTagEntry] = Dictionary(
+            uniqueKeysWithValues: v2Context.primaries.map { ($0.name, $0) }
+        )
+
+        // Migrate every project's tagSelection. Selections that had
+        // nothing pickable in the v2 library collapse to nil — same
+        // semantics the project had before AI Tags was set up.
+        let allProjects = activeProjects + deletedProjects
+        for project in allProjects {
+            guard let oldSelection = project.tagSelection else { continue }
+
+            var primariesPicked: Set<UUID> = []
+            for (_, oldPrimaryIDs) in oldSelection.primariesByContext {
+                for oldPID in oldPrimaryIDs {
+                    guard let oldName = oldPrimaryNameByID[oldPID],
+                          let v2Name = TagLibrary.v2PrimaryNameMigration[oldName],
+                          let v2Primary = v2PrimaryByName[v2Name] else { continue }
+                    primariesPicked.insert(v2Primary.id)
+                }
+            }
+
+            var deselected: [UUID: Set<UUID>] = [:]
+            for (oldPID, oldDeselectedSecIDs) in oldSelection.deselectedSecondariesByPrimary {
+                guard let oldPName = oldPrimaryNameByID[oldPID],
+                      let v2Name = TagLibrary.v2PrimaryNameMigration[oldPName],
+                      let v2Primary = v2PrimaryByName[v2Name] else { continue }
+                let v2SecondaryIDByName: [String: UUID] = Dictionary(
+                    uniqueKeysWithValues: v2Primary.secondaries.map { ($0.name, $0.id) }
+                )
+                var setForPrimary: Set<UUID> = deselected[v2Primary.id] ?? []
+                for oldSID in oldDeselectedSecIDs {
+                    guard let oldSName = oldSecondaryNameByID[oldSID],
+                          let v2SID = v2SecondaryIDByName[oldSName] else { continue }
+                    setForPrimary.insert(v2SID)
+                }
+                if !setForPrimary.isEmpty {
+                    deselected[v2Primary.id] = setForPrimary
+                }
+            }
+
+            var p = project
+            if primariesPicked.isEmpty {
+                p.tagSelection = nil
+            } else {
+                p.tagSelection = ProjectTagSelection(
+                    contextIDs: [v2Context.id],
+                    primariesByContext: [v2Context.id: primariesPicked],
+                    deselectedSecondariesByPrimary: deselected
+                )
+            }
+            _ = save(p)
+        }
     }
 
     private func persistTagLibrary() {

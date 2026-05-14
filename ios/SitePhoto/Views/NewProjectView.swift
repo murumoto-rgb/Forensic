@@ -53,7 +53,13 @@ struct NewProjectView: View {
 
     private func save() {
         guard canSave else { return }
-        let project = Project(name: trimmedName)
+        var project = Project(name: trimmedName)
+        // After the v2 library flatten, new projects ship with every
+        // primary in the single Forensic Investigation context picked
+        // so the engineer doesn't have to navigate to AI Tags before
+        // tagging the first photo. They can deselect anything they
+        // don't want via the AI Tags picker.
+        project.tagSelection = store.defaultTagSelection()
         let saved = store.save(project)
         dismiss()
         onCreated(saved)
