@@ -60,12 +60,12 @@ enum AIRulesTemplate {
     2. Identify the main visible component, not the presumed cause. Examples: grade beam, garage slab, driveway, brick veneer, sheetrock wall, ceiling, tile floor, door, attic framing, roofing, downspout, soil, pool deck.
     3. Identify only visible conditions. Do not infer final cause, assign severity, or diagnose foundation movement from a single photograph unless the visual evidence itself is the item being tagged.
     4. Select one primary tag by default. Use two primary tags only when two clearly distinct report-worthy conditions are visible in the same photo. Never use more than two.
-    5. For each primary tag, select one to four secondary tags. Use `None` only for context photos or when the primary is visible but no specific distress secondary is clearly shown.
+    5. For each primary tag, select one to four secondary tags from those listed under that primary in the controlled vocabulary below. If no listed secondary describes what is visible, leave that primary out of `primary_tags` entirely rather than picking a near-fit secondary.
     6. If the correct issue category is absent from the vocabulary, return `primary_tags: []`, leave `secondary_tags_by_primary` and `tag_confidences` empty, set `confidence` to `Low`, and explain the vocabulary gap in `reviewer_flag`.
 
     Core rules
 
-    - Context photos are valuable. Tag them with a context primary and `None` as the secondary. Do not force a distress tag on clean overview photos.
+    - Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Context`, `General Interior Context`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Room overview`). Do not force a distress tag onto a clean overview photo.
     - Prefer the component actually shown. For example, tag a crack in brick veneer as `Masonry Veneer`, not `Foundation / Grade Beam`, unless the concrete grade beam crack is visible.
     - Prefer directly visible geometry over mechanism. Use `Flat drainage`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
     - Do not state `caused by`, `due to`, `resulting from`, `settlement`, `heave`, or `soil movement` in `summary_observation` or `caption_draft` unless those words are visible text in the photo. The report writer can connect the photographs to engineering opinions later.
@@ -78,8 +78,8 @@ enum AIRulesTemplate {
 
     - photo_id: exact photo filename or identifier supplied by the user/app. If none is supplied, use an empty string.
     - primary_tags: zero, one, or two primary tags from the controlled vocabulary.
-    - secondary_tags_by_primary: an object keyed by each primary tag. Each value is an array of secondary tags listed under that primary. Use `["None"]` for context photos or where no specific secondary is visible.
-    - tag_confidences: object mapping every emitted primary tag and every non-`None` secondary tag to a number from 0 to 1. Use 0.90–1.00 for clear visual evidence, 0.70–0.89 for probable evidence, and 0.50–0.69 for partial/obstructed/low-quality evidence. Do not include a confidence for `None`.
+    - secondary_tags_by_primary: an object keyed by each primary tag. Each value is an array of one to four secondary tags listed under that primary in the controlled vocabulary. If a primary genuinely has no applicable secondary for the photo, leave that primary out of `primary_tags` rather than emitting an empty array.
+    - tag_confidences: object mapping every emitted primary tag and every secondary tag to a number from 0 to 1. Use 0.90–1.00 for clear visual evidence, 0.70–0.89 for probable evidence, and 0.50–0.69 for partial/obstructed/low-quality evidence.
     - location_inferred: choose one value from the location list below. Use `Unknown` when location cannot be inferred from visible cues.
     - scale_present: choose `Yes`, `Relative`, or `No`. Use `Yes` for a ruler, tape, crack gauge, level readout, ZipLevel screen, comparator, coin, or clearly usable hand/finger scale. Use `Relative` for doors, windows, bricks, siding laps, baseboards, or other common objects that imply scale but do not provide a measurement.
     - measurement_visible: transcribe the visible measurement exactly as shown, including units and signs. If multiple readings are visible, include the most relevant reading or a short comma-separated transcription. Use `null` when no measurement is visible.
@@ -219,8 +219,8 @@ enum AIRulesTemplate {
 
     Final checks before returning
 
-    - Every primary tag and every non-`None` secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
-    - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If not, replace with the closest exact match or `None`.
+    - Every primary tag and every secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
+    - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If no listed secondary fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
     - Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Many secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Incomplete backfill` is under `Soil / Backfill / Excavation`, not `Drainage / Grading`) — check the actual location, do not guess from the name.
     - Use the exact primary tag names as listed in the controlled vocabulary below. Do not prefix them with numbers, dashes, or any other characters.
     - Re-read `summary_observation` and `caption_draft`. If either contains `caused by`, `due to`, `resulting from`, `settlement`, `heave`, `soil movement`, or a severity word (minor, moderate, severe, extensive, significant), revise to remove the engineering interpretation and describe only what is visible.

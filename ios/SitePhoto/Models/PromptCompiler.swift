@@ -172,20 +172,28 @@ enum PromptCompiler {
 
             for primary in pickedPrimaries {
                 let deselected = selection.deselectedSecondariesByPrimary[primary.id] ?? []
-                let activeSecondaries = primary.secondaries.filter { !deselected.contains($0.id) }
+                // Filter out the legacy "None" sentinel here so existing
+                // on-disk libraries that still carry it from v2-era seeds
+                // don't ship it to Claude. Fresh v3+ seeds no longer
+                // include "None" at all; this filter is the bridge for
+                // libraries that already have it persisted. Behaviour is
+                // case-insensitive and trims whitespace so a
+                // typo-renamed " none " stays filtered too.
+                let activeSecondaries = primary.secondaries.filter { sec in
+                    if deselected.contains(sec.id) { return false }
+                    let n = sec.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    return n != "none"
+                }
 
                 lines.append("")
                 lines.append("Primary tag: \(primary.name)")
                 if activeSecondaries.isEmpty {
-                    // Primary has no active secondaries (either none were
-                    // added in the library or every one was deselected).
-                    // Emit "None" explicitly so the model knows to return
-                    // ["None"] for this primary's entry — same sentinel
-                    // it uses for "no distress under this primary." Empty
-                    // primaries used to be silently dropped here, which
-                    // left the context heading bare and meant the model
-                    // never saw the primary at all.
-                    lines.append("Secondary tags: None")
+                    // Primary has no real secondaries (either the library
+                    // genuinely has none, every one was deselected, or
+                    // only the legacy "None" sentinel remains). Emit a
+                    // bare hint line so the model sees the primary at
+                    // all rather than silently dropping the heading.
+                    lines.append("Secondary tags: (no specific secondaries — tag the primary alone if visible)")
                 } else {
                     let joined = activeSecondaries.map(\.name).joined(separator: ", ")
                     lines.append("Secondary tags: \(joined)")
