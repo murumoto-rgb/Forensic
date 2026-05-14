@@ -70,6 +70,17 @@ enum ClaudeTaggingService {
     /// the engineer edits e.g. AI Notes, the preamble+rules and
     /// vocabulary blocks stay cached and only the notes section
     /// re-caches on the next request.
+    ///
+    /// On a vocabulary-validation rejection (model emitted a
+    /// secondary tag under the wrong primary, etc.) the function
+    /// performs a one-shot repair retry: the same image is re-sent
+    /// with a multi-turn message stack — original user prompt, the
+    /// model's bad JSON as the assistant turn, then a follow-up user
+    /// message listing the validator's specific complaints. Repair
+    /// is skipped on parse failures (a wrong shape is a different
+    /// failure mode) and on network/HTTP errors during the retry
+    /// (we fall back to the first result so the engineer at least
+    /// sees what the model produced).
     static func tag(imageURL: URL,
                     photoID: String = "",
                     systemBlocks: [PromptCompiler.Block],
@@ -101,35 +112,84 @@ enum ClaudeTaggingService {
             return entry
         }
 
+        let imageBlock: [String: Any] = [
+            "type": "image",
+            "source": [
+                "type":       "base64",
+                "media_type": "image/jpeg",
+                "data":       base64
+            ]
+        ]
+        let firstUserText: [String: Any] = [
+            "type": "text",
+            "text": userPrompt(photoID: photoID)
+        ]
+        let firstMessages: [[String: Any]] = [
+            [
+                "role": "user",
+                "content": [imageBlock, firstUserText]
+            ]
+        ]
+
+        let modelID = model ?? defaultModel
+
+        let first = try await sendAndParse(messages: firstMessages,
+                                            systemBlocksJSON: systemBlocksJSON,
+                                            apiKey: key,
+                                            model: modelID,
+                                            photoID: photoID,
+                                            vocabulary: vocabulary)
+
+        // Skip repair on parse failures (the model returned non-JSON
+        // or an unparseable shape — re-sending with a "fix this
+        // secondary" message wouldn't help) and when the validator
+        // is happy.
+        let errors = first.analysis.validationErrors
+        guard !first.analysis.parseFailed, !errors.isEmpty else { return first }
+
+        let repairMessages: [[String: Any]] = firstMessages + [
+            [
+                "role": "assistant",
+                "content": [["type": "text", "text": first.analysis.rawResponse]]
+            ],
+            [
+                "role": "user",
+                "content": [["type": "text", "text": repairUserPrompt(errors: errors)]]
+            ]
+        ]
+
+        do {
+            return try await sendAndParse(messages: repairMessages,
+                                           systemBlocksJSON: systemBlocksJSON,
+                                           apiKey: key,
+                                           model: modelID,
+                                           photoID: photoID,
+                                           vocabulary: vocabulary)
+        } catch {
+            return first
+        }
+    }
+
+    /// Build, send, and parse a single Anthropic Messages request.
+    /// Shared by the initial call and the repair retry so the body
+    /// shape, headers, and parse path can't drift between the two.
+    private static func sendAndParse(messages: [[String: Any]],
+                                      systemBlocksJSON: [[String: Any]],
+                                      apiKey: String,
+                                      model: String,
+                                      photoID: String,
+                                      vocabulary: ValidationVocabulary) async throws -> Result {
         let body: [String: Any] = [
-            "model":      model ?? defaultModel,
+            "model":      model,
             "max_tokens": 1500,
             "system":     systemBlocksJSON,
-            "messages": [
-                [
-                    "role": "user",
-                    "content": [
-                        [
-                            "type": "image",
-                            "source": [
-                                "type":       "base64",
-                                "media_type": "image/jpeg",
-                                "data":       base64
-                            ]
-                        ],
-                        [
-                            "type": "text",
-                            "text": userPrompt(photoID: photoID)
-                        ]
-                    ]
-                ]
-            ]
+            "messages":   messages
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.setValue(key,           forHTTPHeaderField: "x-api-key")
+        req.setValue(apiKey,        forHTTPHeaderField: "x-api-key")
         req.setValue(apiVersion,    forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.httpBody = payload
@@ -139,6 +199,23 @@ enum ClaudeTaggingService {
         return try parseResult(from: data,
                                 fallbackPhotoID: photoID,
                                 vocabulary: vocabulary)
+    }
+
+    /// Compose the follow-up user message for the repair retry. The
+    /// validator's error strings are descriptive enough on their own
+    /// (e.g. `Secondary "Incomplete backfill" is not listed under
+    /// primary "Drainage / Grading".`); we just bullet them and tell
+    /// the model how to fix.
+    private static func repairUserPrompt(errors: [String]) -> String {
+        let bullets = errors.map { "- \($0)" }.joined(separator: "\n")
+        return """
+        The previous response had vocabulary issues the validator flagged:
+        \(bullets)
+
+        Re-emit the JSON object for this photo. For each problem secondary, either move it under the primary it actually appears under in the controlled vocabulary (which may mean adding that primary to your `primary_tags`), or replace it with a secondary that is listed under your chosen primary. Use the exact tag spellings from the controlled vocabulary in the system message.
+
+        Return ONLY the corrected JSON object — no prose, no code fences. Start with `{` and end with `}`.
+        """
     }
 
     /// Send the request, retrying on 429 (rate limit) and 5xx (transient

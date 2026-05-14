@@ -238,6 +238,7 @@ Final checks before returning
 
 - Every primary tag and every non-`None` secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
 - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If not, replace with the closest exact match or `None`.
+- Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Many secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Incomplete backfill` is under `Soil / Backfill / Excavation`, not `Drainage / Grading`) — check the actual location, do not guess from the name.
 - Use the exact primary tag names as listed in the controlled vocabulary below. Do not prefix them with numbers, dashes, or any other characters.
 - Re-read `summary_observation` and `caption_draft`. If either contains `caused by`, `due to`, `resulting from`, `settlement`, `heave`, `soil movement`, or a severity word (minor, moderate, severe, extensive, significant), revise to remove the engineering interpretation and describe only what is visible.
 
@@ -356,3 +357,44 @@ NOTES
 - The rules template (Block 1, after the preamble) is user-editable from Settings → AI Tagging → Rules Template. The text above is the v2 seed default shipped with the app. If your project has been customised, the rendered prompt will differ accordingly.
 
 - The vocabulary above reflects EVERY primary + secondary in the v2 Forensic Investigation context as seeded by TagLibrary.defaultSeeds. New projects created after this change get every primary pre-selected by default; engineers can deselect any they don't need via the AI Tags picker.
+
+------------------------------------------------------------
+REPAIR RETRY (per-photo, conditional)
+------------------------------------------------------------
+
+If the model's first JSON response parses cleanly but the validator
+flags a vocabulary issue (e.g. a secondary tag emitted under a
+primary that doesn't actually contain it in the controlled
+vocabulary), `ClaudeTaggingService.tag` automatically performs a
+one-shot repair retry. The retry sends a multi-turn conversation:
+
+  user      [image bytes + the original user text shown above]
+  assistant [the bad JSON the model returned on attempt 1]
+  user      [the validator's complaints + a directive to fix them]
+
+The repair user message is composed by
+`ClaudeTaggingService.repairUserPrompt(errors:)` and looks like:
+
+    The previous response had vocabulary issues the validator flagged:
+    - Secondary "Incomplete backfill" is not listed under primary "Drainage / Grading".
+    - <other validator-emitted error strings>
+
+    Re-emit the JSON object for this photo. For each problem secondary,
+    either move it under the primary it actually appears under in the
+    controlled vocabulary (which may mean adding that primary to your
+    `primary_tags`), or replace it with a secondary that is listed
+    under your chosen primary. Use the exact tag spellings from the
+    controlled vocabulary in the system message.
+
+    Return ONLY the corrected JSON object — no prose, no code fences.
+    Start with `{` and end with `}`.
+
+The retry runs at most once per photo. If it also fails the
+validator, the retry result is returned (it's the model's latest
+attempt). If the retry fails for network/HTTP reasons, the first
+result is returned so the engineer sees the original validator
+output rather than a network error.
+
+Repair is skipped on parse failures — when the model returns
+non-JSON or an unparseable shape, the retry wouldn't have anything
+useful to anchor on.
