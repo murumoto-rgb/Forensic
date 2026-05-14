@@ -705,21 +705,25 @@ final class ProjectStore {
     /// (fresh install). The starter pack is persisted immediately on
     /// first launch so subsequent reads are consistent.
     ///
-    /// When the persisted library is older than `currentSeedVersion`
-    /// (i.e. the pre-flatten v1 layout with seven separate contexts),
-    /// the loader replaces it with the v2 defaults and force-resets
-    /// every project's tagSelection + the persisted rules template to
-    /// the bundled v2 defaults. v1 selections and any pre-v2
-    /// customisations are dropped — engineers re-customise against
-    /// the v2 library if they want to scope a project down.
+    /// On every launch after the first, the persisted library is the
+    /// source of truth — including any contexts, primaries, or
+    /// secondaries the engineer added or renamed through the Tag
+    /// Library Manager. The bundled defaults in code are NEVER merged
+    /// in or used to overwrite the disk file, even when a new build
+    /// of the app ships an updated seed. Customisations are durable
+    /// across app updates by design.
+    ///
+    /// (Earlier builds carried a v1 → v2 migration here that wiped
+    /// the persisted library + rules template + every project's tag
+    /// selection. It was removed deliberately on the user's request
+    /// once the v2 rollout had landed on every device that needed it.
+    /// If a future schema reshape ever requires re-seeding, design
+    /// the migration to be additive — append missing primaries /
+    /// secondaries rather than replacing the file wholesale.)
     fileprivate func loadTagLibraryFromDisk() {
         if let data = try? Data(contentsOf: tagLibraryURL),
            let decoded = try? decoder().decode(TagLibrary.self, from: data) {
-            if decoded.seedVersion < TagLibrary.currentSeedVersion {
-                migrateLegacyTagLibraryToV2()
-            } else {
-                tagLibrary = decoded
-            }
+            tagLibrary = decoded
             return
         }
         tagLibrary = TagLibrary.defaultSeeds
@@ -740,28 +744,6 @@ final class ProjectStore {
             selection.primariesByContext[ctx.id] = Set(ctx.primaries.map(\.id))
         }
         return selection
-    }
-
-    /// One-shot v1 → v2 upgrade: replace the library, the rules
-    /// template, and every project's tag selection with the bundled
-    /// v2 defaults. Runs at most once per device (gated on
-    /// `TagLibrary.seedVersion < currentSeedVersion`). The user
-    /// signed off on dropping v1 customisations during the v2
-    /// rollout; post-v2 customisations persist normally through the
-    /// regular editor + save paths.
-    private func migrateLegacyTagLibraryToV2() {
-        tagLibrary = TagLibrary.defaultSeeds
-        persistTagLibrary()
-
-        aiRulesTemplate = AIRulesTemplate.defaultText
-        persistAIRulesTemplate()
-
-        let everything = defaultTagSelection()
-        for project in activeProjects + deletedProjects {
-            var p = project
-            p.tagSelection = everything
-            _ = save(p)
-        }
     }
 
     private func persistTagLibrary() {

@@ -61,10 +61,14 @@ struct SecondaryTagEntry: Identifiable, Codable, Hashable, Sendable {
 /// surprises of decoding a bare top-level Codable array (no
 /// schema-versioning, no room for future sibling fields).
 ///
-/// `seedVersion` lets the loader detect a pre-v2 persisted library
-/// (which decoded as version 1) and trigger a one-shot migration to the
-/// flat single-context shape. Persisted libraries from v2 onward carry
-/// their version explicitly.
+/// `seedVersion` is informational only — it records which bundled seed
+/// initially populated a device's library. The loader does NOT compare
+/// it on launch and does NOT trigger migrations off it. Custom edits
+/// to the on-disk library are durable across app updates by design.
+/// The field is retained so older persisted files decode cleanly and
+/// so any hypothetical future migration has a version anchor to read
+/// — but new migrations should be additive (append missing primaries /
+/// secondaries) rather than replacing the file wholesale.
 struct TagLibrary: Codable, Hashable, Sendable {
     var contexts: [InvestigationContext]
     var seedVersion: Int
@@ -83,9 +87,10 @@ struct TagLibrary: Codable, Hashable, Sendable {
                                                    forKey: .seedVersion) ?? 1
     }
 
-    /// Current bundled seed version. Bump whenever `defaultSeeds`
-    /// changes shape in a way existing project selections need to be
-    /// migrated through.
+    /// Seed version stamped onto fresh installs and onto `defaultSeeds`.
+    /// No longer used as a load-time migration trigger — kept so the
+    /// persisted file carries a sensible default if a future tool ever
+    /// needs to introspect it.
     static let currentSeedVersion: Int = 2
 }
 
