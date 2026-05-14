@@ -2714,10 +2714,29 @@ extension ProjectStore {
     /// the user has to remove them manually if they really want them gone.
     @discardableResult
     func clearAIInfo(_ project: Project, photoIDs: Set<UUID>) -> Project {
+        // Centralised "is this tag AI-origin?" predicate so the
+        // confidence heuristic and the synthetic-label exceptions
+        // stay in lockstep. Currently:
+        //   - Anything with `confidence < 1.0` is AI-origin
+        //     (Claude suggestions and the synthetic measurement tag).
+        //   - The synthetic "Measurement reading" label is also
+        //     swept by literal name match, because older app
+        //     versions used to persist it at confidence 1.0 and
+        //     would leave it stranded after a clear. The label
+        //     match cleans those out on the next clear without
+        //     forcing a one-shot data migration.
+        let syntheticLabels: Set<String> = [
+            ClaudeTaggingService.measurementTagLabel.lowercased()
+        ]
+        func isAIOriginTag(_ tag: Tag) -> Bool {
+            if tag.confidence < 1.0 { return true }
+            return syntheticLabels.contains(tag.label.lowercased())
+        }
+
         var p = project
         for id in photoIDs {
             guard let idx = p.photos.firstIndex(where: { $0.id == id }) else { continue }
-            p.photos[idx].tags.removeAll { $0.confidence < 1.0 }
+            p.photos[idx].tags.removeAll { isAIOriginTag($0) }
             p.photos[idx].pendingSuggestions = []
             p.photos[idx].aiSeverity = nil
             p.photos[idx].aiObservation = nil

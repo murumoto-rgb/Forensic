@@ -480,13 +480,20 @@ enum ClaudeTaggingService {
         // number was visible; any non-empty value means the model
         // transcribed something (level reading, moisture meter, ruler,
         // crack comparator, etc.). Synthetic — not part of the
-        // controlled vocabulary, so confidence is 1.0 and the validator
-        // ignores it (it only validates primaryTags / secondaries).
+        // controlled vocabulary, so the validator ignores it (it only
+        // validates primaryTags / secondaries).
+        //
+        // Confidence is 0.99 rather than 1.0 on purpose: the
+        // `ProjectStore.clearAIInfo` sweep treats `confidence < 1.0` as
+        // "AI-origin, safe to remove" and `1.0` as "looks like a
+        // user-typed tag, preserve." A 1.0 here makes the synthetic
+        // tag survive every clear-AI action, which trips up the user
+        // every time they retag a measurement photo.
         if let m = a.measurementVisible?.trimmingCharacters(in: .whitespacesAndNewlines),
            !m.isEmpty {
             out.append(TagSuggestion(
                 label: measurementTagLabel,
-                confidence: 1.0,
+                confidence: 0.99,
                 source: .claude,
                 parentTag: nil
             ))
