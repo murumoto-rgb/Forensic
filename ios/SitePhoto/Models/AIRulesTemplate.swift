@@ -10,8 +10,12 @@ import Foundation
 /// `storageRoot/aiRulesTemplate.txt` (plain text — easier to spot-check
 /// in the Files app than a JSON-wrapped string).
 ///
-/// The v2 default below is structured for consistent forensic-residential
+/// The v3 default below is structured for consistent forensic-residential
 /// tagging:
+///   * an opening "Triples are atomic" paragraph that tells the model
+///     to treat every controlled-vocabulary entry as a single
+///     `Context::Primary::Secondary` triple — never to detach a
+///     secondary from its primary or its context
 ///   * an explicit 6-step decision workflow Claude follows per photo
 ///   * core rules emphasising visible-only observations (no causation,
 ///     no severity, no "tilt indicator" interpretations)
@@ -19,9 +23,9 @@ import Foundation
 ///   * a disambiguation guide for the close calls (Grade Beam vs Slabs,
 ///     Masonry vs Foundation, Stucco vs Trim, Framing vs Roofing,
 ///     Flooring vs Slope)
-///   * six worked examples covering all five photo classes the workflow
-///     names (close-up distress, clean overview, attic-framing,
-///     measurement, aerial/historical, poor-quality)
+///   * worked examples covering the photo classes the workflow names
+///     (close-up distress, clean overview, attic-framing, measurement,
+///     poor-quality)
 ///
 /// The vocabulary referenced by the disambiguation guide and examples
 /// is shipped in `TagLibrary.defaultSeeds` — keep the two in sync.
@@ -30,6 +34,10 @@ enum AIRulesTemplate {
     Return exactly one JSON object per photo. Do not include prose, markdown, code fences, or explanation. Start with `{` and end with `}`.
 
     Use only the primary and secondary tags listed in the controlled vocabulary below. Do not invent, merge, abbreviate, or paraphrase tag names.
+
+    Triples are atomic
+
+    The controlled vocabulary below is a flat list of `Context::Primary::Secondary` triples, one per line. Read every triple as one indivisible choice — the Context and the Primary travel with the Secondary as a single unit. When you select a secondary tag, you are committing to the exact primary and context the triple's `::`-delimited path names. Never detach a secondary from its primary, never pair a secondary with a different primary even if the names look similar, and never refer to a secondary in isolation. Think and decide in triples.
 
     Output JSON shape
 
@@ -58,15 +66,15 @@ enum AIRulesTemplate {
        - poor/obstructed — too blurry, too dark, too close, or obstructed to reliably classify.
     2. Identify the main visible component, not the presumed cause. Examples: grade beam, garage slab, driveway, brick veneer, sheetrock wall, ceiling, tile floor, door, attic framing, roofing, downspout, soil, pool deck.
     3. Identify only visible conditions. Do not infer final cause, assign severity, or diagnose foundation movement from a single photograph unless the visual evidence itself is the item being tagged.
-    4. Select one primary tag by default. Use two primary tags only when two clearly distinct report-worthy conditions are visible in the same photo. Never use more than two.
-    5. For each primary tag, select one to four secondary tags from those listed under that primary in the controlled vocabulary below. If no listed secondary describes what is visible, leave that primary out of `primary_tags` entirely rather than picking a near-fit secondary.
+    4. Select one to four `Context::Primary::Secondary` triples that describe what is visible. The default is one or two triples; use more only when several clearly distinct report-worthy conditions are visible in the same photo. Never exceed four triples total. Every triple you pick is a complete unit — you do not first pick a primary and then a separate secondary, you pick the full triple at once from the controlled vocabulary below.
+    5. Group the triples you picked by their primary when filling the JSON. Each unique primary across your chosen triples appears once in `primary_tags`; each triple's secondary appears under that primary's key in `secondary_tags_by_primary`. Do not move a secondary under a primary other than the one named in its triple. If no listed triple describes what is visible, leave the corresponding primary out of `primary_tags` entirely rather than forcing a near-fit triple.
     6. If the correct issue category is absent from the vocabulary, return `primary_tags: []`, leave `secondary_tags_by_primary` and `tag_confidences` empty, set `confidence` to `Low`, and explain the vocabulary gap in `reviewer_flag`.
 
     Core rules
 
-    - Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Interior overview`). Do not force a distress tag onto a clean overview photo.
+    - Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site Overview`) and the most specific overall-view / context secondary listed under that primary (e.g. `Front elevation overall view`, `Interior overall view`). Do not force a distress tag onto a clean overview photo.
     - Prefer the component actually shown. For example, tag a crack in brick veneer as `Masonry Veneer`, not `Foundation / Grade Beam`, unless the concrete grade beam crack is visible.
-    - Prefer directly visible geometry over mechanism. Use `Flat drainage`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
+    - Prefer directly visible geometry over mechanism. Use `Marginal or flat drainage adjacent to foundation`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
     - Do not state `caused by`, `due to`, `resulting from`, `settlement`, `heave`, or `soil movement` in `summary_observation` or `caption_draft` unless those words are visible text in the photo. The report writer can connect the photographs to engineering opinions later.
     - Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing` unless the photo shows roofing distress or the roof is the intentional subject.
     - Do not assign severity labels such as minor, moderate, severe, extensive, or significant in the tags or captions. Describe what is visible.
@@ -101,19 +109,19 @@ enum AIRulesTemplate {
     - `Stucco / Exterior Finish` vs `Exterior Trim / Siding / Soffit`: use `Stucco / Exterior Finish` for stucco field cracking, stucco termination, weep screed, or stucco-to-window conditions. Use `Exterior Trim / Siding / Soffit` for trim boards, frieze boards, soffits, and cement-board siding.
     - `Interior Wall and Ceiling Sheetrock Finish` covers cracks, separations, and stains on either wall or ceiling sheetrock — a single primary spans both surfaces. Use `Ceiling sheetrock crack` for the ceiling-specific case and `Wall sheetrock crack` for the wall-specific case; otherwise pick whichever joint / corner secondary best describes the geometry visible.
     - `Flooring` vs `Floor Slope / Levelness`: use `Flooring` for cracks, loose tile, flooring separation, or rippled floor finishes. Use `Floor Slope / Levelness` only when slope/levelness is visually or measurably the main subject.
-    - `Roof / Attic Framing` vs `Roofing`: use framing for rafters, trusses, sheathing, fasteners, and attic structural connections. Use `Roofing` for shingles, metal panels, roof coverings, and roof-surface conditions.
-    - `Moisture Intrusion / Staining` can be paired with another component tag when staining is visible on the component. Example: a moisture stain on a ceiling can be tagged as `Interior Wall and Ceiling Sheetrock Finish` plus `Moisture Intrusion / Staining`.
+    - `Attic Framing` vs `Roofing`: use `Attic Framing` for rafters, trusses, sheathing, fasteners, and attic structural connections. Use `Roofing` for shingles, metal panels, roof coverings, and roof-surface conditions.
+    - `Moisture Intrusion` can be paired with another component tag when staining is visible on the component. Example: a moisture stain on a ceiling can be tagged as `Interior Wall and Ceiling Sheetrock Finish` plus `Moisture Intrusion`.
     - `Measurement / Instrument Readout` is a second tag unless the photo is only a readout/tool with no visible condition.
 
     Worked examples
 
-    Example 1 — Exterior grade beam crack (close-up distress):
+    Example 1 — Exterior grade beam crack (close-up distress). Selected triple: `Foundation Performance Evaluation::Foundation / Grade Beam::Grade beam crack`. One triple is enough here — `summary_observation` and `caption_draft` carry the geometry detail in plain language without needing a second triple.
 
     {
       "photo_id": "IMG_0042.jpg",
       "primary_tags": ["Foundation / Grade Beam"],
-      "secondary_tags_by_primary": {"Foundation / Grade Beam": ["Grade beam crack", "Vertical crack"]},
-      "tag_confidences": {"Foundation / Grade Beam": 0.95, "Grade beam crack": 0.94, "Vertical crack": 0.90},
+      "secondary_tags_by_primary": {"Foundation / Grade Beam": ["Grade beam crack"]},
+      "tag_confidences": {"Foundation / Grade Beam": 0.95, "Grade beam crack": 0.94},
       "location_inferred": "Exterior - Unknown elevation",
       "scale_present": "Relative",
       "measurement_visible": null,
@@ -125,13 +133,13 @@ enum AIRulesTemplate {
       "reviewer_flag": ""
     }
 
-    Example 2 — Clean exterior overview (context/overview):
+    Example 2 — Clean exterior overview (context/overview). The selected triple is `Foundation Performance Evaluation::General Exterior Orientation::Front elevation overall view`.
 
     {
       "photo_id": "IMG_0101.jpg",
       "primary_tags": ["General Exterior Orientation"],
-      "secondary_tags_by_primary": {"General Exterior Orientation": ["Front elevation overview"]},
-      "tag_confidences": {"General Exterior Orientation": 0.96, "Front elevation overview": 0.92},
+      "secondary_tags_by_primary": {"General Exterior Orientation": ["Front elevation overall view"]},
+      "tag_confidences": {"General Exterior Orientation": 0.96, "Front elevation overall view": 0.92},
       "location_inferred": "Exterior - Front",
       "scale_present": "Relative",
       "measurement_visible": null,
@@ -143,13 +151,13 @@ enum AIRulesTemplate {
       "reviewer_flag": ""
     }
 
-    Example 3 — Attic framing connection (close-up distress):
+    Example 3 — Attic framing connection (close-up distress). Selected triples: `Foundation Performance Evaluation::Attic Framing::Loose / untight framing connection (wide joints)` and `Foundation Performance Evaluation::Attic Framing::Exposed fasteners between wood framing members`.
 
     {
       "photo_id": "IMG_0220.jpg",
-      "primary_tags": ["Roof / Attic Framing"],
-      "secondary_tags_by_primary": {"Roof / Attic Framing": ["Loose / untight framing connection", "Exposed fasteners"]},
-      "tag_confidences": {"Roof / Attic Framing": 0.91, "Loose / untight framing connection": 0.84, "Exposed fasteners": 0.89},
+      "primary_tags": ["Attic Framing"],
+      "secondary_tags_by_primary": {"Attic Framing": ["Loose / untight framing connection (wide joints)", "Exposed fasteners between wood framing members"]},
+      "tag_confidences": {"Attic Framing": 0.91, "Loose / untight framing connection (wide joints)": 0.84, "Exposed fasteners between wood framing members": 0.89},
       "location_inferred": "Attic",
       "scale_present": "Relative",
       "measurement_visible": null,
@@ -161,7 +169,7 @@ enum AIRulesTemplate {
       "reviewer_flag": ""
     }
 
-    Example 4 — Measurement-only photo (measurement/readout):
+    Example 4 — Measurement-only photo (measurement/readout). Selected triples: `Foundation Performance Evaluation::Measurement / Instrument Readout::Digital level visible` and `Foundation Performance Evaluation::Measurement / Instrument Readout::Measurement number visible`. Both sit under the same primary so the `secondary_tags_by_primary` entry has both under the one primary key.
 
     {
       "photo_id": "IMG_0307.jpg",
@@ -179,7 +187,7 @@ enum AIRulesTemplate {
       "reviewer_flag": ""
     }
 
-    Example 5 — Blurry photo (poor/obstructed):
+    Example 5 — Blurry photo (poor/obstructed). Selected triple: `Foundation Performance Evaluation::Photo Quality / Re-shoot::Blurry image`.
 
     {
       "photo_id": "IMG_0512.jpg",
@@ -200,9 +208,9 @@ enum AIRulesTemplate {
     Final checks before returning
 
     - Every primary tag and every secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
-    - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If no listed secondary fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
-    - Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Some secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Moisture-stained roof sheathing` is under `Roof / Attic Framing`, while `Moisture stain on roof sheathing` is under `Moisture Intrusion / Staining`) — check the actual location, do not guess from the name.
-    - Use the exact primary tag names as listed in the controlled vocabulary below. Do not prefix them with numbers, dashes, or any other characters.
+    - Every secondary you emit belongs to the exact primary named in its triple. If no listed triple fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
+    - Cross-check triple integrity: for every secondary you emit, find the exact `Context::Primary::Secondary` line in the controlled vocabulary below. The `Primary` portion of that line MUST be the primary you used in `primary_tags` / `secondary_tags_by_primary`. If it isn't, either (a) change your primary to match the triple, or (b) replace the secondary with a triple whose primary you actually chose. Some secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` lives in `…::Measurement / Instrument Readout::Digital level visible`, while `Digital level reading shown` lives in `…::Floor Slope / Levelness::Digital level reading shown`) — check the actual triple, do not guess from the name alone.
+    - Use the exact primary tag names as written in the triple's middle field. Do not prefix them with numbers, dashes, or any other characters.
     - Re-read `summary_observation` and `caption_draft`. If either contains `caused by`, `due to`, `resulting from`, `settlement`, `heave`, `soil movement`, or a severity word (minor, moderate, severe, extensive, significant), revise to remove the engineering interpretation and describe only what is visible.
     """
 }

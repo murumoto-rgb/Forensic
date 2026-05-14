@@ -750,11 +750,62 @@ final class ProjectStore {
     fileprivate func loadTagLibraryFromDisk() {
         if let data = try? Data(contentsOf: tagLibraryURL),
            let decoded = try? decoder().decode(TagLibrary.self, from: data) {
+            // Gate: if the persisted library predates the currently
+            // bundled seed version, force a one-shot reset onto the
+            // new bundled defaults. The reset is intentionally wide
+            // (library + rules template + every project's
+            // tagSelection) because a vocab refresh changes primary /
+            // secondary UUIDs and stale references would silently
+            // drop out of the AI Tags picker — worse than wiping
+            // them outright. After migration the new seed version is
+            // persisted on disk so subsequent launches skip this
+            // branch.
+            if decoded.seedVersion < TagLibrary.currentSeedVersion {
+                migrateLegacyTagLibraryToCurrentSeed()
+                return
+            }
             tagLibrary = decoded
             return
         }
         tagLibrary = TagLibrary.defaultSeeds
         persistTagLibrary()
+    }
+
+    /// One-shot upgrade path triggered by `loadTagLibraryFromDisk` when
+    /// the persisted `seedVersion` is behind `TagLibrary.currentSeedVersion`.
+    /// Adopts the bundled v3+ defaults wholesale — library, rules
+    /// template, and every project's `tagSelection`. The engineer's
+    /// post-upgrade customisations still persist normally; only the
+    /// version-crossing forces a reset.
+    private func migrateLegacyTagLibraryToCurrentSeed() {
+        // 1. Library: drop whatever was on disk in favour of the
+        //    bundled defaults, then persist so the new
+        //    `seedVersion` lands on disk and gates the next launch
+        //    out of this branch.
+        tagLibrary = TagLibrary.defaultSeeds
+        persistTagLibrary()
+
+        // 2. Rules template: overwrite both in-memory and on disk.
+        //    `loadAIRulesTemplateFromDisk` runs after this function in
+        //    `init`, but because we just wrote the fresh default to
+        //    disk it reads the same text back — no risk of stale
+        //    in-memory text overriding what we just set here.
+        aiRulesTemplate = AIRulesTemplate.defaultText
+        persistAIRulesTemplate()
+
+        // 3. Every project's tagSelection: replace with the new
+        //    "all primaries selected in every context" default. The
+        //    old selection's UUIDs reference the previous seed's
+        //    primaries and would otherwise resolve to nothing
+        //    (which the picker treats as "no contexts picked,"
+        //    blocking AI tagging until the engineer re-selects).
+        let everything = defaultTagSelection()
+        let allProjects = activeProjects + deletedProjects
+        for project in allProjects {
+            var p = project
+            p.tagSelection = everything
+            _ = save(p)
+        }
     }
 
     /// Build a "select every primary in every context" selection

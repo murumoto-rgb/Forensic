@@ -27,10 +27,10 @@ enum PromptCompiler {
     /// Short framing prepended to the rules template. Stable across
     /// projects so it benefits from Anthropic's ephemeral prompt cache.
     /// Lives here (not in the user-editable rules template) because it
-    /// also carries the comma-separator format hint that pairs with
-    /// `compileVocabularyBlock`'s compact output — that contract has
-    /// to stay in sync with the network shape regardless of how the
-    /// engineer customises their rules text.
+    /// also carries the triple-format hint that pairs with
+    /// `compileVocabularyBlock`'s output — that contract has to stay
+    /// in sync with the network shape regardless of how the engineer
+    /// customises their rules text.
     private static let systemPreamble = """
     You are an AI assistant tagging forensic site-investigation \
     photographs. The rules below describe the JSON schema you must \
@@ -38,10 +38,12 @@ enum PromptCompiler {
     specific project — use ONLY the investigation contexts, primary \
     tags, and secondary tags listed there.
 
-    Vocabulary format: each primary tag's "Secondary tags:" line is a \
-    comma-separated list. Treat each comma-separated value as ONE \
-    verbatim secondary tag — none of the listed tags themselves \
-    contain commas, so a comma inside the list is always a separator.
+    Vocabulary format: each entry is a fully-qualified \
+    `Context::Primary::Secondary` triple on its own line. Read every \
+    triple as one atomic choice — the Primary and Context travel with \
+    the Secondary as a single unit and must never be detached from it. \
+    None of the listed tags themselves contain the `::` sequence, so \
+    `::` is always a triple separator.
     """
 
     /// Short reinforcement appended after everything else. Re-emphasises
@@ -154,33 +156,44 @@ enum PromptCompiler {
         )
     }
 
-    /// Build the vocabulary block in a compact comma-separated form.
-    /// Semantically identical to the older bullet-per-secondary format
-    /// — every tag is still listed verbatim — but uses ~50% fewer
-    /// tokens, which directly shortens AI tagging latency and reduces
-    /// cache-write cost on first-photo-of-batch.
+    /// Build the vocabulary block as a flat list of fully-qualified
+    /// `Context::Primary::Secondary` triples — one triple per line.
+    ///
+    /// The triple format eliminates the prior "primary header +
+    /// comma-separated secondary list" shape that forced the model to
+    /// remember which primary header a secondary sat under while
+    /// reasoning. Each triple now carries its full path with it, so
+    /// there's no opportunity for the model to drift and attribute a
+    /// secondary to the wrong primary or context.
     ///
     /// Format Claude sees:
-    ///   INVESTIGATION CONTEXT: Foundation Performance
-    ///   Primary tag: Drainage / Grading
-    ///   Secondary tags: None, Adequate drainage, Marginal drainage, …
+    ///   Controlled vocabulary for this project. …
+    ///   Foundation Performance Evaluation::Drainage / Grading::Drainage visually away from foundation
+    ///   Foundation Performance Evaluation::Drainage / Grading::Marginal or flat drainage adjacent to foundation
+    ///   Foundation Performance Evaluation::Foundation / Grade Beam::Grade beam crack
+    ///   …
     ///
-    /// The matching "Use commas as field separators inside Secondary
-    /// tags lists" hint lives in `AIRulesTemplate.defaultText` so the
-    /// model never confuses a comma inside a tag name (none of the
-    /// seeded tags carry commas) with a separator.
+    /// A primary with no eligible secondaries (every secondary
+    /// deselected, or the library entry genuinely has none) still
+    /// emits one line in the form
+    /// `<Context>::<Primary>::(primary alone)` so the primary is
+    /// visible to the model rather than silently dropped.
+    ///
+    /// Order: `selection.contextIDs` → library primary order →
+    /// library secondary order. Same ordering rules the prior format
+    /// used, just flattened.
     private static func compileVocabularyBlock(library: TagLibrary,
                                                  selection: ProjectTagSelection) -> String {
-        var lines: [String] = ["Controlled vocabulary for this project:"]
+        var lines: [String] = [
+            "Controlled vocabulary for this project. Each line below is a complete Context::Primary::Secondary triple. Treat every triple as a single atomic choice — never detach a secondary from its primary or its context."
+        ]
+        var emittedAtLeastOne = false
 
         for contextID in selection.contextIDs {
             guard let ctx = library.context(id: contextID) else { continue }
             let pickedPrimaryIDs = selection.primariesByContext[contextID] ?? []
             let pickedPrimaries = ctx.primaries.filter { pickedPrimaryIDs.contains($0.id) }
             guard !pickedPrimaries.isEmpty else { continue }
-
-            lines.append("")
-            lines.append("INVESTIGATION CONTEXT: \(ctx.name)")
 
             for primary in pickedPrimaries {
                 let deselected = selection.deselectedSecondariesByPrimary[primary.id] ?? []
@@ -197,18 +210,23 @@ enum PromptCompiler {
                     return n != "none"
                 }
 
-                lines.append("")
-                lines.append("Primary tag: \(primary.name)")
                 if activeSecondaries.isEmpty {
                     // Primary has no real secondaries (either the library
                     // genuinely has none, every one was deselected, or
                     // only the legacy "None" sentinel remains). Emit a
-                    // bare hint line so the model sees the primary at
-                    // all rather than silently dropping the heading.
-                    lines.append("Secondary tags: (no specific secondaries — tag the primary alone if visible)")
+                    // `(primary alone)` placeholder so the primary is
+                    // still visible in the prompt — same idea as the
+                    // prior "Secondary tags: (no specific secondaries …)"
+                    // hint, just folded into the triple form.
+                    if !emittedAtLeastOne { lines.append("") }
+                    lines.append("\(ctx.name)::\(primary.name)::(primary alone)")
+                    emittedAtLeastOne = true
                 } else {
-                    let joined = activeSecondaries.map(\.name).joined(separator: ", ")
-                    lines.append("Secondary tags: \(joined)")
+                    if !emittedAtLeastOne { lines.append("") }
+                    for sec in activeSecondaries {
+                        lines.append("\(ctx.name)::\(primary.name)::\(sec.name)")
+                    }
+                    emittedAtLeastOne = true
                 }
             }
         }
@@ -216,7 +234,7 @@ enum PromptCompiler {
         // If nothing made it past the filters (every picked context was
         // empty / stale), return an empty string and let the caller treat
         // it as `noContextsPicked`.
-        return lines.count > 1 ? lines.joined(separator: "\n") : ""
+        return emittedAtLeastOne ? lines.joined(separator: "\n") : ""
     }
 
     /// Render the optional per-project notes as a labelled block that
