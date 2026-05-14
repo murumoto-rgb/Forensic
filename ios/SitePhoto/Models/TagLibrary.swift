@@ -117,65 +117,6 @@ extension TagLibrary {
         return nil
     }
 
-    /// Find a primary by display name, scanning every context. Used by
-    /// the v1→v2 migration to bridge old primary UUIDs (which had random
-    /// per-install IDs) to the new flat library by name.
-    func primaryByName(_ name: String) -> PrimaryTagEntry? {
-        for ctx in contexts {
-            if let p = ctx.primaries.first(where: { $0.name == name }) {
-                return p
-            }
-        }
-        return nil
-    }
-}
-
-// MARK: - v1 → v2 migration
-
-extension TagLibrary {
-    /// Map from the v1 seed library's primary name → the v2 flat
-    /// library's primary name. Drives the project-selection migration
-    /// when a device upgrades from a pre-v2 library to the new flat
-    /// vocabulary. Entries missing here mean the v1 primary has no
-    /// direct v2 equivalent (engineer's selection on that primary is
-    /// dropped during migration).
-    static let v2PrimaryNameMigration: [String: String] = [
-        // Foundation Performance context
-        "Drainage / Grading":                  "Drainage / Grading",
-        "Regional Ponding / Site Moisture":    "General Site / Yard Context",
-        "Foundation - Exterior":               "Foundation / Grade Beam",
-        "Foundation - Interior":               "Concrete Slabs - Garage / Porch / Patio / Interior",
-        "Driveway and Flatwork":               "Driveway and Flatwork",
-        "Masonry":                             "Masonry Veneer",
-        "Exterior Trim / Siding":              "Exterior Trim / Siding / Soffit",
-        "Walls":                               "Interior Wall Finish",
-        "Ceilings":                            "Interior Ceiling Finish",
-        "Flooring":                            "Flooring",
-        "Interior Trim / Cabinets / Counters": "Interior Trim / Cabinets / Counters",
-        "Doors / Windows":                     "Doors / Windows",
-        "Floor Slope / Levelness":             "Floor Slope / Levelness",
-        "Garage / Porch Slope":                "Floor Slope / Levelness",
-        "Prior Repair / Patch":                "Prior Repair / Patch",
-        "Soil / Backfill":                     "Soil / Backfill / Excavation",
-        "Trees / Vegetation":                  "Trees / Vegetation / Landscaping",
-        // Roofing context
-        "Roofing":                             "Roofing / Roof Covering",
-        // Framing context
-        "Attic / Framing":                     "Roof / Attic Framing",
-        // Overall Views context
-        "General Exterior Context":            "General Exterior Context",
-        "General Interior Context":            "General Interior Context",
-        // Stucco context
-        "Stucco Construction":                 "Stucco / Exterior Finish",
-        // Photo Quality context
-        "Poor / Unclear Photo":                "Photo Quality / Re-shoot"
-        // Note: "Stairs" context's primary has no direct v2 equivalent —
-        // stair distress now folds into the appropriate component primary
-        // (Concrete Slabs for step cracks, Interior Wall Finish for
-        // stair-wall cracks, etc.). Selection on the old Stairs primary
-        // is dropped during migration; the engineer can re-pick the
-        // relevant v2 component primary if needed.
-    ]
 }
 
 // MARK: - Default seeds (v2)

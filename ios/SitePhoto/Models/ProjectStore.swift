@@ -707,16 +707,16 @@ final class ProjectStore {
     ///
     /// When the persisted library is older than `currentSeedVersion`
     /// (i.e. the pre-flatten v1 layout with seven separate contexts),
-    /// the loader replaces it with the v2 defaults and walks every
-    /// project to rewrite its `tagSelection` from the old UUID space
-    /// into the new one. Engineer customisations to the v1 library are
-    /// not preserved — the flatten is intentional and additive
-    /// customisation can be redone against the v2 library.
+    /// the loader replaces it with the v2 defaults and force-resets
+    /// every project's tagSelection + the persisted rules template to
+    /// the bundled v2 defaults. v1 selections and any pre-v2
+    /// customisations are dropped — engineers re-customise against
+    /// the v2 library if they want to scope a project down.
     fileprivate func loadTagLibraryFromDisk() {
         if let data = try? Data(contentsOf: tagLibraryURL),
            let decoded = try? decoder().decode(TagLibrary.self, from: data) {
             if decoded.seedVersion < TagLibrary.currentSeedVersion {
-                migrateLegacyTagLibraryToV2(oldLibrary: decoded)
+                migrateLegacyTagLibraryToV2()
             } else {
                 tagLibrary = decoded
             }
@@ -742,81 +742,24 @@ final class ProjectStore {
         return selection
     }
 
-    /// One-shot migration: persisted v1 library → v2 flat library.
-    /// Snapshots the v1 primary + secondary names by UUID, replaces
-    /// the on-disk library with v2 defaults, then walks every project
-    /// (active and trashed) and rewrites its tagSelection by mapping
-    /// v1 primary names through `TagLibrary.v2PrimaryNameMigration`
-    /// to v2 primary UUIDs.
-    private func migrateLegacyTagLibraryToV2(oldLibrary: TagLibrary) {
-        var oldPrimaryNameByID: [UUID: String] = [:]
-        var oldSecondaryNameByID: [UUID: String] = [:]
-        for ctx in oldLibrary.contexts {
-            for p in ctx.primaries {
-                oldPrimaryNameByID[p.id] = p.name
-                for s in p.secondaries {
-                    oldSecondaryNameByID[s.id] = s.name
-                }
-            }
-        }
-
-        // Replace the library wholesale. Custom additions in the
-        // engineer's persisted v1 library are dropped — the user
-        // signed off on this scope.
+    /// One-shot v1 → v2 upgrade: replace the library, the rules
+    /// template, and every project's tag selection with the bundled
+    /// v2 defaults. Runs at most once per device (gated on
+    /// `TagLibrary.seedVersion < currentSeedVersion`). The user
+    /// signed off on dropping v1 customisations during the v2
+    /// rollout; post-v2 customisations persist normally through the
+    /// regular editor + save paths.
+    private func migrateLegacyTagLibraryToV2() {
         tagLibrary = TagLibrary.defaultSeeds
         persistTagLibrary()
 
-        guard let v2Context = tagLibrary.contexts.first else { return }
-        let v2PrimaryByName: [String: PrimaryTagEntry] = Dictionary(
-            uniqueKeysWithValues: v2Context.primaries.map { ($0.name, $0) }
-        )
+        aiRulesTemplate = AIRulesTemplate.defaultText
+        persistAIRulesTemplate()
 
-        // Migrate every project's tagSelection. Selections that had
-        // nothing pickable in the v2 library collapse to nil — same
-        // semantics the project had before AI Tags was set up.
-        let allProjects = activeProjects + deletedProjects
-        for project in allProjects {
-            guard let oldSelection = project.tagSelection else { continue }
-
-            var primariesPicked: Set<UUID> = []
-            for (_, oldPrimaryIDs) in oldSelection.primariesByContext {
-                for oldPID in oldPrimaryIDs {
-                    guard let oldName = oldPrimaryNameByID[oldPID],
-                          let v2Name = TagLibrary.v2PrimaryNameMigration[oldName],
-                          let v2Primary = v2PrimaryByName[v2Name] else { continue }
-                    primariesPicked.insert(v2Primary.id)
-                }
-            }
-
-            var deselected: [UUID: Set<UUID>] = [:]
-            for (oldPID, oldDeselectedSecIDs) in oldSelection.deselectedSecondariesByPrimary {
-                guard let oldPName = oldPrimaryNameByID[oldPID],
-                      let v2Name = TagLibrary.v2PrimaryNameMigration[oldPName],
-                      let v2Primary = v2PrimaryByName[v2Name] else { continue }
-                let v2SecondaryIDByName: [String: UUID] = Dictionary(
-                    uniqueKeysWithValues: v2Primary.secondaries.map { ($0.name, $0.id) }
-                )
-                var setForPrimary: Set<UUID> = deselected[v2Primary.id] ?? []
-                for oldSID in oldDeselectedSecIDs {
-                    guard let oldSName = oldSecondaryNameByID[oldSID],
-                          let v2SID = v2SecondaryIDByName[oldSName] else { continue }
-                    setForPrimary.insert(v2SID)
-                }
-                if !setForPrimary.isEmpty {
-                    deselected[v2Primary.id] = setForPrimary
-                }
-            }
-
+        let everything = defaultTagSelection()
+        for project in activeProjects + deletedProjects {
             var p = project
-            if primariesPicked.isEmpty {
-                p.tagSelection = nil
-            } else {
-                p.tagSelection = ProjectTagSelection(
-                    contextIDs: [v2Context.id],
-                    primariesByContext: [v2Context.id: primariesPicked],
-                    deselectedSecondariesByPrimary: deselected
-                )
-            }
+            p.tagSelection = everything
             _ = save(p)
         }
     }
