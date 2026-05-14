@@ -54,8 +54,7 @@ enum AIRulesTemplate {
     1. Identify the photo type:
        - context/overview — establishes location, elevation, room, attic, yard, or exterior side.
        - close-up distress — shows a crack, separation, displacement, stain, spall, distorted material, poor connection, or other condition.
-       - measurement/readout — shows a level, ruler, tape, crack comparator, ZipLevel, or other measurement.
-       - aerial/historical — shows trees, site changes, drainage patterns, or site context from above.
+       - measurement/readout — shows a level, ruler, tape, crack comparator, ZipLevel, moisture meter, or other measurement.
        - poor/obstructed — too blurry, too dark, too close, or obstructed to reliably classify.
     2. Identify the main visible component, not the presumed cause. Examples: grade beam, garage slab, driveway, brick veneer, sheetrock wall, ceiling, tile floor, door, attic framing, roofing, downspout, soil, pool deck.
     3. Identify only visible conditions. Do not infer final cause, assign severity, or diagnose foundation movement from a single photograph unless the visual evidence itself is the item being tagged.
@@ -65,11 +64,11 @@ enum AIRulesTemplate {
 
     Core rules
 
-    - Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Context`, `General Interior Context`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Room overview`). Do not force a distress tag onto a clean overview photo.
+    - Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Interior overview`). Do not force a distress tag onto a clean overview photo.
     - Prefer the component actually shown. For example, tag a crack in brick veneer as `Masonry Veneer`, not `Foundation / Grade Beam`, unless the concrete grade beam crack is visible.
     - Prefer directly visible geometry over mechanism. Use `Flat drainage`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
     - Do not state `caused by`, `due to`, `resulting from`, `settlement`, `heave`, or `soil movement` in `summary_observation` or `caption_draft` unless those words are visible text in the photo. The report writer can connect the photographs to engineering opinions later.
-    - Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing / Roof Covering` unless the photo shows roofing distress or the roof is the intentional subject.
+    - Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing` unless the photo shows roofing distress or the roof is the intentional subject.
     - Do not assign severity labels such as minor, moderate, severe, extensive, or significant in the tags or captions. Describe what is visible.
     - When the photo includes both a measurement tool and the measured condition, tag the condition as primary. Add `Measurement / Instrument Readout` as a second primary only when the readout/tool is important to the photograph.
     - If a finding is only barely visible, use a general secondary and lower confidence rather than a very specific secondary.
@@ -100,11 +99,10 @@ enum AIRulesTemplate {
     - `Driveway and Flatwork` vs `Concrete Slabs`: use `Driveway and Flatwork` for exterior non-structural pavement such as driveway, sidewalk, walkway, pool deck, and hardscape. Use `Concrete Slabs` for garage, porch, patio, or interior slab areas connected to the house.
     - `Masonry Veneer` vs `Foundation / Grade Beam`: use `Masonry Veneer` when the visible distress is in brick/stone/mortar. Use `Foundation / Grade Beam` only when the concrete foundation or foundation-to-veneer interface is visible.
     - `Stucco / Exterior Finish` vs `Exterior Trim / Siding / Soffit`: use `Stucco / Exterior Finish` for stucco field cracking, stucco termination, weep screed, or stucco-to-window conditions. Use `Exterior Trim / Siding / Soffit` for trim boards, frieze boards, soffits, and cement-board siding.
-    - `Interior Wall Finish` vs `Interior Ceiling Finish`: choose based on the surface containing the main crack/separation. If both are visible and report-worthy, use both primaries.
+    - `Interior Wall and Ceiling Sheetrock Finish` covers cracks, separations, and stains on either wall or ceiling sheetrock — a single primary spans both surfaces. Use `Ceiling sheetrock crack` for the ceiling-specific case and `Wall sheetrock crack` for the wall-specific case; otherwise pick whichever joint / corner secondary best describes the geometry visible.
     - `Flooring` vs `Floor Slope / Levelness`: use `Flooring` for cracks, loose tile, flooring separation, or rippled floor finishes. Use `Floor Slope / Levelness` only when slope/levelness is visually or measurably the main subject.
-    - `Roof / Attic Framing` vs `Roofing / Roof Covering`: use framing for rafters, purlins, braces, trusses, sheathing, OSB, fasteners, and attic structural connections. Use roofing for shingles, metal panels, roof coverings, roof edges, flashing, and roof-surface conditions.
-    - `Moisture Intrusion / Staining` can be paired with another component tag when staining is visible on the component. Example: moisture-stained ceiling tile can be `Interior Ceiling Finish` plus `Moisture Intrusion / Staining`.
-    - `Prior Repair / Patch` should be a second tag when the photo primarily documents a crack or distress passing through a repaired area. Use it alone only when the repair/patch itself is the subject.
+    - `Roof / Attic Framing` vs `Roofing`: use framing for rafters, trusses, sheathing, fasteners, and attic structural connections. Use `Roofing` for shingles, metal panels, roof coverings, and roof-surface conditions.
+    - `Moisture Intrusion / Staining` can be paired with another component tag when staining is visible on the component. Example: a moisture stain on a ceiling can be tagged as `Interior Wall and Ceiling Sheetrock Finish` plus `Moisture Intrusion / Staining`.
     - `Measurement / Instrument Readout` is a second tag unless the photo is only a readout/tool with no visible condition.
 
     Worked examples
@@ -131,9 +129,9 @@ enum AIRulesTemplate {
 
     {
       "photo_id": "IMG_0101.jpg",
-      "primary_tags": ["General Exterior Context"],
-      "secondary_tags_by_primary": {"General Exterior Context": ["Front elevation overview"]},
-      "tag_confidences": {"General Exterior Context": 0.96, "Front elevation overview": 0.92},
+      "primary_tags": ["General Exterior Orientation"],
+      "secondary_tags_by_primary": {"General Exterior Orientation": ["Front elevation overview"]},
+      "tag_confidences": {"General Exterior Orientation": 0.96, "Front elevation overview": 0.92},
       "location_inferred": "Exterior - Front",
       "scale_present": "Relative",
       "measurement_visible": null,
@@ -181,47 +179,29 @@ enum AIRulesTemplate {
       "reviewer_flag": ""
     }
 
-    Example 5 — Historical aerial image (aerial/historical):
-
-    {
-      "photo_id": "IMG_0450.jpg",
-      "primary_tags": ["Aerial / Historical Site Context"],
-      "secondary_tags_by_primary": {"Aerial / Historical Site Context": ["Historical aerial image", "Tree removal context"]},
-      "tag_confidences": {"Aerial / Historical Site Context": 0.92, "Historical aerial image": 0.90, "Tree removal context": 0.78},
-      "location_inferred": "Aerial",
-      "scale_present": "No",
-      "measurement_visible": null,
-      "summary_observation": "Historical aerial image of the site showing a tree present in a location that is now cleared.",
-      "caption_draft": "Historical aerial showing prior tree at front-yard location.",
-      "recommended_use": "Appendix only",
-      "confidence": "Medium",
-      "confidence_note": "tree species and exact date not determinable from image",
-      "reviewer_flag": ""
-    }
-
-    Example 6 — Blurry/partial photo (poor/obstructed):
+    Example 5 — Blurry photo (poor/obstructed):
 
     {
       "photo_id": "IMG_0512.jpg",
       "primary_tags": ["Photo Quality / Re-shoot"],
-      "secondary_tags_by_primary": {"Photo Quality / Re-shoot": ["Blurry image", "Distress cropped off"]},
-      "tag_confidences": {"Photo Quality / Re-shoot": 0.86, "Blurry image": 0.88, "Distress cropped off": 0.74},
+      "secondary_tags_by_primary": {"Photo Quality / Re-shoot": ["Blurry image"]},
+      "tag_confidences": {"Photo Quality / Re-shoot": 0.86, "Blurry image": 0.88},
       "location_inferred": "Unknown",
       "scale_present": "No",
       "measurement_visible": null,
-      "summary_observation": "Image is blurry and a possible crack at the edge of the frame is not fully captured.",
+      "summary_observation": "Image is blurry and the subject condition cannot be confidently identified.",
       "caption_draft": "Image quality limits identification of the subject condition.",
       "recommended_use": "Re-shoot recommended",
       "confidence": "Low",
-      "confidence_note": "blurry, distress not fully framed",
-      "reviewer_flag": "re-shoot of suspected crack at right edge of frame"
+      "confidence_note": "blurry; subject indistinct",
+      "reviewer_flag": "re-shoot recommended for this view"
     }
 
     Final checks before returning
 
     - Every primary tag and every secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
     - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If no listed secondary fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
-    - Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Many secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Incomplete backfill` is under `Soil / Backfill / Excavation`, not `Drainage / Grading`) — check the actual location, do not guess from the name.
+    - Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Some secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Moisture-stained roof sheathing` is under `Roof / Attic Framing`, while `Moisture stain on roof sheathing` is under `Moisture Intrusion / Staining`) — check the actual location, do not guess from the name.
     - Use the exact primary tag names as listed in the controlled vocabulary below. Do not prefix them with numbers, dashes, or any other characters.
     - Re-read `summary_observation` and `caption_draft`. If either contains `caused by`, `due to`, `resulting from`, `settlement`, `heave`, `soil movement`, or a severity word (minor, moderate, severe, extensive, significant), revise to remove the engineering interpretation and describe only what is visible.
     """

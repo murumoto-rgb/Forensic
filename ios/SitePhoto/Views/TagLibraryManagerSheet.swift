@@ -18,6 +18,7 @@ struct TagLibraryManagerSheet: View {
     @State private var showingAddContextPrompt: Bool = false
     @State private var renamingContext: InvestigationContext?
     @State private var renameContextDraft: String = ""
+    @State private var showingRestoreConfirm: Bool = false
 
     private var contexts: [InvestigationContext] { store.tagLibrary.contexts }
 
@@ -25,11 +26,20 @@ struct TagLibraryManagerSheet: View {
         NavigationStack {
             Group {
                 if contexts.isEmpty {
-                    EmptyStateView(
-                        icon: "books.vertical",
-                        title: "Library is empty",
-                        message: "Add an Investigation Context to start. Each context holds primary tags, and each primary tag holds secondary tags."
-                    )
+                    VStack(spacing: 16) {
+                        EmptyStateView(
+                            icon: "books.vertical",
+                            title: "Library is empty",
+                            message: "Add an Investigation Context to start. Each context holds primary tags, and each primary tag holds secondary tags."
+                        )
+                        Button(role: .destructive) {
+                            showingRestoreConfirm = true
+                        } label: {
+                            Label("Restore to default seed",
+                                  systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 } else {
                     List {
                         ForEach(contexts) { ctx in
@@ -50,6 +60,17 @@ struct TagLibraryManagerSheet: View {
                                 _ = store.deleteTagContext(ctx.id)
                             }
                             Haptics.confirm()
+                        }
+
+                        Section {
+                            Button(role: .destructive) {
+                                showingRestoreConfirm = true
+                            } label: {
+                                Label("Restore to default seed",
+                                      systemImage: "arrow.uturn.backward")
+                            }
+                        } footer: {
+                            Text("Replaces every context, primary, and secondary with the bundled default vocabulary. Project tag selections and the AI Tagging Rules template are not affected.")
                         }
                     }
                 }
@@ -91,6 +112,20 @@ struct TagLibraryManagerSheet: View {
                 TextField("Name", text: $renameContextDraft)
                 Button("Save") { commitContextRename() }
                 Button("Cancel", role: .cancel) { renamingContext = nil }
+            }
+            .confirmationDialog(
+                "Restore tag library to default?",
+                isPresented: $showingRestoreConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Restore", role: .destructive) {
+                    store.restoreTagLibraryToDefaults()
+                    Haptics.confirm()
+                    toastCenter.post("Tag library restored to default", kind: .success)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This replaces every context, primary, and secondary you've edited with the bundled vocabulary. Project tag selections and the rules template are left alone.")
             }
         }
     }

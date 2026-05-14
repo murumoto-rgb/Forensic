@@ -1,13 +1,13 @@
 ============================================================
-AI TAGGING PROMPT — Forensic Investigation (v2)
+AI TAGGING PROMPT — Forensic Investigation (v3)
 ============================================================
 
 This is the exact set of instructions sent to Claude when the app
 tags a photo on a project that selected every primary in the
-default "Forensic Investigation" context (v2). Compiled by
+default "Forensic Investigation" context. Compiled by
 ios/SitePhoto/Models/PromptCompiler.swift from these sources:
   - System preamble — PromptCompiler.systemPreamble (constant)
-  - Rules template  — AIRulesTemplate.defaultText (v2)
+  - Rules template  — AIRulesTemplate.defaultText
   - Vocabulary      — TagLibrary.defaultSeeds Forensic Investigation context
   - Output contract — PromptCompiler.outputContract (constant)
   - User message    — ClaudeTaggingService.userPrompt(photoID:)
@@ -16,23 +16,24 @@ Order matches what Claude sees on the wire. Blocks marked
 [cacheable] carry `cache_control: ephemeral` so Anthropic's prompt
 cache can reuse them across photos in the same batch.
 
-What changed from the v1 prompt (for reference):
-  - Vocabulary flattened to a single context with 26 primaries.
-  - New context primaries (General Exterior/Interior/Site/Aerial)
-    are now in the project vocabulary (v1 had them in a separate
-    context most projects never selected).
-  - Foundation - Exterior split into Foundation / Grade Beam +
-    Concrete Slabs - Garage / Porch / Patio / Interior.
-  - Masonry → Masonry Veneer; Walls/Ceilings → Interior Wall/
-    Ceiling Finish; Roofing/Framing/Stucco/Photo Quality each
-    folded into the flat context.
-  - Added Moisture Intrusion / Staining, Pool / Gazebo / Site
-    Structure, Measurement / Instrument Readout.
-  - Pruned interpretation tags (Overall tilt indicator,
-    Localized deflection indicator, Water accumulation risk
-    visible, Significant floor slope).
-  - Rules template gains an explicit 6-step decision workflow,
-    a disambiguation guide, and 6 worked JSON examples.
+What changed from the previous (v2) seed (for reference):
+  - Vocab tightened from 26 primaries / 318 secondaries to
+    22 primaries / 175 secondaries, curated by the engineer
+    against real photos.
+  - Removed primaries: Aerial / Historical Site Context,
+    Prior Repair / Patch, Soil / Backfill / Excavation.
+  - Merged: Interior Wall Finish + Interior Ceiling Finish
+    → Interior Wall and Ceiling Sheetrock Finish.
+  - Renamed: General Exterior Context → General Exterior
+    Orientation; General Interior Context → General Interior
+    Orientation; Roofing / Roof Covering → Roofing.
+  - Many secondaries pruned for clarity; new entries include
+    Drainage visually away from foundation, Tile distress,
+    Moisture stain on sheetrock, Moisture meter reading,
+    Wood deterioration or staining from water exposure.
+  - Rules template's "aerial/historical" photo class removed
+    from step 1; example 5 (aerial) dropped; example 6
+    (blurry) renumbered to example 5.
 
 ------------------------------------------------------------
 SYSTEM MESSAGE
@@ -71,8 +72,7 @@ Required workflow before tagging
 1. Identify the photo type:
    - context/overview — establishes location, elevation, room, attic, yard, or exterior side.
    - close-up distress — shows a crack, separation, displacement, stain, spall, distorted material, poor connection, or other condition.
-   - measurement/readout — shows a level, ruler, tape, crack comparator, ZipLevel, or other measurement.
-   - aerial/historical — shows trees, site changes, drainage patterns, or site context from above.
+   - measurement/readout — shows a level, ruler, tape, crack comparator, ZipLevel, moisture meter, or other measurement.
    - poor/obstructed — too blurry, too dark, too close, or obstructed to reliably classify.
 2. Identify the main visible component, not the presumed cause. Examples: grade beam, garage slab, driveway, brick veneer, sheetrock wall, ceiling, tile floor, door, attic framing, roofing, downspout, soil, pool deck.
 3. Identify only visible conditions. Do not infer final cause, assign severity, or diagnose foundation movement from a single photograph unless the visual evidence itself is the item being tagged.
@@ -82,11 +82,11 @@ Required workflow before tagging
 
 Core rules
 
-- Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Context`, `General Interior Context`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Room overview`). Do not force a distress tag onto a clean overview photo.
+- Context photos are valuable. Tag them with a context primary (e.g. `General Exterior Orientation`, `General Interior Orientation`, `General Site / Yard Context`) and the most specific overview / context secondary listed under that primary (e.g. `Front elevation overview`, `Interior overview`). Do not force a distress tag onto a clean overview photo.
 - Prefer the component actually shown. For example, tag a crack in brick veneer as `Masonry Veneer`, not `Foundation / Grade Beam`, unless the concrete grade beam crack is visible.
 - Prefer directly visible geometry over mechanism. Use `Flat drainage`, `Negative drainage toward foundation`, `Downspout discharging near foundation`, or `Local ponding evidence`, not causal statements.
 - Do not state `caused by`, `due to`, `resulting from`, `settlement`, `heave`, or `soil movement` in `summary_observation` or `caption_draft` unless those words are visible text in the photo. The report writer can connect the photographs to engineering opinions later.
-- Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing / Roof Covering` unless the photo shows roofing distress or the roof is the intentional subject.
+- Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing` unless the photo shows roofing distress or the roof is the intentional subject.
 - Do not assign severity labels such as minor, moderate, severe, extensive, or significant in the tags or captions. Describe what is visible.
 - When the photo includes both a measurement tool and the measured condition, tag the condition as primary. Add `Measurement / Instrument Readout` as a second primary only when the readout/tool is important to the photograph.
 - If a finding is only barely visible, use a general secondary and lower confidence rather than a very specific secondary.
@@ -117,11 +117,10 @@ Disambiguation guide
 - `Driveway and Flatwork` vs `Concrete Slabs`: use `Driveway and Flatwork` for exterior non-structural pavement such as driveway, sidewalk, walkway, pool deck, and hardscape. Use `Concrete Slabs` for garage, porch, patio, or interior slab areas connected to the house.
 - `Masonry Veneer` vs `Foundation / Grade Beam`: use `Masonry Veneer` when the visible distress is in brick/stone/mortar. Use `Foundation / Grade Beam` only when the concrete foundation or foundation-to-veneer interface is visible.
 - `Stucco / Exterior Finish` vs `Exterior Trim / Siding / Soffit`: use `Stucco / Exterior Finish` for stucco field cracking, stucco termination, weep screed, or stucco-to-window conditions. Use `Exterior Trim / Siding / Soffit` for trim boards, frieze boards, soffits, and cement-board siding.
-- `Interior Wall Finish` vs `Interior Ceiling Finish`: choose based on the surface containing the main crack/separation. If both are visible and report-worthy, use both primaries.
+- `Interior Wall and Ceiling Sheetrock Finish` covers cracks, separations, and stains on either wall or ceiling sheetrock — a single primary spans both surfaces. Use `Ceiling sheetrock crack` for the ceiling-specific case and `Wall sheetrock crack` for the wall-specific case; otherwise pick whichever joint / corner secondary best describes the geometry visible.
 - `Flooring` vs `Floor Slope / Levelness`: use `Flooring` for cracks, loose tile, flooring separation, or rippled floor finishes. Use `Floor Slope / Levelness` only when slope/levelness is visually or measurably the main subject.
-- `Roof / Attic Framing` vs `Roofing / Roof Covering`: use framing for rafters, purlins, braces, trusses, sheathing, OSB, fasteners, and attic structural connections. Use roofing for shingles, metal panels, roof coverings, roof edges, flashing, and roof-surface conditions.
-- `Moisture Intrusion / Staining` can be paired with another component tag when staining is visible on the component. Example: moisture-stained ceiling tile can be `Interior Ceiling Finish` plus `Moisture Intrusion / Staining`.
-- `Prior Repair / Patch` should be a second tag when the photo primarily documents a crack or distress passing through a repaired area. Use it alone only when the repair/patch itself is the subject.
+- `Roof / Attic Framing` vs `Roofing`: use framing for rafters, trusses, sheathing, fasteners, and attic structural connections. Use `Roofing` for shingles, metal panels, roof coverings, and roof-surface conditions.
+- `Moisture Intrusion / Staining` can be paired with another component tag when staining is visible on the component. Example: a moisture stain on a ceiling can be tagged as `Interior Wall and Ceiling Sheetrock Finish` plus `Moisture Intrusion / Staining`.
 - `Measurement / Instrument Readout` is a second tag unless the photo is only a readout/tool with no visible condition.
 
 Worked examples
@@ -148,9 +147,9 @@ Example 2 — Clean exterior overview (context/overview):
 
 {
   "photo_id": "IMG_0101.jpg",
-  "primary_tags": ["General Exterior Context"],
-  "secondary_tags_by_primary": {"General Exterior Context": ["Front elevation overview"]},
-  "tag_confidences": {"General Exterior Context": 0.96, "Front elevation overview": 0.92},
+  "primary_tags": ["General Exterior Orientation"],
+  "secondary_tags_by_primary": {"General Exterior Orientation": ["Front elevation overview"]},
+  "tag_confidences": {"General Exterior Orientation": 0.96, "Front elevation overview": 0.92},
   "location_inferred": "Exterior - Front",
   "scale_present": "Relative",
   "measurement_visible": null,
@@ -198,47 +197,29 @@ Example 4 — Measurement-only photo (measurement/readout):
   "reviewer_flag": ""
 }
 
-Example 5 — Historical aerial image (aerial/historical):
-
-{
-  "photo_id": "IMG_0450.jpg",
-  "primary_tags": ["Aerial / Historical Site Context"],
-  "secondary_tags_by_primary": {"Aerial / Historical Site Context": ["Historical aerial image", "Tree removal context"]},
-  "tag_confidences": {"Aerial / Historical Site Context": 0.92, "Historical aerial image": 0.90, "Tree removal context": 0.78},
-  "location_inferred": "Aerial",
-  "scale_present": "No",
-  "measurement_visible": null,
-  "summary_observation": "Historical aerial image of the site showing a tree present in a location that is now cleared.",
-  "caption_draft": "Historical aerial showing prior tree at front-yard location.",
-  "recommended_use": "Appendix only",
-  "confidence": "Medium",
-  "confidence_note": "tree species and exact date not determinable from image",
-  "reviewer_flag": ""
-}
-
-Example 6 — Blurry/partial photo (poor/obstructed):
+Example 5 — Blurry photo (poor/obstructed):
 
 {
   "photo_id": "IMG_0512.jpg",
   "primary_tags": ["Photo Quality / Re-shoot"],
-  "secondary_tags_by_primary": {"Photo Quality / Re-shoot": ["Blurry image", "Distress cropped off"]},
-  "tag_confidences": {"Photo Quality / Re-shoot": 0.86, "Blurry image": 0.88, "Distress cropped off": 0.74},
+  "secondary_tags_by_primary": {"Photo Quality / Re-shoot": ["Blurry image"]},
+  "tag_confidences": {"Photo Quality / Re-shoot": 0.86, "Blurry image": 0.88},
   "location_inferred": "Unknown",
   "scale_present": "No",
   "measurement_visible": null,
-  "summary_observation": "Image is blurry and a possible crack at the edge of the frame is not fully captured.",
+  "summary_observation": "Image is blurry and the subject condition cannot be confidently identified.",
   "caption_draft": "Image quality limits identification of the subject condition.",
   "recommended_use": "Re-shoot recommended",
   "confidence": "Low",
-  "confidence_note": "blurry, distress not fully framed",
-  "reviewer_flag": "re-shoot of suspected crack at right edge of frame"
+  "confidence_note": "blurry; subject indistinct",
+  "reviewer_flag": "re-shoot recommended for this view"
 }
 
 Final checks before returning
 
 - Every primary tag and every secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
 - Every secondary tag appears verbatim under its chosen primary in the controlled vocabulary below. If no listed secondary fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
-- Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Many secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Incomplete backfill` is under `Soil / Backfill / Excavation`, not `Drainage / Grading`) — check the actual location, do not guess from the name.
+- Cross-check secondary placement: for every secondary you emitted, locate that exact spelling in the controlled vocabulary block below and read the `Primary tag:` it sits under. That primary MUST be in your `primary_tags`. If it isn't, either (a) change your primary to that primary, or (b) replace the secondary with one that's actually listed under your chosen primary. Some secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` is under `Measurement / Instrument Readout`, while `Digital level reading shown` is under `Floor Slope / Levelness`; `Moisture-stained roof sheathing` is under `Roof / Attic Framing`, while `Moisture stain on roof sheathing` is under `Moisture Intrusion / Staining`) — check the actual location, do not guess from the name.
 - Use the exact primary tag names as listed in the controlled vocabulary below. Do not prefix them with numbers, dashes, or any other characters.
 - Re-read `summary_observation` and `caption_draft`. If either contains `caused by`, `due to`, `resulting from`, `settlement`, `heave`, `soil movement`, or a severity word (minor, moderate, severe, extensive, significant), revise to remove the engineering interpretation and describe only what is visible.
 
@@ -248,83 +229,71 @@ Controlled vocabulary for this project:
 
 INVESTIGATION CONTEXT: Forensic Investigation
 
-Primary tag: General Exterior Context
-Secondary tags: Front elevation overview, Rear elevation overview, Left elevation overview, Right elevation overview, Exterior material context, Exterior opening context, Foundation perimeter context, Garage exterior context, Porch / patio context, Roof overview context
+Primary tag: General Exterior Orientation
+Secondary tags: Front elevation overview, Rear elevation overview, Left elevation overview, Right elevation overview, Exterior material context, Porch / patio context
 
-Primary tag: General Interior Context
-Secondary tags: Room overview, Wall overview, Ceiling overview, Floor overview, Door / window overview, Cabinet / trim overview, Stair overview, Garage interior overview
+Primary tag: General Interior Orientation
+Secondary tags: Interior overview
 
 Primary tag: General Site / Yard Context
-Secondary tags: Yard overview, Side yard overview, Rear yard overview, Adjacent property context, Retaining wall context, Drainage path context, Hardscape context, Grade change context
-
-Primary tag: Aerial / Historical Site Context
-Secondary tags: Historical aerial image, Tree removal context, Prior tree location, Site grading context, Ponding / drainage history, Adjacent lot condition, Pre-construction site context
+Secondary tags: Yard overview, Side yard overview, Rear yard overview, Retaining wall context, Drainage path context, Hardscape context, Grade change context
 
 Primary tag: Drainage / Grading
-Secondary tags: Adequate drainage, Marginal drainage, Flat drainage, Negative drainage toward foundation, Inadequate soil-to-finished-floor clearance, Downspout discharging near foundation, Downspout extension present, Missing or limited gutters/downspouts, Local ponding evidence, Standing water, Soil staining from ponding, Drainage swale / drainage channel, Area drain / surface drain, Trench drain / sump pit, Retaining wall drainage context, Landscape bed affecting drainage
+Secondary tags: Drainage visually away from foundation, Marginal or flat drainage adjacent to foundation, Negative drainage toward foundation, Inadequate soil-to-finished-floor clearance, Downspout discharging near foundation, Downspout extension present, Local ponding evidence, Standing water, Area drain / surface drain, Trench drain / sump pit, Landscape bed adjacent to foundation
 
 Primary tag: Foundation / Grade Beam
-Secondary tags: Grade beam crack, Foundation corner crack, Broken grade beam corner, Brick ledge crack, Foundation-to-veneer interface distress, Parge coat crack, Parge coat raveling, Parge coat crazing, Concrete spall, Anchor-related concrete damage, Poorly consolidated concrete visible, Deteriorated concrete at crack, Exposed foundation distress, Crack wider at top, Crack wider at bottom, Vertical crack, Diagonal / irregular crack, Vertical-to-diagonal crack
+Secondary tags: Grade beam crack, Foundation corner crack, Brick ledge crack, Foundation-to-veneer interface distress, Parge coat crack, Parge coat raveling, Parge coat crazing, Concrete spall, Poorly consolidated concrete visible, Deteriorated concrete, Crack wider at top, Crack wider at bottom, Vertical crack, Diagonal / irregular crack, Vertical-to-diagonal crack
 
 Primary tag: Concrete Slabs - Garage / Porch / Patio / Interior
-Secondary tags: Garage slab crack, Porch slab crack, Patio slab crack, Interior slab crack, Concrete slab crack under floor finish, Differential elevation across slab crack, Displaced concrete, Slab edge crack, Concrete crazing, Slab patch, Slab breakout area, Reverse slope visible, Surface staining at slab
+Secondary tags: Garage slab crack, Porch slab crack, Patio slab crack, Interior slab crack, Differential elevation across slab crack, Displaced concrete, Slab edge crack, Concrete crazing, Slab patch, Slab breakout area, Surface staining at slab
 
 Primary tag: Driveway and Flatwork
-Secondary tags: Driveway crack, Walkway crack, Sidewalk crack, Flatwork crack, Control-joint-adjacent crack, Panel separation, Separation from foundation, Separation at garage threshold, Elevation offset, Drop in driveway elevation, Flatwork settlement, Flatwork heave, Loss of support / void, Step / trip hazard, Pool deck flatwork movement
+Secondary tags: Driveway crack, Sidewalk crack, Flatwork crack, Control-joint-adjacent crack, Panel separation, Separation from foundation, Separation at garage threshold, Elevation offset, Drop in driveway elevation, Loss of support / void, Step / trip hazard
 
 Primary tag: Masonry Veneer
-Secondary tags: Brick crack, Stone crack, Mortar joint crack, Stair-step crack, Vertical crack, Diagonal crack, Crack through masonry unit, Masonry separation, Masonry displacement, Masonry out of plane, Masonry-to-trim separation, Masonry-to-siding separation, Masonry-to-window separation, Masonry-to-roof interface separation, Masonry-to-foundation separation, Fireplace masonry separation, Expansion joint wide / stretched, Expansion joint compressed, Expansion joint torn / failed, Sealant cracked at masonry, Sealant missing at masonry, Prior masonry repair
+Secondary tags: Mortar joint crack, Stair-step crack, Crack through masonry unit, Masonry-to-trim separation, Masonry-to-siding separation, Masonry-to-window separation, Masonry-to-roof interface separation, Masonry-to-foundation separation, Fireplace masonry separation, Expansion joint wide / stretched, Expansion joint compressed, Expansion joint torn / failed, Sealant cracked at masonry, Prior masonry repair
 
 Primary tag: Stucco / Exterior Finish
-Secondary tags: Stucco crack, Stucco separation, Stucco distortion, Stucco control joint missing / limited, Stucco-to-window termination issue, Stucco-to-door termination issue, Weep screed missing / not visible, Drainage plane issue visible, Damp sheathing visible, Paint / coating distress, Prior stucco repair, Gap at cladding transition
+Secondary tags: Stucco crack, Stucco separation, Paint / coating distress, Prior stucco repair, Gap at cladding transition
 
 Primary tag: Exterior Trim / Siding / Soffit
-Secondary tags: Exterior trim crack, Exterior trim separation, Exterior trim misalignment, Frieze board separation, Soffit separation, Siding separation, Siding joint separation, Siding distortion, Cement board siding separation, Cement board siding too close to slab, Window trim separation, Door trim separation, Prior exterior finish repair
+Secondary tags: Exterior trim crack, Exterior trim separation, Exterior trim misalignment, Frieze board separation, Soffit separation, Siding separation, Siding joint separation, Siding distortion, Window trim separation, Door trim separation, Prior exterior finish repair
 
-Primary tag: Interior Wall Finish
-Secondary tags: Wall sheetrock crack, Corner crack, Door / window corner crack, Wall-to-wall joint crack, Wall-to-ceiling joint crack, Wall separation, Bottom of wall separated from floor, Loose / unattached wall, Wall can be moved by hand, Out-of-plumb wall, Distorted wall framing visible, Previous wall repair, Texture / paint mismatch, Moisture stain on wall
-
-Primary tag: Interior Ceiling Finish
-Secondary tags: Ceiling sheetrock crack, Ceiling separation, Ceiling buckling, Ceiling pulled from joists, Ceiling detached from framing, Ceiling distress near stairs, Wall-to-ceiling joint crack, Previous ceiling repair, Texture / paint mismatch, Moisture stain on ceiling
+Primary tag: Interior Wall and Ceiling Sheetrock Finish
+Secondary tags: Wall sheetrock crack, Door / window corner crack, Wall-to-wall joint crack, Wall-to-ceiling joint crack, Bottom of wall separated from floor, Loose / unattached wall, Out-of-plumb wall, Previous wall repair, Texture / paint mismatch, Moisture stain on sheetrock, Ceiling sheetrock crack
 
 Primary tag: Flooring
-Secondary tags: Floor tile crack, Grout crack, Tile crack aligned with slab crack, Loose tile, Bathroom tile distress, Shower tile joint crack, Flooring joint separation, Wood flooring separation, Wood flooring hump / unevenness, Second-floor flooring separation, Rippled vinyl flooring, Uneven flooring, Floor finish separation, Previous flooring repair
+Secondary tags: Floor tile crack, Grout crack, Loose tile, Tile distress, Wood flooring separation, Wood flooring hump / unevenness, Rippled vinyl flooring, Floor finish separation, Previous flooring repair
 
 Primary tag: Interior Trim / Cabinets / Counters
 Secondary tags: Baseboard separation, Baseboard distortion, Baseboard-to-floor gap, Interior trim separation, Door casing separation, Crown molding crack / separation, Cabinet separation from wall, Countertop slope, Counter / cabinet misalignment, Windowsill separation, Prior trim repair
 
 Primary tag: Doors / Windows
-Secondary tags: Door out of plumb, Door racked, Door rubs frame, Door does not latch, Door difficult to open, Door jammed / inoperable, Door self-opens / self-closes, Door frame misalignment, Door frame crack / separation, Window out of plumb, Window frame separation, Window difficult to operate, Window / door functional issue, Safety / egress concern visible
+Secondary tags: Door out of plumb, Door racked, Door rubs frame, Door does not latch, Door frame crack / separation, Window out of plumb
 
 Primary tag: Floor Slope / Levelness
-Secondary tags: Visible floor slope, Measured floor slope, Digital level reading shown, Level reading shown, Counter slope, Uneven floor, Garage reverse slope, Garage drains toward interior, Porch reverse slope, Patio reverse slope, Exterior slab drains toward house
+Secondary tags: Measured floor slope, Digital level reading shown, Level reading shown
 
 Primary tag: Roof / Attic Framing
-Secondary tags: Attic framing overview, Rafter twisted / warped, Rafter gap at ridge, Exposed fasteners, Loose / untight framing connection, Disconnected brace, Ridge brace issue, Purlin brace issue, Brace supported on flat member, Missing matching rafter, Scabbed framing / OSB, Scrap lumber fit-up, Notched rafter, Inadequate support visible, Truss plate / gang nail distress, Sheathing gap, Sheathing fastener issue, Ceiling pulled from framing, Moisture-stained roof sheathing
+Secondary tags: Attic framing overview, Rafter twisted / warped, Exposed fasteners, Loose / untight framing connection, Scrap lumber fit-up, Truss plate / gang nail distress, Sheathing gap, Moisture-stained roof sheathing
 
-Primary tag: Roofing / Roof Covering
-Secondary tags: Roof overview, Buckled shingles, Wavy / wrinkled shingles, Damaged shingles, Metal roof context, Roof edge / eave issue, Roof penetration / flashing context, Roof leak repair context, Roofing installation concern visible
+Primary tag: Roofing
+Secondary tags: Roof overview, Buckled shingles, Wavy / wrinkled shingles, Damaged shingles, Metal roof context
 
 Primary tag: Moisture Intrusion / Staining
-Secondary tags: Moisture stain on ceiling, Moisture stain on wall, Moisture stain on roof sheathing, Moisture stain on slab / patio, Water intrusion evidence, Localized repair from water intrusion, Damp sheathing visible, Efflorescence / mineral staining, Sealant failure with staining, Ponding-related staining
-
-Primary tag: Prior Repair / Patch
-Secondary tags: Prior foundation repair, Prior concrete patch, Prior slab breakout, Prior masonry repair, Prior stucco repair, Prior drywall repair, Prior flooring repair, Prior cosmetic repair, Patch visible, Texture / paint mismatch, Crack through prior repair, Recurrent distress, Repair excavation not fully backfilled
-
-Primary tag: Soil / Backfill / Excavation
-Secondary tags: Soil erosion, Soil void, Incomplete backfill, Exposed excavation area, Backfill settlement, Soil against foundation, Low clearance to soil, Concrete curb against foundation, Landscape border near foundation, Soil moisture indicator, Exposed root / root-zone context
+Secondary tags: Moisture stain on ceiling, Moisture stain on wall, Moisture stain on roof sheathing, Moisture stain on slab / patio, Water intrusion evidence, Localized repair from water intrusion, Damp sheathing visible, Efflorescence / mineral staining, Wood deterioration or staining from water exposure, Sealant failure with staining, Ponding-related staining
 
 Primary tag: Trees / Vegetation / Landscaping
-Secondary tags: Mature tree near foundation, Removed tree area, Prior tree location, Tree root zone near foundation, Vegetation near foundation, Flower bed near foundation, Landscape border near foundation, Landscaping affects drainage, Vegetation / moisture context
+Secondary tags: Mature tree near foundation, Removed tree area, Prior tree location
 
 Primary tag: Pool / Gazebo / Site Structure
-Secondary tags: Pool overview, Pool waterline uneven, Pool coping movement, Pool deck movement, Gazebo overview, Gazebo foundation distress, Gazebo parge coat crack, Erosion below gazebo foundation, Column joint separation, Step crack / distress, Retaining wall context, Retaining wall distress
+Secondary tags: Pool overview, Pool waterline uneven, Pool coping elevation difference, Pool deck elevation difference
 
 Primary tag: Measurement / Instrument Readout
-Secondary tags: Ruler / tape visible, Crack comparator visible, Digital level visible, ZipLevel / elevation equipment visible, Measurement number visible, Crack width measurement, Floor slope measurement, Elevation reading, Scale reference present, Measurement unclear / obstructed
+Secondary tags: Ruler / tape visible, Crack comparator visible, Digital level visible, ZipLevel / elevation equipment visible, Moisture meter reading, Measurement number visible, Floor slope measurement, Scale reference present, Measurement unclear / obstructed
 
 Primary tag: Photo Quality / Re-shoot
-Secondary tags: Blurry image, Too dark, Overexposed, Obstructed view, Too close to identify component, Too far to see distress, Distress cropped off, Measurement unreadable, Location not discernible
+Secondary tags: Blurry image, Too dark, Overexposed
 
 ----- BLOCK 3 [not cacheable] : output contract reinforcement -----
 
@@ -354,9 +323,9 @@ NOTES
     Additional notes for this project:
     <engineer's free-text notes>
 
-- The rules template (Block 1, after the preamble) is user-editable from Settings → AI Tagging → Rules Template. The text above is the v2 seed default shipped with the app. If your project has been customised, the rendered prompt will differ accordingly.
+- The rules template (Block 1, after the preamble) is user-editable from Settings → AI Tagging → Rules Template. The text above is the seed default shipped with the app. If your project has been customised, the rendered prompt will differ accordingly.
 
-- The vocabulary above reflects EVERY primary + secondary in the v2 Forensic Investigation context as seeded by TagLibrary.defaultSeeds. New projects created after this change get every primary pre-selected by default; engineers can deselect any they don't need via the AI Tags picker.
+- The vocabulary above reflects EVERY primary + secondary in the curated Forensic Investigation context as seeded by TagLibrary.defaultSeeds. New projects created after this change get every primary pre-selected by default; engineers can deselect any they don't need via the AI Tags picker.
 
 ------------------------------------------------------------
 REPAIR RETRY (per-photo, conditional)
@@ -376,7 +345,7 @@ The repair user message is composed by
 `ClaudeTaggingService.repairUserPrompt(errors:)` and looks like:
 
     The previous response had vocabulary issues the validator flagged:
-    - Secondary "Incomplete backfill" is not listed under primary "Drainage / Grading".
+    - Secondary "<name>" is not listed under primary "<name>".
     - <other validator-emitted error strings>
 
     Re-emit the JSON object for this photo. For each problem secondary,

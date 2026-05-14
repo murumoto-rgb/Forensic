@@ -752,6 +752,18 @@ final class ProjectStore {
         }
     }
 
+    /// Replace the persisted tag library with `TagLibrary.defaultSeeds`.
+    /// Engineer-initiated path only — invoked from the "Restore to
+    /// default seed" button in the Tag Library Manager. Intentionally
+    /// scoped narrowly: project tag selections and the rules template
+    /// are NOT touched. Selections that referenced a primary that no
+    /// longer exists silently drop out of the picker on next read,
+    /// which is the same behaviour the picker uses for any stale ID.
+    func restoreTagLibraryToDefaults() {
+        tagLibrary = TagLibrary.defaultSeeds
+        persistTagLibrary()
+    }
+
     // Contexts ----------------------------------------------------------
 
     @discardableResult

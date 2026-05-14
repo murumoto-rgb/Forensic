@@ -158,80 +158,51 @@ extension TagLibrary {
         contexts: [
             .init(name: "Forensic Investigation", primaries: [
                 // ── Context / overview ────────────────────────────────
-                .init(name: "General Exterior Context", secondaries: [
+                .init(name: "General Exterior Orientation", secondaries: [
                     "Front elevation overview",
                     "Rear elevation overview",
                     "Left elevation overview",
                     "Right elevation overview",
                     "Exterior material context",
-                    "Exterior opening context",
-                    "Foundation perimeter context",
-                    "Garage exterior context",
-                    "Porch / patio context",
-                    "Roof overview context"
+                    "Porch / patio context"
                 ].map(SecondaryTagEntry.init)),
-                .init(name: "General Interior Context", secondaries: [
-                    "Room overview",
-                    "Wall overview",
-                    "Ceiling overview",
-                    "Floor overview",
-                    "Door / window overview",
-                    "Cabinet / trim overview",
-                    "Stair overview",
-                    "Garage interior overview"
+                .init(name: "General Interior Orientation", secondaries: [
+                    "Interior overview"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "General Site / Yard Context", secondaries: [
                     "Yard overview",
                     "Side yard overview",
                     "Rear yard overview",
-                    "Adjacent property context",
                     "Retaining wall context",
                     "Drainage path context",
                     "Hardscape context",
                     "Grade change context"
                 ].map(SecondaryTagEntry.init)),
-                .init(name: "Aerial / Historical Site Context", secondaries: [
-                    "Historical aerial image",
-                    "Tree removal context",
-                    "Prior tree location",
-                    "Site grading context",
-                    "Ponding / drainage history",
-                    "Adjacent lot condition",
-                    "Pre-construction site context"
-                ].map(SecondaryTagEntry.init)),
                 // ── Site + drainage + foundation concrete ─────────────
                 .init(name: "Drainage / Grading", secondaries: [
-                    "Adequate drainage",
-                    "Marginal drainage",
-                    "Flat drainage",
+                    "Drainage visually away from foundation",
+                    "Marginal or flat drainage adjacent to foundation",
                     "Negative drainage toward foundation",
                     "Inadequate soil-to-finished-floor clearance",
                     "Downspout discharging near foundation",
                     "Downspout extension present",
-                    "Missing or limited gutters/downspouts",
                     "Local ponding evidence",
                     "Standing water",
-                    "Soil staining from ponding",
-                    "Drainage swale / drainage channel",
                     "Area drain / surface drain",
                     "Trench drain / sump pit",
-                    "Retaining wall drainage context",
-                    "Landscape bed affecting drainage"
+                    "Landscape bed adjacent to foundation"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Foundation / Grade Beam", secondaries: [
                     "Grade beam crack",
                     "Foundation corner crack",
-                    "Broken grade beam corner",
                     "Brick ledge crack",
                     "Foundation-to-veneer interface distress",
                     "Parge coat crack",
                     "Parge coat raveling",
                     "Parge coat crazing",
                     "Concrete spall",
-                    "Anchor-related concrete damage",
                     "Poorly consolidated concrete visible",
-                    "Deteriorated concrete at crack",
-                    "Exposed foundation distress",
+                    "Deteriorated concrete",
                     "Crack wider at top",
                     "Crack wider at bottom",
                     "Vertical crack",
@@ -243,19 +214,16 @@ extension TagLibrary {
                     "Porch slab crack",
                     "Patio slab crack",
                     "Interior slab crack",
-                    "Concrete slab crack under floor finish",
                     "Differential elevation across slab crack",
                     "Displaced concrete",
                     "Slab edge crack",
                     "Concrete crazing",
                     "Slab patch",
                     "Slab breakout area",
-                    "Reverse slope visible",
                     "Surface staining at slab"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Driveway and Flatwork", secondaries: [
                     "Driveway crack",
-                    "Walkway crack",
                     "Sidewalk crack",
                     "Flatwork crack",
                     "Control-joint-adjacent crack",
@@ -264,24 +232,14 @@ extension TagLibrary {
                     "Separation at garage threshold",
                     "Elevation offset",
                     "Drop in driveway elevation",
-                    "Flatwork settlement",
-                    "Flatwork heave",
                     "Loss of support / void",
-                    "Step / trip hazard",
-                    "Pool deck flatwork movement"
+                    "Step / trip hazard"
                 ].map(SecondaryTagEntry.init)),
                 // ── Exterior cladding ─────────────────────────────────
                 .init(name: "Masonry Veneer", secondaries: [
-                    "Brick crack",
-                    "Stone crack",
                     "Mortar joint crack",
                     "Stair-step crack",
-                    "Vertical crack",
-                    "Diagonal crack",
                     "Crack through masonry unit",
-                    "Masonry separation",
-                    "Masonry displacement",
-                    "Masonry out of plane",
                     "Masonry-to-trim separation",
                     "Masonry-to-siding separation",
                     "Masonry-to-window separation",
@@ -292,19 +250,11 @@ extension TagLibrary {
                     "Expansion joint compressed",
                     "Expansion joint torn / failed",
                     "Sealant cracked at masonry",
-                    "Sealant missing at masonry",
                     "Prior masonry repair"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Stucco / Exterior Finish", secondaries: [
                     "Stucco crack",
                     "Stucco separation",
-                    "Stucco distortion",
-                    "Stucco control joint missing / limited",
-                    "Stucco-to-window termination issue",
-                    "Stucco-to-door termination issue",
-                    "Weep screed missing / not visible",
-                    "Drainage plane issue visible",
-                    "Damp sheathing visible",
                     "Paint / coating distress",
                     "Prior stucco repair",
                     "Gap at cladding transition"
@@ -318,54 +268,32 @@ extension TagLibrary {
                     "Siding separation",
                     "Siding joint separation",
                     "Siding distortion",
-                    "Cement board siding separation",
-                    "Cement board siding too close to slab",
                     "Window trim separation",
                     "Door trim separation",
                     "Prior exterior finish repair"
                 ].map(SecondaryTagEntry.init)),
                 // ── Interior finish ───────────────────────────────────
-                .init(name: "Interior Wall Finish", secondaries: [
+                .init(name: "Interior Wall and Ceiling Sheetrock Finish", secondaries: [
                     "Wall sheetrock crack",
-                    "Corner crack",
                     "Door / window corner crack",
                     "Wall-to-wall joint crack",
                     "Wall-to-ceiling joint crack",
-                    "Wall separation",
                     "Bottom of wall separated from floor",
                     "Loose / unattached wall",
-                    "Wall can be moved by hand",
                     "Out-of-plumb wall",
-                    "Distorted wall framing visible",
                     "Previous wall repair",
                     "Texture / paint mismatch",
-                    "Moisture stain on wall"
-                ].map(SecondaryTagEntry.init)),
-                .init(name: "Interior Ceiling Finish", secondaries: [
-                    "Ceiling sheetrock crack",
-                    "Ceiling separation",
-                    "Ceiling buckling",
-                    "Ceiling pulled from joists",
-                    "Ceiling detached from framing",
-                    "Ceiling distress near stairs",
-                    "Wall-to-ceiling joint crack",
-                    "Previous ceiling repair",
-                    "Texture / paint mismatch",
-                    "Moisture stain on ceiling"
+                    "Moisture stain on sheetrock",
+                    "Ceiling sheetrock crack"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Flooring", secondaries: [
                     "Floor tile crack",
                     "Grout crack",
-                    "Tile crack aligned with slab crack",
                     "Loose tile",
-                    "Bathroom tile distress",
-                    "Shower tile joint crack",
-                    "Flooring joint separation",
+                    "Tile distress",
                     "Wood flooring separation",
                     "Wood flooring hump / unevenness",
-                    "Second-floor flooring separation",
                     "Rippled vinyl flooring",
-                    "Uneven flooring",
                     "Floor finish separation",
                     "Previous flooring repair"
                 ].map(SecondaryTagEntry.init)),
@@ -387,71 +315,34 @@ extension TagLibrary {
                     "Door racked",
                     "Door rubs frame",
                     "Door does not latch",
-                    "Door difficult to open",
-                    "Door jammed / inoperable",
-                    "Door self-opens / self-closes",
-                    "Door frame misalignment",
                     "Door frame crack / separation",
-                    "Window out of plumb",
-                    "Window frame separation",
-                    "Window difficult to operate",
-                    "Window / door functional issue",
-                    "Safety / egress concern visible"
+                    "Window out of plumb"
                 ].map(SecondaryTagEntry.init)),
                 // ── Slope / level ─────────────────────────────────────
-                // "Water accumulation risk visible" dropped per user
-                // direction — interpretation tag, not a visual cue.
-                // The visible geometry is covered by "Exterior slab
-                // drains toward house" / "Garage drains toward
-                // interior" / "Porch reverse slope" / "Patio reverse
-                // slope".
                 .init(name: "Floor Slope / Levelness", secondaries: [
-                    "Visible floor slope",
                     "Measured floor slope",
                     "Digital level reading shown",
-                    "Level reading shown",
-                    "Counter slope",
-                    "Uneven floor",
-                    "Garage reverse slope",
-                    "Garage drains toward interior",
-                    "Porch reverse slope",
-                    "Patio reverse slope",
-                    "Exterior slab drains toward house"
+                    "Level reading shown"
                 ].map(SecondaryTagEntry.init)),
                 // ── Roof + framing ────────────────────────────────────
                 .init(name: "Roof / Attic Framing", secondaries: [
                     "Attic framing overview",
                     "Rafter twisted / warped",
-                    "Rafter gap at ridge",
                     "Exposed fasteners",
                     "Loose / untight framing connection",
-                    "Disconnected brace",
-                    "Ridge brace issue",
-                    "Purlin brace issue",
-                    "Brace supported on flat member",
-                    "Missing matching rafter",
-                    "Scabbed framing / OSB",
                     "Scrap lumber fit-up",
-                    "Notched rafter",
-                    "Inadequate support visible",
                     "Truss plate / gang nail distress",
                     "Sheathing gap",
-                    "Sheathing fastener issue",
-                    "Ceiling pulled from framing",
                     "Moisture-stained roof sheathing"
                 ].map(SecondaryTagEntry.init)),
-                .init(name: "Roofing / Roof Covering", secondaries: [
+                .init(name: "Roofing", secondaries: [
                     "Roof overview",
                     "Buckled shingles",
                     "Wavy / wrinkled shingles",
                     "Damaged shingles",
-                    "Metal roof context",
-                    "Roof edge / eave issue",
-                    "Roof penetration / flashing context",
-                    "Roof leak repair context",
-                    "Roofing installation concern visible"
+                    "Metal roof context"
                 ].map(SecondaryTagEntry.init)),
-                // ── Moisture / repair / site ──────────────────────────
+                // ── Moisture / site / structures ──────────────────────
                 .init(name: "Moisture Intrusion / Staining", secondaries: [
                     "Moisture stain on ceiling",
                     "Moisture stain on wall",
@@ -461,61 +352,20 @@ extension TagLibrary {
                     "Localized repair from water intrusion",
                     "Damp sheathing visible",
                     "Efflorescence / mineral staining",
+                    "Wood deterioration or staining from water exposure",
                     "Sealant failure with staining",
                     "Ponding-related staining"
-                ].map(SecondaryTagEntry.init)),
-                .init(name: "Prior Repair / Patch", secondaries: [
-                    "Prior foundation repair",
-                    "Prior concrete patch",
-                    "Prior slab breakout",
-                    "Prior masonry repair",
-                    "Prior stucco repair",
-                    "Prior drywall repair",
-                    "Prior flooring repair",
-                    "Prior cosmetic repair",
-                    "Patch visible",
-                    "Texture / paint mismatch",
-                    "Crack through prior repair",
-                    "Recurrent distress",
-                    "Repair excavation not fully backfilled"
-                ].map(SecondaryTagEntry.init)),
-                .init(name: "Soil / Backfill / Excavation", secondaries: [
-                    "Soil erosion",
-                    "Soil void",
-                    "Incomplete backfill",
-                    "Exposed excavation area",
-                    "Backfill settlement",
-                    "Soil against foundation",
-                    "Low clearance to soil",
-                    "Concrete curb against foundation",
-                    "Landscape border near foundation",
-                    "Soil moisture indicator",
-                    "Exposed root / root-zone context"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Trees / Vegetation / Landscaping", secondaries: [
                     "Mature tree near foundation",
                     "Removed tree area",
-                    "Prior tree location",
-                    "Tree root zone near foundation",
-                    "Vegetation near foundation",
-                    "Flower bed near foundation",
-                    "Landscape border near foundation",
-                    "Landscaping affects drainage",
-                    "Vegetation / moisture context"
+                    "Prior tree location"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Pool / Gazebo / Site Structure", secondaries: [
                     "Pool overview",
                     "Pool waterline uneven",
-                    "Pool coping movement",
-                    "Pool deck movement",
-                    "Gazebo overview",
-                    "Gazebo foundation distress",
-                    "Gazebo parge coat crack",
-                    "Erosion below gazebo foundation",
-                    "Column joint separation",
-                    "Step crack / distress",
-                    "Retaining wall context",
-                    "Retaining wall distress"
+                    "Pool coping elevation difference",
+                    "Pool deck elevation difference"
                 ].map(SecondaryTagEntry.init)),
                 // ── Measurement / photo quality ───────────────────────
                 .init(name: "Measurement / Instrument Readout", secondaries: [
@@ -523,23 +373,16 @@ extension TagLibrary {
                     "Crack comparator visible",
                     "Digital level visible",
                     "ZipLevel / elevation equipment visible",
+                    "Moisture meter reading",
                     "Measurement number visible",
-                    "Crack width measurement",
                     "Floor slope measurement",
-                    "Elevation reading",
                     "Scale reference present",
                     "Measurement unclear / obstructed"
                 ].map(SecondaryTagEntry.init)),
                 .init(name: "Photo Quality / Re-shoot", secondaries: [
                     "Blurry image",
                     "Too dark",
-                    "Overexposed",
-                    "Obstructed view",
-                    "Too close to identify component",
-                    "Too far to see distress",
-                    "Distress cropped off",
-                    "Measurement unreadable",
-                    "Location not discernible"
+                    "Overexposed"
                 ].map(SecondaryTagEntry.init))
             ])
         ],
