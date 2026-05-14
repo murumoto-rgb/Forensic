@@ -410,11 +410,14 @@ struct PDFExportService {
         let cellW = contentW / CGFloat(cols)
         let cellH = (pageRect.height - 2 * margin - headerH) / CGFloat(rows)
         let pad: CGFloat = 4
-        // 28pt caption area gives one line for seq + date and a second line
-        // for tags. Photos without tags simply leave the second line blank.
-        let captionH: CGFloat = 28
 
         let dateFmt = DateFormatter(); dateFmt.dateStyle = .short; dateFmt.timeStyle = .medium
+        // Match the on-screen threshold so the PDF and the app agree on
+        // which tags are "active" for this photo.
+        let threshold = UserDefaults.standard.double(
+            forKey: "sitephoto.tagConfidenceThreshold"
+        )
+        let annotations = options.annotations
 
         for (i, item) in photos.enumerated() {
             let col = i % cols; let row = i / cols
@@ -422,9 +425,28 @@ struct PDFExportService {
             let cy = margin + headerH + CGFloat(row) * cellH
 
             let innerW = cellW - 2 * pad
+            // Measure the caption area required by whatever annotations
+            // the engineer enabled. The photo image shrinks to give the
+            // caption room — that's how we honour "tags must not be
+            // obstructed" without forcing a one-size-fits-all layout.
+            // A minimum photo height keeps the image readable even on a
+            // densely-annotated 6-up page; anything past that floor falls
+            // through to the same graceful truncation drawWrapped uses
+            // when text exceeds its rect.
+            let minPhotoH = max(40, cellH * 0.30)
+            let measuredCaptionH = measureCellCaption(
+                item: item,
+                innerW: innerW,
+                options: annotations,
+                threshold: threshold
+            )
+            let maxCaptionH = cellH - 2 * pad - minPhotoH
+            let captionH = max(0, min(measuredCaptionH, maxCaptionH))
             let innerH = cellH - 2 * pad - captionH
+
+            // Photo image.
             let aspect = item.image.size.width / item.image.size.height
-            let cellAspect = innerW / innerH
+            let cellAspect = innerW / max(innerH, 1)
             let (dW, dH): (CGFloat, CGFloat) = aspect > cellAspect
                 ? (innerW, innerW / aspect) : (innerH * aspect, innerH)
             // Left-align horizontally so portrait photos hug the cell's left
@@ -443,40 +465,293 @@ struct PDFExportService {
                 markupImage.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
             }
 
-            let captionY = cy + cellH - captionH + 4
-            let seqLabel = item.includeMarkup
-                ? "#\(item.photo.sequenceNumber) (marked)"
-                : "#\(item.photo.sequenceNumber)"
-            drawText(seqLabel,
-                     at: CGPoint(x: cx + pad, y: captionY),
-                     font: .boldSystemFont(ofSize: 9), color: .black)
-            // Marked cells live next to their clean partner which already
-            // shows the date — skip it on the marked one so the wider
-            // "(marked)" label has room and the row stays uncluttered.
-            if !item.includeMarkup {
-                drawText(dateFmt.string(from: item.photo.timestamp),
-                         at: CGPoint(x: cx + pad + 30, y: captionY + 1),
-                         font: .systemFont(ofSize: 7.5),
-                         color: UIColor(white: 0.35, alpha: 1))
-            }
-
-            // Match the on-screen threshold so the PDF and the app agree on
-            // which tags are "active" for this photo.
-            let threshold = UserDefaults.standard.double(
-                forKey: "sitephoto.tagConfidenceThreshold"
+            drawCellCaption(
+                item: item,
+                cellX: cx,
+                captionTopY: cy + cellH - captionH,
+                captionMaxH: captionH,
+                cellW: cellW,
+                pad: pad,
+                options: annotations,
+                threshold: threshold,
+                dateFmt: dateFmt
             )
-            let visible = item.photo.tags.filter { $0.confidence >= threshold }
-            if !visible.isEmpty {
-                let tagsLine = visible.map { $0.label }.joined(separator: " · ")
-                drawTruncatedText(
-                    tagsLine,
-                    at: CGPoint(x: cx + pad, y: captionY + 12),
-                    maxWidth: cellW - 2 * pad,
-                    font: .systemFont(ofSize: 7),
-                    color: UIColor(red: 0.42, green: 0.20, blue: 0.55, alpha: 1)
-                )
+        }
+    }
+
+    // MARK: - Contact-sheet cell helpers
+
+    /// Measure the vertical space the cell's caption block will need
+    /// given the engineer's enabled annotations. Mirrors the per-field
+    /// drawing order in `drawCellCaption` so a measure + draw pair
+    /// never disagree.
+    private func measureCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool),
+                                      innerW: CGFloat,
+                                      options: PDFExportOptions.AnnotationOptions,
+                                      threshold: Double) -> CGFloat {
+        // The seq + date line is always drawn (it identifies the photo).
+        // Skip when literally nothing else is enabled? — no, the seq
+        // number is what links a contact-sheet entry back to the
+        // metadata table / floor plan bubble. Always keep it.
+        var h: CGFloat = 12
+
+        if options.includeTags {
+            h += measureTagBlock(item.photo.tags,
+                                   threshold: threshold,
+                                   maxW: innerW)
+        }
+        if options.includeMeasurement,
+           pdfExportNonEmpty(item.photo.aiAnalysis?.measurementVisible) != nil {
+            h += 11
+        }
+        if options.includeCaption,
+           let cap = resolvedCaption(item.photo) {
+            h += measureWrapped(cap, maxW: innerW, font: .systemFont(ofSize: 8)) + 3
+        }
+        if options.includeObservation,
+           let obs = resolvedObservation(item.photo) {
+            h += measureWrapped(obs, maxW: innerW, font: .systemFont(ofSize: 7.5)) + 3
+        }
+        if options.includeReviewerFlag,
+           let flag = pdfExportNonEmpty(item.photo.aiAnalysis?.reviewerFlag) {
+            h += measureWrapped("⚠ " + flag,
+                                  maxW: innerW,
+                                  font: .systemFont(ofSize: 7)) + 3
+        }
+        if options.includeConfidence,
+           let analysis = item.photo.aiAnalysis, analysis.confidence.isKnown {
+            h += 11
+        }
+        return h
+    }
+
+    private func drawCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool),
+                                   cellX: CGFloat,
+                                   captionTopY: CGFloat,
+                                   captionMaxH: CGFloat,
+                                   cellW: CGFloat,
+                                   pad: CGFloat,
+                                   options: PDFExportOptions.AnnotationOptions,
+                                   threshold: Double,
+                                   dateFmt: DateFormatter) {
+        let x = cellX + pad
+        let maxW = cellW - 2 * pad
+        let captionEndY = captionTopY + captionMaxH
+        var y = captionTopY + 2
+
+        // Sequence + (optionally) date row. Always drawn — it's the
+        // photo's identifier.
+        let seqLabel = item.includeMarkup
+            ? "#\(item.photo.sequenceNumber) (marked)"
+            : "#\(item.photo.sequenceNumber)"
+        drawText(seqLabel,
+                 at: CGPoint(x: x, y: y),
+                 font: .boldSystemFont(ofSize: 9),
+                 color: .black)
+        // Marked cells live next to their clean partner which already
+        // shows the date — skip it on the marked one so the wider
+        // "(marked)" label has room and the row stays uncluttered.
+        if !item.includeMarkup {
+            drawText(dateFmt.string(from: item.photo.timestamp),
+                     at: CGPoint(x: x + 30, y: y + 1),
+                     font: .systemFont(ofSize: 7.5),
+                     color: UIColor(white: 0.35, alpha: 1))
+        }
+        y += 12
+
+        // Tags are first after the identifier because the user
+        // requirement explicitly named them as "must not be
+        // obstructed." Everything else competes for the remaining
+        // vertical budget in order of declaration below.
+        if options.includeTags && y < captionEndY {
+            y = drawTagBlock(item.photo.tags,
+                              threshold: threshold,
+                              x: x, y: y,
+                              maxW: maxW,
+                              maxY: captionEndY)
+        }
+        if options.includeMeasurement && y < captionEndY,
+           let m = pdfExportNonEmpty(item.photo.aiAnalysis?.measurementVisible) {
+            drawText("Measurement: \(m)",
+                     at: CGPoint(x: x, y: y),
+                     font: .systemFont(ofSize: 7.5),
+                     color: .black)
+            y += 11
+        }
+        if options.includeCaption && y < captionEndY,
+           let cap = resolvedCaption(item.photo) {
+            y = drawWrapped(cap,
+                              x: x, y: y, maxW: maxW,
+                              font: .systemFont(ofSize: 8),
+                              color: .black,
+                              lineH: 10)
+        }
+        if options.includeObservation && y < captionEndY,
+           let obs = resolvedObservation(item.photo) {
+            y = drawWrapped(obs,
+                              x: x, y: y, maxW: maxW,
+                              font: .systemFont(ofSize: 7.5),
+                              color: UIColor(white: 0.25, alpha: 1),
+                              lineH: 9)
+        }
+        if options.includeReviewerFlag && y < captionEndY,
+           let flag = pdfExportNonEmpty(item.photo.aiAnalysis?.reviewerFlag) {
+            y = drawWrapped("⚠ " + flag,
+                              x: x, y: y, maxW: maxW,
+                              font: .systemFont(ofSize: 7),
+                              color: UIColor(red: 0.85, green: 0.30, blue: 0.20, alpha: 1),
+                              lineH: 9)
+        }
+        if options.includeConfidence && y < captionEndY,
+           let analysis = item.photo.aiAnalysis, analysis.confidence.isKnown {
+            drawText("Confidence: \(analysis.confidence.displayName)",
+                     at: CGPoint(x: x, y: y),
+                     font: .systemFont(ofSize: 7.5),
+                     color: UIColor(white: 0.25, alpha: 1))
+        }
+    }
+
+    /// Measure the height a primary→secondary tag hierarchy will take
+    /// when rendered at `maxW`. Returns 0 when no visible tags exist
+    /// so the caller can subtract that line from the layout.
+    private func measureTagBlock(_ tags: [Tag],
+                                   threshold: Double,
+                                   maxW: CGFloat) -> CGFloat {
+        let visible = tags.filter { $0.confidence >= threshold }
+        let groups = groupTagsByParent(visible)
+        if groups.isEmpty { return 0 }
+        let primaryFont = UIFont.boldSystemFont(ofSize: 7.5)
+        let secondaryFont = UIFont.systemFont(ofSize: 7)
+        let indent: CGFloat = 8
+        var h: CGFloat = 0
+        for group in groups {
+            h += measureWrapped(group.primaryLabel,
+                                  maxW: maxW,
+                                  font: primaryFont) + 1
+            if !group.secondaries.isEmpty {
+                let joined = group.secondaries
+                    .map { $0.label }
+                    .joined(separator: ", ")
+                h += measureWrapped(joined,
+                                      maxW: max(maxW - indent, 20),
+                                      font: secondaryFont) + 1
             }
         }
+        return h + 2
+    }
+
+    /// Draw the tag hierarchy and return the new cursor Y.
+    /// Primaries render bold and full-width; secondaries render
+    /// regular-weight indented one notch under their primary. Wraps
+    /// across multiple lines per group when names exceed `maxW`.
+    @discardableResult
+    private func drawTagBlock(_ tags: [Tag],
+                                threshold: Double,
+                                x: CGFloat, y: CGFloat,
+                                maxW: CGFloat, maxY: CGFloat) -> CGFloat {
+        let visible = tags.filter { $0.confidence >= threshold }
+        let groups = groupTagsByParent(visible)
+        if groups.isEmpty { return y }
+
+        let primaryFont = UIFont.boldSystemFont(ofSize: 7.5)
+        let secondaryFont = UIFont.systemFont(ofSize: 7)
+        let primaryColor = UIColor(red: 0.30, green: 0.16, blue: 0.45, alpha: 1)
+        let secondaryColor = UIColor(red: 0.42, green: 0.20, blue: 0.55, alpha: 1)
+        let indent: CGFloat = 8
+
+        var cursorY = y
+        for group in groups {
+            if cursorY >= maxY { break }
+            cursorY = drawWrapped(group.primaryLabel,
+                                    x: x, y: cursorY,
+                                    maxW: maxW,
+                                    font: primaryFont,
+                                    color: primaryColor,
+                                    lineH: 9) - 1
+            if !group.secondaries.isEmpty && cursorY < maxY {
+                let joined = group.secondaries
+                    .map { $0.label }
+                    .joined(separator: ", ")
+                cursorY = drawWrapped(joined,
+                                        x: x + indent,
+                                        y: cursorY,
+                                        maxW: max(maxW - indent, 20),
+                                        font: secondaryFont,
+                                        color: secondaryColor,
+                                        lineH: 8) - 1
+            }
+        }
+        return cursorY + 2
+    }
+
+    /// Bucket a flat tag array into a primary → secondaries hierarchy
+    /// while preserving the engineer-visible order: primaries appear
+    /// in their stored order, and secondaries cluster under their
+    /// `parentTag` regardless of where they sat in the flat array.
+    /// Secondaries whose `parentTag` doesn't match any explicit
+    /// primary get a synthetic primary heading (engineer can still
+    /// see them rather than the renderer silently dropping them).
+    private func groupTagsByParent(_ tags: [Tag]) -> [TagGroup] {
+        var primariesInOrder: [String] = []
+        var seenPrimaries: Set<String> = []
+        var secondariesByParent: [String: [Tag]] = [:]
+
+        for tag in tags where tag.parentTag == nil {
+            if seenPrimaries.insert(tag.label).inserted {
+                primariesInOrder.append(tag.label)
+            }
+        }
+        for tag in tags where tag.parentTag != nil {
+            guard let parent = tag.parentTag else { continue }
+            secondariesByParent[parent, default: []].append(tag)
+            if seenPrimaries.insert(parent).inserted {
+                primariesInOrder.append(parent)
+            }
+        }
+        return primariesInOrder.map { label in
+            TagGroup(primaryLabel: label,
+                       secondaries: secondariesByParent[label] ?? [])
+        }
+    }
+
+    /// Engineer's typed caption wins over the AI draft; missing /
+    /// whitespace-only values fall through to the AI version, then
+    /// to nil so the caller can skip the row entirely.
+    private func resolvedCaption(_ photo: Photo) -> String? {
+        pdfExportNonEmpty(photo.userCaption) ?? pdfExportNonEmpty(photo.aiAnalysis?.captionDraft)
+    }
+
+    /// Same fallback chain as `resolvedCaption` for the summary
+    /// observation field.
+    private func resolvedObservation(_ photo: Photo) -> String? {
+        pdfExportNonEmpty(photo.userObservation) ?? pdfExportNonEmpty(photo.aiAnalysis?.summaryObservation)
+    }
+
+    /// Pre-measurement equivalent of `drawWrapped`. Same NSString /
+    /// NSAttributedString boundingRect call so the height returned
+    /// here matches the height `drawWrapped` actually consumes (apart
+    /// from the +2 tail padding `drawWrapped` adds before returning).
+    private func measureWrapped(_ text: String,
+                                  maxW: CGFloat,
+                                  font: UIFont) -> CGFloat {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: style
+        ]
+        let bounds = (text as NSString).boundingRect(
+            with: CGSize(width: maxW, height: 200),
+            options: .usesLineFragmentOrigin,
+            attributes: attrs,
+            context: nil
+        )
+        return ceil(bounds.height) + 2
+    }
+
+    private struct TagGroup {
+        let primaryLabel: String
+        let secondaries: [Tag]
     }
 
     /// Draw a single line of text, truncating with an ellipsis when it
@@ -1144,4 +1419,13 @@ struct PDFExportService {
         let s = String(cleaned.prefix(40))
         return s.isEmpty ? "export" : s
     }
+}
+
+/// Local helper that returns nil for a missing-or-whitespace-only
+/// optional String. `Photo.swift` carries an identical `nonEmpty`
+/// extension but marks it `private`, so a free function lives here to
+/// keep the PDF service from depending on visibility tweaks elsewhere.
+private func pdfExportNonEmpty(_ s: String?) -> String? {
+    let trimmed = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }

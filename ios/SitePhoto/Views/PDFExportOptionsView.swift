@@ -56,6 +56,25 @@ struct PDFExportOptionsView: View {
             }
 
             Section {
+                Toggle("Tags",
+                       isOn: $options.annotations.includeTags)
+                Toggle("Caption",
+                       isOn: $options.annotations.includeCaption)
+                Toggle("Summary observation",
+                       isOn: $options.annotations.includeObservation)
+                Toggle("Measurement readout",
+                       isOn: $options.annotations.includeMeasurement)
+                Toggle("Reviewer flag",
+                       isOn: $options.annotations.includeReviewerFlag)
+                Toggle("Confidence",
+                       isOn: $options.annotations.includeConfidence)
+            } header: {
+                Text("Per-photo annotations")
+            } footer: {
+                Text("Pick which AI annotations render under each contact-sheet photo. Tags appear grouped under their primary (secondaries indented). Caption + observation use the engineer's overrides when present, otherwise the AI draft. The caption area below each photo grows to fit whatever you enable; if it gets cramped, switch to fewer photos per page above.")
+            }
+
+            Section {
                 // Cover row is locked — present visually so the engineer
                 // sees the full page sequence, but not draggable.
                 HStack(spacing: 10) {
