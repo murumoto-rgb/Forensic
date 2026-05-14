@@ -29,7 +29,7 @@ enum AITaggingModel: String, CaseIterable, Identifiable, Sendable {
     var subtitle: String {
         switch self {
         case .sonnet: return "Careful default — best for high-stakes tagging."
-        case .haiku:  return "Roughly 2× faster and 3–4× cheaper. May produce shorter captions and miss subtle distress."
+        case .haiku:  return "Roughly 2× faster and 3–4× cheaper, but less reliable at per-primary tag scoping — expect more validation rejections on jobs with overlapping site / exterior / measurement primaries. Best for quick initial sweeps where occasional miscategorisation is acceptable."
         }
     }
 
