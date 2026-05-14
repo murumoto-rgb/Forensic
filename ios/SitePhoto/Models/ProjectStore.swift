@@ -3576,11 +3576,17 @@ extension ProjectStore {
                             primaryCounts[primary, default: 0] += 1
                         }
                         recommendedUseCounts[a.recommendedUse.bucketKey, default: 0] += 1
-                        if case .low = a.confidence {
+                        // Replaces the previous `case .low = a.confidence`
+                        // bucket. The worded High/Medium/Low confidence
+                        // enum is gone; surface a photo here when any
+                        // emitted tag's per-tag confidence falls below
+                        // 0.7. Matches the same threshold the per-photo
+                        // `needsReview` chip uses.
+                        if a.tagConfidences.values.contains(where: { $0 < 0.7 }) {
                             lowConfidence.append(BatchPhotoRef(
                                 photoID: result.photoID,
                                 sequenceNumber: result.sequenceNumber,
-                                detail: a.confidenceNote.isEmpty ? nil : a.confidenceNote
+                                detail: nil
                             ))
                         }
                         if !a.reviewerFlag.isEmpty {

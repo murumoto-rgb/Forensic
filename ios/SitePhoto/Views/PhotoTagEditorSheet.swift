@@ -321,12 +321,6 @@ struct PhotoTagEditorSheet: View {
                     .font(.headline)
                 Spacer()
                 recommendedUseChip(a.recommendedUse)
-                confidenceChip(a.confidence)
-            }
-            if shouldShowConfidenceNote(a) {
-                Text(a.confidenceNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             if !a.summaryObservation.isEmpty {
                 metadataRow(label: "Summary Observation",
@@ -472,36 +466,6 @@ struct PhotoTagEditorSheet: View {
             .foregroundStyle(fg)
     }
 
-    /// True when the confidence-note row should render: there is a note,
-    /// AND the confidence isn't High (the prompt says High should leave
-    /// the note empty, but we belt-and-suspenders here).
-    private func shouldShowConfidenceNote(_ a: AIPhotoAnalysis) -> Bool {
-        guard !a.confidenceNote.isEmpty else { return false }
-        if case .high = a.confidence { return false }
-        return true
-    }
-
-    /// Colour-coded chip for the model's self-reported confidence. High =
-    /// green, Medium = orange, Low = red. Hidden when no confidence was
-    /// reported (e.g. parse failure with empty enum).
-    @ViewBuilder
-    private func confidenceChip(_ c: Confidence) -> some View {
-        let (label, fg): (String, Color) = {
-            switch c {
-            case .high:           return ("High",   .green)
-            case .medium:         return ("Medium", .orange)
-            case .low:            return ("Low",    .red)
-            case .unknown(let s): return (s.isEmpty ? "" : s, .secondary)
-            }
-        }()
-        if !label.isEmpty {
-            Text(label)
-                .font(.caption.bold())
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(fg.opacity(0.18), in: Capsule())
-                .foregroundStyle(fg)
-        }
-    }
 
     // MARK: - Confirmed tags
 

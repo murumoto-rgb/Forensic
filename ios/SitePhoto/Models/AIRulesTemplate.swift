@@ -52,8 +52,6 @@ enum AIRulesTemplate {
       "summary_observation": "",
       "caption_draft": "",
       "recommended_use": "",
-      "confidence": "",
-      "confidence_note": "",
       "reviewer_flag": ""
     }
 
@@ -68,7 +66,7 @@ enum AIRulesTemplate {
     3. Identify only visible conditions. Do not infer final cause, assign severity, or diagnose foundation movement from a single photograph unless the visual evidence itself is the item being tagged.
     4. Select one to four `Context::Primary::Secondary` triples that describe what is visible. The default is one or two triples; use more only when several clearly distinct report-worthy conditions are visible in the same photo. Never exceed four triples total. Every triple you pick is a complete unit — you do not first pick a primary and then a separate secondary, you pick the full triple at once from the controlled vocabulary below.
     5. Group the triples you picked by their primary when filling the JSON. Each unique primary across your chosen triples appears once in `primary_tags`; each triple's secondary appears under that primary's key in `secondary_tags_by_primary`. Do not move a secondary under a primary other than the one named in its triple. If no listed triple describes what is visible, leave the corresponding primary out of `primary_tags` entirely rather than forcing a near-fit triple.
-    6. If the correct issue category is absent from the vocabulary, return `primary_tags: []`, leave `secondary_tags_by_primary` and `tag_confidences` empty, set `confidence` to `Low`, and explain the vocabulary gap in `reviewer_flag`.
+    6. If the correct issue category is absent from the vocabulary, return `primary_tags: []`, leave `secondary_tags_by_primary` and `tag_confidences` empty, and explain the vocabulary gap in `reviewer_flag`.
 
     Core rules
 
@@ -79,22 +77,20 @@ enum AIRulesTemplate {
     - Do not tag normal objects just because they appear in the frame. A roof in an exterior elevation is not `Roofing` unless the photo shows roofing distress or the roof is the intentional subject.
     - Do not assign severity labels such as minor, moderate, severe, extensive, or significant in the tags or captions. Describe what is visible.
     - When the photo includes both a measurement tool and the measured condition, tag the condition as primary. Add `Measurement / Instrument Readout` as a second primary only when the readout/tool is important to the photograph.
-    - If a finding is only barely visible, use a general secondary and lower confidence rather than a very specific secondary.
+    - If a finding is only barely visible, use a general secondary and lower its `tag_confidences` entry rather than picking a very specific secondary you aren't sure about.
 
     Field definitions
 
     - photo_id: exact photo filename or identifier supplied by the user/app. If none is supplied, use an empty string.
     - primary_tags: zero, one, or two primary tags from the controlled vocabulary.
     - secondary_tags_by_primary: an object keyed by each primary tag. Each value is an array of one to four secondary tags listed under that primary in the controlled vocabulary. If a primary genuinely has no applicable secondary for the photo, leave that primary out of `primary_tags` rather than emitting an empty array.
-    - tag_confidences: object mapping every emitted primary tag and every secondary tag to a number from 0 to 1. Use 0.90–1.00 for clear visual evidence, 0.70–0.89 for probable evidence, and 0.50–0.69 for partial/obstructed/low-quality evidence.
+    - tag_confidences: object mapping every emitted **secondary tag** to a number from 0 to 1. Confidence lives at the secondary (leaf) level only — do NOT add entries for primary tags. Use 0.90–1.00 for clear visual evidence, 0.70–0.89 for probable evidence, and 0.50–0.69 for partial/obstructed/low-quality evidence. The primary is established by the triple the secondary came from, so it inherits the secondary's confidence implicitly.
     - location_inferred: choose one value from the location list below. Use `Unknown` when location cannot be inferred from visible cues.
     - scale_present: choose `Yes`, `Relative`, or `No`. Use `Yes` for a ruler, tape, crack gauge, level readout, ZipLevel screen, comparator, coin, or clearly usable hand/finger scale. Use `Relative` for doors, windows, bricks, siding laps, baseboards, or other common objects that imply scale but do not provide a measurement.
     - measurement_visible: transcribe the visible measurement exactly as shown, including units and signs. If multiple readings are visible, include the most relevant reading or a short comma-separated transcription. Use `null` when no measurement is visible.
     - summary_observation: one factual sentence describing what is visible. No final causation and no severity. Example: `Vertical crack visible in the exterior concrete grade beam below the brick veneer.`
     - caption_draft: one short neutral report caption, maximum 18 words. Example: `Crack in exterior concrete grade beam below brick veneer.`
     - recommended_use: choose `Body figure`, `Appendix only`, `Context/locator`, or `Re-shoot recommended`.
-    - confidence: choose `High`, `Medium`, or `Low` for the overall tag selection.
-    - confidence_note: use an empty string for `High`. For `Medium` or `Low`, give one short reason such as `obstructed crack tip`, `dim lighting`, `partial view`, or `ambiguous component`.
     - reviewer_flag: use only for items needing engineer review, such as safety/egress concerns, contradictory measurement visibility, likely vocabulary gap, or poor image quality. Keep this rare.
 
     Location values
@@ -121,15 +117,13 @@ enum AIRulesTemplate {
       "photo_id": "IMG_0042.jpg",
       "primary_tags": ["Foundation / Grade Beam"],
       "secondary_tags_by_primary": {"Foundation / Grade Beam": ["Grade beam crack"]},
-      "tag_confidences": {"Foundation / Grade Beam": 0.95, "Grade beam crack": 0.94},
+      "tag_confidences": {"Grade beam crack": 0.94},
       "location_inferred": "Exterior - Unknown elevation",
       "scale_present": "Relative",
       "measurement_visible": null,
       "summary_observation": "Vertical crack visible in the exterior concrete grade beam below the veneer.",
       "caption_draft": "Vertical crack in exterior concrete grade beam.",
       "recommended_use": "Body figure",
-      "confidence": "High",
-      "confidence_note": "",
       "reviewer_flag": ""
     }
 
@@ -139,15 +133,13 @@ enum AIRulesTemplate {
       "photo_id": "IMG_0101.jpg",
       "primary_tags": ["General Exterior Orientation"],
       "secondary_tags_by_primary": {"General Exterior Orientation": ["Front elevation overall view"]},
-      "tag_confidences": {"General Exterior Orientation": 0.96, "Front elevation overall view": 0.92},
+      "tag_confidences": {"Front elevation overall view": 0.92},
       "location_inferred": "Exterior - Front",
       "scale_present": "Relative",
       "measurement_visible": null,
       "summary_observation": "Front exterior elevation showing the entry, veneer, roofline, and adjacent grade.",
       "caption_draft": "Front exterior elevation overview.",
       "recommended_use": "Context/locator",
-      "confidence": "High",
-      "confidence_note": "",
       "reviewer_flag": ""
     }
 
@@ -157,15 +149,13 @@ enum AIRulesTemplate {
       "photo_id": "IMG_0220.jpg",
       "primary_tags": ["Attic Framing"],
       "secondary_tags_by_primary": {"Attic Framing": ["Loose / untight framing connection (wide joints)", "Exposed fasteners between wood framing members"]},
-      "tag_confidences": {"Attic Framing": 0.91, "Loose / untight framing connection (wide joints)": 0.84, "Exposed fasteners between wood framing members": 0.89},
+      "tag_confidences": {"Loose / untight framing connection (wide joints)": 0.84, "Exposed fasteners between wood framing members": 0.89},
       "location_inferred": "Attic",
       "scale_present": "Relative",
       "measurement_visible": null,
       "summary_observation": "Attic framing connection shows a visible gap with exposed fasteners.",
       "caption_draft": "Gap and exposed fasteners at attic framing connection.",
       "recommended_use": "Body figure",
-      "confidence": "High",
-      "confidence_note": "",
       "reviewer_flag": ""
     }
 
@@ -175,15 +165,13 @@ enum AIRulesTemplate {
       "photo_id": "IMG_0307.jpg",
       "primary_tags": ["Measurement / Instrument Readout"],
       "secondary_tags_by_primary": {"Measurement / Instrument Readout": ["Digital level visible", "Measurement number visible"]},
-      "tag_confidences": {"Measurement / Instrument Readout": 0.94, "Digital level visible": 0.93, "Measurement number visible": 0.88},
+      "tag_confidences": {"Digital level visible": 0.93, "Measurement number visible": 0.88},
       "location_inferred": "Unknown",
       "scale_present": "Yes",
       "measurement_visible": "1.8%",
       "summary_observation": "Digital level display shows a 1.8% reading.",
       "caption_draft": "Digital level display showing slope reading.",
       "recommended_use": "Appendix only",
-      "confidence": "High",
-      "confidence_note": "",
       "reviewer_flag": ""
     }
 
@@ -193,21 +181,19 @@ enum AIRulesTemplate {
       "photo_id": "IMG_0512.jpg",
       "primary_tags": ["Photo Quality / Re-shoot"],
       "secondary_tags_by_primary": {"Photo Quality / Re-shoot": ["Blurry image"]},
-      "tag_confidences": {"Photo Quality / Re-shoot": 0.86, "Blurry image": 0.88},
+      "tag_confidences": {"Blurry image": 0.88},
       "location_inferred": "Unknown",
       "scale_present": "No",
       "measurement_visible": null,
       "summary_observation": "Image is blurry and the subject condition cannot be confidently identified.",
       "caption_draft": "Image quality limits identification of the subject condition.",
       "recommended_use": "Re-shoot recommended",
-      "confidence": "Low",
-      "confidence_note": "blurry; subject indistinct",
       "reviewer_flag": "re-shoot recommended for this view"
     }
 
     Final checks before returning
 
-    - Every primary tag and every secondary tag has an entry in `tag_confidences` with keys spelled exactly as in `primary_tags` / `secondary_tags_by_primary`. An empty `tag_confidences` object whenever you emitted at least one tag is a schema violation.
+    - Every secondary tag has an entry in `tag_confidences` with the key spelled exactly as in `secondary_tags_by_primary`. Primary tags do NOT get their own `tag_confidences` entries — confidence is a secondary-level (leaf) value only. An empty `tag_confidences` object whenever you emitted at least one secondary is a schema violation.
     - Every secondary you emit belongs to the exact primary named in its triple. If no listed triple fits, drop that primary from `primary_tags` rather than substituting a wrong-primary secondary.
     - Cross-check triple integrity: for every secondary you emit, find the exact `Context::Primary::Secondary` line in the controlled vocabulary below. The `Primary` portion of that line MUST be the primary you used in `primary_tags` / `secondary_tags_by_primary`. If it isn't, either (a) change your primary to match the triple, or (b) replace the secondary with a triple whose primary you actually chose. Some secondaries have similarly-named cousins under different primaries (e.g. `Digital level visible` lives in `…::Measurement / Instrument Readout::Digital level visible`, while `Digital level reading shown` lives in `…::Floor Slope / Levelness::Digital level reading shown`) — check the actual triple, do not guess from the name alone.
     - Use the exact primary tag names as written in the triple's middle field. Do not prefix them with numbers, dashes, or any other characters.

@@ -161,7 +161,14 @@ struct TagFilterView: View {
         let crit = Criterion.primary(group.primary)
         let isSelected = selected.contains(crit)
         let isCollapsed = collapsedPrimaries.contains(group.primary.lowercased())
-        let totalCount = group.primaryCount + group.secondaries.reduce(0) { $0 + $1.count }
+        // `primaryCount` is already the count of unique photos that
+        // carry this primary tag — Claude always emits the primary as
+        // its own `parentTag == nil` Tag entry alongside whatever
+        // secondaries the photo received. Adding the per-secondary
+        // counts would double-count the same photos (once for the
+        // primary, once for each secondary under it), which is what
+        // the badge used to do.
+        let totalCount = group.primaryCount
 
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {

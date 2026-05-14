@@ -383,8 +383,6 @@ enum ClaudeTaggingService {
             summaryObservation: payload.summary_observation?.trimmed ?? "",
             captionDraft: payload.caption_draft?.trimmed ?? "",
             recommendedUse: payload.recommended_use ?? .unknown(""),
-            confidence: payload.confidence ?? .unknown(""),
-            confidenceNote: payload.confidence_note?.trimmed ?? "",
             reviewerFlag: payload.reviewer_flag?.trimmed ?? "",
             validationErrors: [],   // filled by validator below
             rawResponse: text,
@@ -420,27 +418,39 @@ enum ClaudeTaggingService {
     /// pipeline so the rest of the app's tag UI works unchanged. Each
     /// primary becomes a primary-level suggestion (parentTag = nil), each
     /// non-"None" secondary becomes a secondary-level suggestion linked
-    /// back to its primary via parentTag. Confidence comes from the
-    /// model's per-tag `tag_confidences` map; if it didn't supply one we
-    /// fall back to `fallbackTagConfidence`.
+    /// back to its primary via parentTag.
+    ///
+    /// Confidence is a secondary-level concept now — `tag_confidences`
+    /// keys are only secondaries. Primaries get a fixed 0.99 sentinel:
+    /// high enough to never trip a sane confidence-threshold filter (so
+    /// the engineer always sees the primary chip alongside its
+    /// secondaries) but explicitly less than the 1.0 reserved for
+    /// user-typed tags so `ProjectStore.clearAIInfo` still recognises
+    /// AI-emitted primaries as removable.
     private static func suggestions(from a: AIPhotoAnalysis) -> [TagSuggestion] {
         var out: [TagSuggestion] = []
-        // Lowercase index of the confidence map so lookups tolerate the
-        // model writing keys in slightly different casing than primary_tags
-        // / secondary_tags_by_primary.
+        // Lowercase index of the confidence map so secondary lookups
+        // tolerate the model writing keys in slightly different casing
+        // than `secondary_tags_by_primary`.
         let confByLowercase: [String: Double] = Dictionary(
             a.tagConfidences.map { (key, value) in
                 (key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), value)
             },
             uniquingKeysWith: { first, _ in first }
         )
-        func confidence(for label: String) -> Double {
+        func secondaryConfidence(for label: String) -> Double {
             let key = stripLeadingNumber(label).lowercased()
             if let raw = confByLowercase[key] {
                 return max(0, min(1, raw))
             }
             return fallbackTagConfidence
         }
+
+        // Sentinel confidence for primary-level tags. Chosen so the
+        // `confidence < 1.0` test in ProjectStore.clearAIInfo still
+        // recognises AI-emitted primaries as removable while a typical
+        // `confidence >= threshold` UI filter keeps them visible.
+        let primaryConfidence: Double = 0.99
 
         for primary in a.primaryTags {
             let pTrim = stripLeadingNumber(
@@ -449,7 +459,7 @@ enum ClaudeTaggingService {
             guard !pTrim.isEmpty else { continue }
             out.append(TagSuggestion(
                 label: pTrim,
-                confidence: confidence(for: pTrim),
+                confidence: primaryConfidence,
                 source: .claude,
                 parentTag: nil
             ))
@@ -467,7 +477,7 @@ enum ClaudeTaggingService {
                 guard !sTrim.isEmpty, sTrim.lowercased() != "none" else { continue }
                 out.append(TagSuggestion(
                     label: sTrim,
-                    confidence: confidence(for: sTrim),
+                    confidence: secondaryConfidence(for: sTrim),
                     source: .claude,
                     parentTag: pTrim
                 ))
@@ -536,8 +546,6 @@ enum ClaudeTaggingService {
         let summary_observation: String?
         let caption_draft: String?
         let recommended_use: RecommendedUse?
-        let confidence: Confidence?
-        let confidence_note: String?
         let reviewer_flag: String?
 
         func resolvedPhotoID(fallback: String) -> String {

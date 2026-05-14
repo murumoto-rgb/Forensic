@@ -177,14 +177,14 @@ struct ClearAITagsSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Pick the AI tags to clear, then the photos to clear them from.")
                 .font(.callout)
-            Text("Manually-typed tags are always preserved. Use the toggle below to also drop each photo's saved AI narrative (caption, summary observation, recommended use, confidence, reviewer flag).")
+            Text("Manually-typed tags are always preserved. Use the toggle below to also drop each photo's saved AI narrative (caption, summary observation, recommended use, reviewer flag).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle(isOn: $alsoClearAnalysis) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Also clear AI analysis")
                         .font(.callout)
-                    Text("Caption draft, summary observation, recommended use, confidence, confidence note, reviewer flag, location/orientation/scale fields.")
+                    Text("Caption draft, summary observation, recommended use, reviewer flag, location/orientation/scale fields.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

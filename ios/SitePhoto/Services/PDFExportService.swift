@@ -518,10 +518,6 @@ struct PDFExportService {
                                   maxW: innerW,
                                   font: .systemFont(ofSize: 7)) + 3
         }
-        if options.includeConfidence,
-           let analysis = item.photo.aiAnalysis, analysis.confidence.isKnown {
-            h += 11
-        }
         return h
     }
 
@@ -601,13 +597,6 @@ struct PDFExportService {
                               font: .systemFont(ofSize: 7),
                               color: UIColor(red: 0.85, green: 0.30, blue: 0.20, alpha: 1),
                               lineH: 9)
-        }
-        if options.includeConfidence && y < captionEndY,
-           let analysis = item.photo.aiAnalysis, analysis.confidence.isKnown {
-            drawText("Confidence: \(analysis.confidence.displayName)",
-                     at: CGPoint(x: x, y: y),
-                     font: .systemFont(ofSize: 7.5),
-                     color: UIColor(white: 0.25, alpha: 1))
         }
     }
 

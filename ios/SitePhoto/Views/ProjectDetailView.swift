@@ -1568,7 +1568,13 @@ struct ProjectDetailView: View {
         if a.parseFailed { return true }
         if !a.reviewerFlag.isEmpty { return true }
         if !a.validationErrors.isEmpty { return true }
-        if case .low = a.confidence { return true }
+        // Replacement for the prior `if case .low = a.confidence` check
+        // (the worded High/Medium/Low enum is gone). Surface a photo
+        // for review when any tag the AI emitted carries a numerical
+        // confidence below 0.7 — same spirit as "Low" in the old
+        // worded scheme but driven by the per-secondary numbers we
+        // already store.
+        if a.tagConfidences.values.contains(where: { $0 < 0.7 }) { return true }
         return false
     }
 

@@ -137,7 +137,7 @@ enum AIResponseValidator {
         //    valid when the photo's main subject doesn't match any
         //    primary in the project's vocabulary — the prompt tells the
         //    model to prefer [] over a misleading best-fit and to use
-        //    reviewer_flag + confidence_note to surface the gap.
+        //    reviewer_flag to surface the gap.
         if a.primaryTags.count > 2 {
             errors.append("primary_tags has \(a.primaryTags.count) entries (max 2).")
         }
@@ -179,9 +179,6 @@ enum AIResponseValidator {
         if !a.recommendedUse.isKnown {
             errors.append("recommended_use has unknown value \"\(a.recommendedUse.displayName)\" (expected Body figure / Appendix only / Context/locator / Re-shoot recommended).")
         }
-        if !a.confidence.isKnown {
-            errors.append("confidence has unknown value \"\(a.confidence.displayName)\" (expected High / Medium / Low).")
-        }
 
         // 5. summary_observation must not contain disallowed causation
         //    phrases (case-insensitive).
@@ -193,22 +190,17 @@ enum AIResponseValidator {
         }
 
         // 6. tag_confidences sanity. Every value must fall in [0, 1] and
-        //    every emitted primary plus every non-"None" secondary should
-        //    have an entry. Missing entries are downgraded to a warning —
-        //    the suggestions builder falls back to a neutral value — but
-        //    out-of-range numbers are surfaced because they indicate the
-        //    model misread the schema.
+        //    every non-"None" secondary should have an entry. Primaries
+        //    do NOT get a confidence — confidence lives only at the
+        //    secondary (leaf) level now. Missing-secondary entries are
+        //    surfaced as warnings (the suggestions builder falls back
+        //    to a neutral value), and out-of-range numbers are surfaced
+        //    because they indicate the model misread the schema.
         let confKeysLC = Set(a.tagConfidences.keys.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
         for (key, value) in a.tagConfidences where !(0...1).contains(value) {
             errors.append("tag_confidences[\"\(key)\"] = \(value) is out of range (expected 0…1).")
-        }
-        for primary in a.primaryTags {
-            let key = primary.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !key.isEmpty && !confKeysLC.contains(key) {
-                errors.append("tag_confidences missing entry for primary \"\(primary)\".")
-            }
         }
         for (_, secondaries) in a.secondaryTagsByPrimary {
             for sec in secondaries {

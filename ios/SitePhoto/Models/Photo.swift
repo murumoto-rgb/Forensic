@@ -388,10 +388,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
     var captionDraft: String
     /// Where this photo belongs in a deliverable.
     var recommendedUse: RecommendedUse
-    /// Model's self-assessed confidence in its tag picks.
-    var confidence: Confidence
-    /// Short clause explaining a Medium / Low rating. Empty for High.
-    var confidenceNote: String
     /// Short note when the engineer should look at this photo directly.
     /// Empty when nothing flagged.
     var reviewerFlag: String
@@ -421,8 +417,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         summaryObservation: "",
         captionDraft: "",
         recommendedUse: .unknown(""),
-        confidence: .unknown(""),
-        confidenceNote: "",
         reviewerFlag: "",
         validationErrors: [],
         rawResponse: nil,
@@ -443,8 +437,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.summaryObservation     = (try? c.decodeIfPresent(String.self, forKey: .summaryObservation)) ?? ""
         self.captionDraft           = (try? c.decodeIfPresent(String.self, forKey: .captionDraft)) ?? ""
         self.recommendedUse         = (try? c.decodeIfPresent(RecommendedUse.self, forKey: .recommendedUse)) ?? .unknown("")
-        self.confidence             = (try? c.decodeIfPresent(Confidence.self, forKey: .confidence)) ?? .unknown("")
-        self.confidenceNote         = (try? c.decodeIfPresent(String.self, forKey: .confidenceNote)) ?? ""
         self.reviewerFlag           = (try? c.decodeIfPresent(String.self, forKey: .reviewerFlag)) ?? ""
         self.validationErrors       = (try? c.decodeIfPresent([String].self, forKey: .validationErrors)) ?? []
         self.rawResponse            = try? c.decodeIfPresent(String.self, forKey: .rawResponse)
@@ -461,8 +453,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
          summaryObservation: String,
          captionDraft: String,
          recommendedUse: RecommendedUse,
-         confidence: Confidence,
-         confidenceNote: String,
          reviewerFlag: String,
          validationErrors: [String] = [],
          rawResponse: String? = nil,
@@ -477,8 +467,6 @@ struct AIPhotoAnalysis: Codable, Hashable {
         self.summaryObservation = summaryObservation
         self.captionDraft = captionDraft
         self.recommendedUse = recommendedUse
-        self.confidence = confidence
-        self.confidenceNote = confidenceNote
         self.reviewerFlag = reviewerFlag
         self.validationErrors = validationErrors
         self.rawResponse = rawResponse
@@ -586,41 +574,6 @@ enum RecommendedUse: ConstrainedStringEnum {
         case .unknown(let s): return s.isEmpty ? "Unknown" : "Other: \(s)"
         default:              return displayName
         }
-    }
-}
-
-/// Model's self-assessed confidence in its tag picks (not severity).
-enum Confidence: ConstrainedStringEnum {
-    case high
-    case medium
-    case low
-    case unknown(String)
-
-    var displayName: String {
-        switch self {
-        case .high:           return "High"
-        case .medium:         return "Medium"
-        case .low:            return "Low"
-        case .unknown(let s): return s
-        }
-    }
-    var isKnown: Bool {
-        if case .unknown = self { return false }
-        return true
-    }
-
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "high":   self = .high
-        case "medium": self = .medium
-        case "low":    self = .low
-        default:       self = .unknown(raw)
-        }
-    }
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        try c.encode(displayName)
     }
 }
 

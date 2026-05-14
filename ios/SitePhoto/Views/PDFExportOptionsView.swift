@@ -66,8 +66,6 @@ struct PDFExportOptionsView: View {
                        isOn: $options.annotations.includeMeasurement)
                 Toggle("Reviewer flag",
                        isOn: $options.annotations.includeReviewerFlag)
-                Toggle("Confidence",
-                       isOn: $options.annotations.includeConfidence)
             } header: {
                 Text("Per-photo annotations")
             } footer: {

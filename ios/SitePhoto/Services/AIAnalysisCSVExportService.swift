@@ -81,8 +81,6 @@ struct AIAnalysisCSVExportService {
             "Scale",
             "Location",
             "Recommended Use",
-            "Photo Confidence",
-            "Confidence Note",
             "Reviewer Flag"
         ]
 
@@ -102,8 +100,6 @@ struct AIAnalysisCSVExportService {
                 a.scalePresent.displayName,
                 a.locationInferred,
                 a.recommendedUse.displayName,
-                a.confidence.displayName,
-                a.confidenceNote,
                 a.reviewerFlag
             ]
 

@@ -32,29 +32,25 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
         var includeObservation: Bool
         var includeMeasurement: Bool
         var includeReviewerFlag: Bool
-        var includeConfidence: Bool
 
         static let defaults = AnnotationOptions(
             includeTags: true,
             includeCaption: false,
             includeObservation: false,
             includeMeasurement: false,
-            includeReviewerFlag: false,
-            includeConfidence: false
+            includeReviewerFlag: false
         )
 
         init(includeTags: Bool,
              includeCaption: Bool,
              includeObservation: Bool,
              includeMeasurement: Bool,
-             includeReviewerFlag: Bool,
-             includeConfidence: Bool) {
+             includeReviewerFlag: Bool) {
             self.includeTags = includeTags
             self.includeCaption = includeCaption
             self.includeObservation = includeObservation
             self.includeMeasurement = includeMeasurement
             self.includeReviewerFlag = includeReviewerFlag
-            self.includeConfidence = includeConfidence
         }
 
         init(from decoder: Decoder) throws {
@@ -65,14 +61,13 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
             self.includeObservation  = try c.decodeIfPresent(Bool.self, forKey: .includeObservation)  ?? d.includeObservation
             self.includeMeasurement  = try c.decodeIfPresent(Bool.self, forKey: .includeMeasurement)  ?? d.includeMeasurement
             self.includeReviewerFlag = try c.decodeIfPresent(Bool.self, forKey: .includeReviewerFlag) ?? d.includeReviewerFlag
-            self.includeConfidence   = try c.decodeIfPresent(Bool.self, forKey: .includeConfidence)   ?? d.includeConfidence
         }
 
         /// True when no annotation is enabled — the renderer skips the
         /// whole caption row in that case so the photo fills the cell.
         var allDisabled: Bool {
             !includeTags && !includeCaption && !includeObservation
-                && !includeMeasurement && !includeReviewerFlag && !includeConfidence
+                && !includeMeasurement && !includeReviewerFlag
         }
     }
 
