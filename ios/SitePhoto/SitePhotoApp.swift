@@ -98,16 +98,19 @@ private struct SplashScreen: View {
     }
 }
 
-/// Permanent footer at the bottom of the projects list. The logo sits on
-/// the underlying app background — no white banner behind it.
+/// Permanent footer at the bottom of the projects list. Sits below the
+/// list's scroll content with a solid grouped-background fill so list
+/// rows can't scroll up underneath the logo.
 private struct FooterLogoBar: View {
     var body: some View {
         Image("BaykalLogo")
             .resizable()
             .scaledToFit()
-            .frame(height: 50)
+            .frame(height: 44)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            .padding(.top, 20)
+            .padding(.bottom, 10)
+            .background(Color(.systemGroupedBackground))
             .accessibilityLabel("Baykal Consulting")
     }
 }

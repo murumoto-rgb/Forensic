@@ -30,17 +30,24 @@ struct PDFExportService {
         // ── 1. Pre-load everything asynchronously ──────────────────────────────
 
         let sortedPhotos = project.photos.sorted { $0.sequenceNumber < $1.sequenceNumber }
+        // Target ≈ 200 PPI at the cell size the user picked. Anything beyond
+        // that bloats the PDF without showing more on the printed page.
+        let photoMaxPixel = contactSheetMaxPixel(perPage: options.perPage)
         var loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []
         for (i, photo) in sortedPhotos.enumerated() {
             onProgress("Loading photo \(i + 1) of \(sortedPhotos.count)…")
             let url = store.imageURL(for: photo, in: project)
             if let data = await store.loadFileBytes(at: url),
-               let img = downsample(data: data, maxPixel: 900) {
+               let img = downsample(data: data, maxPixel: photoMaxPixel) {
+                // Re-encode as JPEG so UIGraphicsPDFRenderer embeds DCT-encoded
+                // bytes instead of raw bitmap — the single biggest factor in
+                // PDF file size for photo-heavy exports.
+                let compressed = jpegEncoded(img, quality: 0.82)
                 // Clean copy first so the engineer can compare side-by-side
                 // in the contact sheet (clean cell, then marked cell).
-                loaded.append((photo, img, false))
+                loaded.append((photo, compressed, false))
                 if photo.markupOverlayFilename != nil {
-                    loaded.append((photo, img, true))
+                    loaded.append((photo, compressed, true))
                 }
             }
         }
@@ -49,8 +56,9 @@ struct PDFExportService {
         var planImage: UIImage?
         if let url = store.floorPlanURL(for: project),
            let data = await store.loadFileBytes(at: url),
-           let img = UIImage(data: data) {
-            planImage = img
+           // Plan is drawn full-page (~7.5×9.7 in at 200 PPI ≈ 1934 px max).
+           let img = downsample(data: data, maxPixel: 2000) {
+            planImage = jpegEncoded(img, quality: 0.85)
         }
 
         onProgress("Generating map…")
@@ -461,7 +469,10 @@ struct PDFExportService {
             if item.includeMarkup,
                let markupURL = store.markupOverlayURL(for: item.photo, in: project),
                let markupData = try? Data(contentsOf: markupURL),
-               let markupImage = UIImage(data: markupData) {
+               // PencilKit overlays are typically captured at the photo's
+               // native resolution. Downsample to the cell target so we
+               // don't embed 4K alpha bitmaps in the PDF.
+               let markupImage = downsample(data: markupData, maxPixel: contactSheetMaxPixel(perPage: perPage)) {
                 markupImage.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
             }
 
@@ -1144,6 +1155,33 @@ struct PDFExportService {
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
         return UIImage(cgImage: cg)
+    }
+
+    /// Largest edge (in pixels) a photo should occupy so it renders at
+    /// ~200 PPI in the user-picked contact-sheet density. Page is Letter
+    /// with 0.5 in margins → 7.5 × 10 in content area. Cell sizes:
+    ///   2-up → 7.5 × 4.83 in  → 1500 px
+    ///   4-up → 3.75 × 4.83 in → 1000 px
+    ///   6-up → 3.75 × 3.22 in →  750 px
+    private func contactSheetMaxPixel(perPage: Int) -> CGFloat {
+        switch perPage {
+        case 2:  return 1500
+        case 4:  return 1000
+        default: return 750
+        }
+    }
+
+    /// Re-encode `image` through JPEG so the bytes embedded by
+    /// `UIGraphicsPDFRenderer` are DCT-compressed instead of a raw bitmap.
+    /// Returns the original image only if encoding fails (which would
+    /// require the image to be unrepresentable as JPEG — unlikely for the
+    /// downsampled CGImages we feed it).
+    private func jpegEncoded(_ image: UIImage, quality: CGFloat) -> UIImage {
+        guard let data = image.jpegData(compressionQuality: quality),
+              let reloaded = UIImage(data: data) else {
+            return image
+        }
+        return reloaded
     }
 
     private func drawText(_ text: String, at point: CGPoint, font: UIFont, color: UIColor) {
