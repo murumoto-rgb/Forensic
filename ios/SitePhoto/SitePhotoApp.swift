@@ -98,19 +98,17 @@ private struct SplashScreen: View {
     }
 }
 
-/// Permanent footer at the bottom of the projects list. Sits below the
-/// list's scroll content with a solid grouped-background fill so list
-/// rows can't scroll up underneath the logo.
+/// Permanent footer at the bottom of the projects list. `safeAreaInset`
+/// already reserves the footer's height in the list's scroll area, so
+/// rows can't scroll up over the logo — no background needed.
 private struct FooterLogoBar: View {
     var body: some View {
         Image("BaykalLogo")
             .resizable()
             .scaledToFit()
-            .frame(height: 44)
+            .frame(height: 36)
             .frame(maxWidth: .infinity)
-            .padding(.top, 20)
-            .padding(.bottom, 10)
-            .background(Color(.systemGroupedBackground))
+            .padding(.bottom, 2)
             .accessibilityLabel("Baykal Consulting")
     }
 }
