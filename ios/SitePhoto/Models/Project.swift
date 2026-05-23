@@ -218,6 +218,73 @@ struct ProjectGPS: Codable, Hashable {
     var timestamp: Date
 }
 
+/// Kinds of structural distress the engineer can drop on a floor plan
+/// alongside the photo pins. Three are point markers (different colors
+/// so they're identifiable at a glance) and one — `crackFloor` — is a
+/// free-style pencil stroke the engineer draws with their finger to
+/// trace the crack's actual path on the slab.
+enum DistressKind: String, Codable, CaseIterable, Hashable {
+    case outOfPlumbDoor
+    case doorNotLatching
+    case crackGradeBeam
+    case crackFloor
+
+    var displayName: String {
+        switch self {
+        case .outOfPlumbDoor:    return "Out of plumb door"
+        case .doorNotLatching:   return "Door not latching"
+        case .crackGradeBeam:    return "Crack in grade beam"
+        case .crackFloor:        return "Crack in floor"
+        }
+    }
+
+    /// Short label for the contact-sheet legend and the on-plan
+    /// callouts — `displayName` is too long to fit next to a marker.
+    var shortLabel: String {
+        switch self {
+        case .outOfPlumbDoor:    return "Door (plumb)"
+        case .doorNotLatching:   return "Door (latch)"
+        case .crackGradeBeam:    return "Grade beam"
+        case .crackFloor:        return "Floor crack"
+        }
+    }
+
+    /// Whether this distress kind is rendered as a free-style stroke
+    /// (true) or as a single point marker (false). Drives the placement
+    /// gesture in `DistressViewerView` and the rendering path in the
+    /// PDF exporter.
+    var isStroke: Bool {
+        self == .crackFloor
+    }
+}
+
+/// One distress observation placed on a floor plan. Stored in
+/// **plan-image pixel coordinates** so the placement survives
+/// re-calibration of the plan's scale (same invariant as photo pins).
+struct DistressMark: Identifiable, Codable, Hashable {
+    var id: UUID
+    var kind: DistressKind
+    /// Pixel coordinates on the plan image. One entry for dot kinds;
+    /// many sampled points for the `crackFloor` pencil stroke.
+    var points: [CGPoint]
+    /// Optional engineer note — surfaced in the editor's side list and
+    /// in the PDF legend. Nil when the user hasn't typed anything yet.
+    var note: String?
+    var createdAt: Date
+
+    init(id: UUID = UUID(),
+         kind: DistressKind,
+         points: [CGPoint],
+         note: String? = nil,
+         createdAt: Date = Date()) {
+        self.id = id
+        self.kind = kind
+        self.points = points
+        self.note = note
+        self.createdAt = createdAt
+    }
+}
+
 struct FloorPlan: Identifiable, Codable, Hashable {
     /// Stable identity assigned on creation. Photos reference the plan
     /// they live on through `Photo.floorPlanID`; the on-disk image file
@@ -235,6 +302,11 @@ struct FloorPlan: Identifiable, Codable, Hashable {
     var anchorLocalXFeet: Double
     var anchorLocalYFeet: Double
     var northDeg: Double
+    /// Distress observations placed on this plan. Independent of
+    /// photo pins (different conceptual layer, different rendering
+    /// path). Default empty so existing project manifests decode
+    /// cleanly.
+    var distress: [DistressMark]
 
     init(id: UUID = UUID(),
          label: String,
@@ -245,7 +317,8 @@ struct FloorPlan: Identifiable, Codable, Hashable {
          anchorPixelY: Double,
          anchorLocalXFeet: Double,
          anchorLocalYFeet: Double,
-         northDeg: Double) {
+         northDeg: Double,
+         distress: [DistressMark] = []) {
         self.id = id
         self.label = label
         self.imageFilename = imageFilename
@@ -256,12 +329,14 @@ struct FloorPlan: Identifiable, Codable, Hashable {
         self.anchorLocalXFeet = anchorLocalXFeet
         self.anchorLocalYFeet = anchorLocalYFeet
         self.northDeg = northDeg
+        self.distress = distress
     }
 
-    /// Tolerate the legacy on-disk shape (no `id`, no `label`) by
-    /// minting fresh values when those keys are missing. Existing
-    /// installs that wrote a `floorPlans: [FloorPlan]` array before
-    /// `id`/`label` shipped will still decode cleanly.
+    /// Tolerate the legacy on-disk shape (no `id`, no `label`,
+    /// no `distress`) by minting fresh values when those keys are
+    /// missing. Existing installs that wrote a `floorPlans: [FloorPlan]`
+    /// array before `id`/`label`/`distress` shipped will still decode
+    /// cleanly.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id                       = try c.decodeIfPresent(UUID.self,   forKey: .id)
@@ -276,6 +351,8 @@ struct FloorPlan: Identifiable, Codable, Hashable {
         self.anchorLocalXFeet         = try c.decode(Double.self, forKey: .anchorLocalXFeet)
         self.anchorLocalYFeet         = try c.decode(Double.self, forKey: .anchorLocalYFeet)
         self.northDeg                 = try c.decode(Double.self, forKey: .northDeg)
+        self.distress                 = try c.decodeIfPresent([DistressMark].self,
+                                                              forKey: .distress) ?? []
     }
 }
 

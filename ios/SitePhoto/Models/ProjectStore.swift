@@ -1666,6 +1666,44 @@ final class ProjectStore {
         return save(p)
     }
 
+    // MARK: - Distress marks
+
+    @discardableResult
+    func addDistress(_ project: Project,
+                      planID: UUID,
+                      mark: DistressMark) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].distress.append(mark)
+        return save(p)
+    }
+
+    @discardableResult
+    func updateDistress(_ project: Project,
+                         planID: UUID,
+                         mark: DistressMark) -> Project {
+        var p = project
+        guard let planIdx = p.floorPlans.firstIndex(where: { $0.id == planID }),
+              let markIdx = p.floorPlans[planIdx].distress.firstIndex(where: { $0.id == mark.id })
+        else { return p }
+        p.floorPlans[planIdx].distress[markIdx] = mark
+        return save(p)
+    }
+
+    @discardableResult
+    func removeDistress(_ project: Project,
+                         planID: UUID,
+                         markID: UUID) -> Project {
+        var p = project
+        guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
+            return p
+        }
+        p.floorPlans[idx].distress.removeAll { $0.id == markID }
+        return save(p)
+    }
+
     /// Bulk variant — assign every photo in `photoIDs` to `planID` (or
     /// detach all of them with `nil`). Saves once instead of once per
     /// photo, so it stays fast on big imports. Mirrors

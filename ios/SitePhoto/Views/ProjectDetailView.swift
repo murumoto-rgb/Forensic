@@ -159,6 +159,11 @@ struct ProjectDetailView: View {
     /// re-trigger the scroll.
     @State private var scrollToPhotoID: UUID?
 
+    /// Drives the floating "Distress" FAB → full-screen distress editor
+    /// presentation. Routed through state so the FAB can sit anywhere
+    /// in the view tree without threading bindings.
+    @State private var showingDistressViewer = false
+
     private struct PhotoTarget: Identifiable {
         let id: UUID
     }
@@ -266,7 +271,12 @@ struct ProjectDetailView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    takePhotoFAB
+                    VStack(spacing: 12) {
+                        if project.floorPlan != nil {
+                            distressFAB
+                        }
+                        takePhotoFAB
+                    }
                 }
                 .searchable(text: $searchText,
                             placement: .navigationBarDrawer(displayMode: .automatic),
@@ -314,6 +324,10 @@ struct ProjectDetailView: View {
                         }
                     )
                     .environment(store)
+                }
+                .fullScreenCover(isPresented: $showingDistressViewer) {
+                    DistressViewerView(projectID: projectID)
+                        .environment(store)
                 }
                 .sheet(isPresented: $showingPlanOrigin) {
                     FloorPlanOriginView(projectID: projectID)
@@ -714,6 +728,28 @@ struct ProjectDetailView: View {
         .padding(.trailing, 20)
         .padding(.bottom, 24)
         .accessibilityLabel("Take Photo")
+    }
+
+    /// Floating distress-annotation button. Sits above the camera FAB
+    /// when a floor plan is active so the engineer can drop structural
+    /// distress markers (out-of-plumb door, door not latching, crack in
+    /// grade beam, free-style floor crack) on the plan in parallel
+    /// with photo pins. Hidden when no plan is set since the editor
+    /// needs an active plan to draw on.
+    private var distressFAB: some View {
+        Button {
+            showingDistressViewer = true
+            Haptics.tap()
+        } label: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(Color.orange, in: Circle())
+                .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
+        }
+        .padding(.trailing, 24)
+        .accessibilityLabel("Mark Distress")
     }
 
     @ViewBuilder
