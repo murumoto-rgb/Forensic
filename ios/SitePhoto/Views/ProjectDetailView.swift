@@ -142,6 +142,23 @@ struct ProjectDetailView: View {
     /// location/bearing/bucket/tags from this original and links back.
     @State private var reshootingFromOriginal: Photo?
 
+    /// Non-nil while the "Edit Calibration Distance" alert is presented
+    /// for a specific plan — carries the plan whose scale is being
+    /// adjusted (the alert uses it to read the current distance and
+    /// figure out which plan to write back to on save). Lighter touch
+    /// than the full re-calibrate flow because the engineer doesn't
+    /// have to re-tap the two endpoints; only the real-world distance
+    /// between them changes.
+    @State private var editingDistanceFor: FloorPlan?
+    @State private var editDistanceDraft: String = ""
+
+    /// Photo id requested by the plan viewer's "Open in project list"
+    /// button. Set when the user taps that button; the list's
+    /// `ScrollViewReader` watches this for changes and scrolls to the
+    /// row, then clears the value so subsequent layout passes don't
+    /// re-trigger the scroll.
+    @State private var scrollToPhotoID: UUID?
+
     private struct PhotoTarget: Identifiable {
         let id: UUID
     }
@@ -222,14 +239,31 @@ struct ProjectDetailView: View {
     var body: some View {
         Group {
             if let project {
-                List {
-                    metadataSection(project)
-                    actionsSection(project)
-                    floorPlanSection(project)
-                    aiTaggingSection(project)
-                    bucketsSection(project)
-                    exportSection(project)
-                    photosSection(project)
+                ScrollViewReader { proxy in
+                    List {
+                        metadataSection(project)
+                        actionsSection(project)
+                        floorPlanSection(project)
+                        aiTaggingSection(project)
+                        bucketsSection(project)
+                        exportSection(project)
+                        photosSection(project)
+                    }
+                    .onChange(of: scrollToPhotoID) { _, newID in
+                        guard let newID else { return }
+                        // Defer a tick so the list has settled (closing
+                        // the plan viewer dismisses a full-screen cover
+                        // that re-runs layout). Then scroll and clear
+                        // the request so we don't bounce on every later
+                        // re-render.
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(150))
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo(newID, anchor: .center)
+                            }
+                            scrollToPhotoID = nil
+                        }
+                    }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     takePhotoFAB
@@ -273,8 +307,13 @@ struct ProjectDetailView: View {
                     .environment(store)
                 }
                 .fullScreenCover(isPresented: $showingPlanViewer) {
-                    PlanViewerView(projectID: projectID)
-                        .environment(store)
+                    PlanViewerView(
+                        projectID: projectID,
+                        onOpenPhotoInList: { id in
+                            scrollToPhotoID = id
+                        }
+                    )
+                    .environment(store)
                 }
                 .sheet(isPresented: $showingPlanOrigin) {
                     FloorPlanOriginView(projectID: projectID)
@@ -291,6 +330,25 @@ struct ProjectDetailView: View {
                 .sheet(isPresented: $showingPlanRecalibrate) {
                     FloorPlanRecalibrateView(projectID: projectID)
                         .environment(store)
+                }
+                .alert(
+                    "Edit Calibration Distance",
+                    isPresented: Binding(
+                        get: { editingDistanceFor != nil },
+                        set: { if !$0 { editingDistanceFor = nil } }
+                    ),
+                    presenting: editingDistanceFor
+                ) { plan in
+                    TextField("Distance (feet)", text: $editDistanceDraft)
+                        .keyboardType(.decimalPad)
+                    Button("Save") {
+                        commitEditDistance(for: plan, project: project)
+                    }
+                    Button("Cancel", role: .cancel) {
+                        editingDistanceFor = nil
+                    }
+                } message: { plan in
+                    Text("Update the real-world distance between the two calibration points on \(plan.label). Photos stay at their current spots on the plan; only the scale (and the feet readouts) change.")
                 }
                 .sheet(isPresented: $showingExport) {
                     ExportView(projectID: projectID)
@@ -999,6 +1057,12 @@ struct ProjectDetailView: View {
                         Label("Set North", systemImage: "location.north")
                     }
                     Button {
+                        editingDistanceFor = plan
+                        editDistanceDraft = trimmedFeet(plan.calibrationDistanceFeet)
+                    } label: {
+                        Label("Edit Calibration Distance", systemImage: "pencil")
+                    }
+                    Button {
                         _ = store.setActiveFloorPlan(project, planID: plan.id)
                         showingPlanRecalibrate = true
                     } label: {
@@ -1034,6 +1098,41 @@ struct ProjectDetailView: View {
     private func planRowSubtitle(project: Project, planID: UUID) -> String {
         let count = project.photos.reduce(0) { $0 + ($1.floorPlanID == planID ? 1 : 0) }
         return "\(count) photo\(count == 1 ? "" : "s")"
+    }
+
+    /// Format a feet value for prefilling the Edit Distance text field —
+    /// strips the ".0" off whole-foot values so the engineer sees
+    /// "12" instead of "12.0" when the plan was calibrated to a clean
+    /// number.
+    private func trimmedFeet(_ value: Double) -> String {
+        if value == floor(value) {
+            return String(Int(value))
+        }
+        return String(value)
+    }
+
+    /// Apply the edited calibration distance. Computes the new
+    /// pixels-per-foot from the existing pixel-distance between the
+    /// original calibration points (recoverable as
+    /// `pixelsPerFoot * calibrationDistanceFeet`) and the engineer's
+    /// new distance, then routes through `store.recalibrateScale` which
+    /// already preserves `planPixelX/Y` and re-derives `localXFeet/Y`
+    /// so photos stay anchored to the same point on the drawing.
+    private func commitEditDistance(for plan: FloorPlan, project: Project) {
+        defer {
+            editingDistanceFor = nil
+            editDistanceDraft = ""
+        }
+        guard let newFeet = Double(editDistanceDraft), newFeet > 0 else { return }
+        let pixelDistance = plan.pixelsPerFoot * plan.calibrationDistanceFeet
+        guard pixelDistance > 0 else { return }
+        let newPixelsPerFoot = pixelDistance / newFeet
+        store.recalibrateScale(
+            project,
+            planID: plan.id,
+            pixelsPerFoot: newPixelsPerFoot,
+            calibrationDistanceFeet: newFeet
+        )
     }
 
     @ViewBuilder
@@ -1076,6 +1175,7 @@ struct ProjectDetailView: View {
                     selectionActionRow(visiblePhotos: visiblePhotos)
                 }
                 ForEach(visiblePhotos) { photo in
+                    Group {
                     if selectionMode {
                         selectablePhotoRow(photo: photo, project: project)
                     } else {
@@ -1116,6 +1216,11 @@ struct ProjectDetailView: View {
                             }
                         }
                     }
+                    }
+                    // Explicit identity so the plan viewer's
+                    // "Open in project list" path can `proxy.scrollTo`
+                    // the row in any selection / filter state.
+                    .id(photo.id)
                 }
             }
         } header: {

@@ -2,6 +2,12 @@ import SwiftUI
 
 struct PlanViewerView: View {
     let projectID: UUID
+    /// Optional callback fired when the engineer taps "Open in project
+    /// list" on a photo's preview. Carries the photo's id back to the
+    /// host so the project list can scroll to that row. The viewer
+    /// dismisses itself before the callback runs; the host is expected
+    /// to drive the scroll on the next layout pass.
+    var onOpenPhotoInList: ((UUID) -> Void)? = nil
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
@@ -64,6 +70,13 @@ struct PlanViewerView: View {
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 selectedPhotoID = id
                             }
+                        },
+                        onOpenInList: { id in
+                            // Dismiss the viewer and let the host scroll
+                            // its project list to this photo so the
+                            // engineer can tag / move / delete.
+                            onOpenPhotoInList?(id)
+                            dismiss()
                         },
                         onDismiss: { closePreview() }
                     )
@@ -939,6 +952,10 @@ private struct PhotoPreviewBar: View {
     /// Invoked when the engineer taps a thumbnail in the strip — the
     /// host wires this to its own `selectedPhotoID` + recenter path.
     let onSelectPhoto: (UUID) -> Void
+    /// Tap target for "open this photo in the project list" — used so
+    /// the engineer can drop out of the plan viewer and land on the
+    /// row in `ProjectDetailView` for tagging / move / delete actions.
+    let onOpenInList: (UUID) -> Void
     let onDismiss: () -> Void
 
     @Environment(ProjectStore.self) private var store
@@ -1161,6 +1178,15 @@ private struct PhotoPreviewBar: View {
             }
 
             HStack(spacing: 4) {
+                Button {
+                    onOpenInList(photo.id)
+                } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.title2)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                        .padding(8)
+                }
+                .accessibilityLabel("Open in project list")
                 Button {
                     guard let project = store.project(withID: projectID) else { return }
                     _ = store.rotatePhotoPreview(project, photoID: photo.id)
