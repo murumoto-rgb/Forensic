@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct CameraView: View {
     let onCapture: (CapturedPhoto) -> Void
@@ -16,78 +17,72 @@ struct CameraView: View {
     @State private var focusReticle: CGPoint?
     @State private var focusReticleHideTask: Task<Void, Never>?
 
+    /// Last valid physical orientation reported by `UIDevice`. We ignore
+    /// `.faceUp`/`.faceDown`/`.unknown` so the controls don't snap around
+    /// when the engineer puts the phone down on a table mid-capture.
+    @State private var physicalOrientation: UIDeviceOrientation = .portrait
+
     @AppStorage("sitephoto.capture48MP") private var capture48MP: Bool = true
     @AppStorage("sitephoto.camera.showGrid") private var showGrid: Bool = false
     @AppStorage("sitephoto.camera.showLevel") private var showLevel: Bool = false
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { geo in
+            let canvasIsLandscape = geo.size.width > geo.size.height
 
-            if let err = setupError {
-                VStack(spacing: 16) {
-                    Image(systemName: "video.slash")
-                        .font(.system(size: 56))
-                    Text("Camera unavailable")
-                        .font(.headline)
-                    Text(err)
-                        .font(.callout)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    Button("Close") { onCancel() }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 8)
-                }
-                .foregroundStyle(.white)
-            } else {
-                CameraPreviewView(
-                    session: controller.session,
-                    onTap: { viewPoint, devicePoint in
-                        handleTap(viewPoint: viewPoint, devicePoint: devicePoint)
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                if let err = setupError {
+                    errorView(err)
+                } else {
+                    CameraPreviewView(
+                        session: controller.session,
+                        onTap: { viewPoint, devicePoint in
+                            handleTap(viewPoint: viewPoint, devicePoint: devicePoint)
+                        }
+                    )
+                    .ignoresSafeArea()
+
+                    if showGrid {
+                        GridOverlay()
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
                     }
-                )
-                .ignoresSafeArea()
-
-                if showGrid {
-                    GridOverlay()
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                }
-                if showLevel {
-                    LevelOverlay(rollRadians: motion.rollRadians)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                }
-
-                if let reticle = focusReticle {
-                    FocusReticle()
-                        .position(reticle)
-                        .allowsHitTesting(false)
-                        .transition(.opacity.combined(with: .scale))
-                }
-
-                if flashTrigger {
-                    Color.white
-                        .ignoresSafeArea()
-                        .opacity(0.6)
-                        .transition(.opacity)
-                }
-
-                VStack {
-                    topBar
-                    Spacer()
-                    if controller.configured {
-                        zoomBar
+                    if showLevel {
+                        LevelOverlay(rollRadians: motion.rollRadians)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
                     }
-                    bottomBar
+
+                    if let reticle = focusReticle {
+                        FocusReticle()
+                            .position(reticle)
+                            .allowsHitTesting(false)
+                            .transition(.opacity.combined(with: .scale))
+                    }
+
+                    if flashTrigger {
+                        Color.white
+                            .ignoresSafeArea()
+                            .opacity(0.6)
+                            .transition(.opacity)
+                    }
+
+                    if canvasIsLandscape {
+                        landscapeControls
+                    } else {
+                        portraitControls
+                    }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
             }
         }
         .task {
             do {
                 try await controller.configure()
+                // Push whatever the device is doing right now onto the
+                // capture connection so the very first shot is right-way-up.
+                updateOrientation(initial: true)
                 if showLevel {
                     motion.start()
                 }
@@ -98,12 +93,128 @@ struct CameraView: View {
         .onChange(of: showLevel) { _, on in
             if on { motion.start() } else { motion.stop() }
         }
+        .onAppear {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        }
         .onDisappear {
             controller.stop()
             motion.stop()
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIDevice.orientationDidChangeNotification
+            )
+        ) { _ in
+            updateOrientation()
         }
         .animation(.easeOut(duration: 0.2), value: focusReticle)
+        .animation(.easeInOut(duration: 0.2), value: physicalOrientation)
     }
+
+    // MARK: - Orientation
+
+    /// Pull the latest `UIDevice.current.orientation`, filter out the
+    /// face-up/face-down/unknown values, and push the result onto both
+    /// the local state (drives the controls layout + glyph rotation) and
+    /// the controller (drives the saved-JPEG orientation).
+    private func updateOrientation(initial: Bool = false) {
+        let o = UIDevice.current.orientation
+        let resolved: UIDeviceOrientation
+        if o.isPortrait || o.isLandscape {
+            resolved = o
+        } else if initial {
+            // First sample before the user has moved the device:
+            // assume portrait so the capture connection has a defined
+            // angle. Later orientation events will refine this.
+            resolved = .portrait
+        } else {
+            return
+        }
+        physicalOrientation = resolved
+        controller.captureOrientation = resolved
+    }
+
+    /// Rotation applied to individual glyphs (text + SF Symbol icons) so
+    /// they read upright from the user's POV. The SwiftUI canvas already
+    /// rotates with the device for landscape (iPhone defaults include
+    /// both landscape orientations), so glyphs are naturally upright
+    /// there. For `.portraitUpsideDown` the iPhone keeps the canvas in
+    /// portrait coords, so glyphs need a manual 180° spin to stay
+    /// readable for an engineer holding the phone upside-down.
+    private var glyphRotation: Angle {
+        physicalOrientation == .portraitUpsideDown ? .degrees(180) : .zero
+    }
+
+    // MARK: - Layouts
+
+    @ViewBuilder
+    private func errorView(_ err: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "video.slash")
+                .font(.system(size: 56))
+            Text("Camera unavailable")
+                .font(.headline)
+            Text(err)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            Button("Close") { onCancel() }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 8)
+        }
+        .foregroundStyle(.white)
+    }
+
+    /// Portrait + upside-down layout: top bar at canvas top, shutter
+    /// cluster at canvas bottom. In upside-down the SwiftUI canvas stays
+    /// portrait (iPhone default doesn't rotate to upside-down), so the
+    /// shutter still sits at the device's hardware-bottom — i.e. the
+    /// charger end, exactly under the user's thumb. Glyph rotation is
+    /// handled per-element via `glyphRotation`.
+    private var portraitControls: some View {
+        VStack {
+            topBar
+            Spacer()
+            if controller.configured {
+                zoomBar
+            }
+            bottomBar
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 24)
+    }
+
+    /// Landscape layout: the SwiftUI canvas rotates with the device, so
+    /// canvas-top = user's top. The shutter still needs to sit at the
+    /// device's charger end — which is on the user's right in
+    /// landscape-left (home button on right) and on the user's left in
+    /// landscape-right. Glyphs are upright for free since SwiftUI has
+    /// rotated the whole UI to match the user's POV.
+    private var landscapeControls: some View {
+        let shutterTrailing = (physicalOrientation == .landscapeLeft)
+        return HStack {
+            if shutterTrailing {
+                topBar
+                Spacer()
+                if controller.configured {
+                    zoomBar
+                }
+                bottomBar
+            } else {
+                bottomBar
+                if controller.configured {
+                    zoomBar
+                }
+                Spacer()
+                topBar
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - Subviews
 
     private var topBar: some View {
         HStack {
@@ -115,6 +226,7 @@ struct CameraView: View {
                     .foregroundStyle(.white)
                     .frame(width: 40, height: 40)
                     .background(.black.opacity(0.5), in: Circle())
+                    .rotationEffect(glyphRotation)
             }
             Spacer()
             if controller.configured {
@@ -170,6 +282,7 @@ struct CameraView: View {
                     in: Capsule()
                 )
                 .foregroundStyle(isOn ? .black : .white)
+                .rotationEffect(glyphRotation)
         }
         .accessibilityLabel(accessibilityLabel)
     }
@@ -187,6 +300,7 @@ struct CameraView: View {
                     in: Capsule()
                 )
                 .foregroundStyle(capture48MP ? .black : .white)
+                .rotationEffect(glyphRotation)
         }
     }
 
@@ -205,6 +319,7 @@ struct CameraView: View {
                             in: Capsule()
                         )
                         .foregroundStyle(controller.flashMode == mode ? .black : .white)
+                        .rotationEffect(glyphRotation)
                 }
             }
         }
@@ -225,6 +340,7 @@ struct CameraView: View {
                             in: Capsule()
                         )
                         .foregroundStyle(controller.userZoom == z ? .black : .white)
+                        .rotationEffect(glyphRotation)
                 }
             }
         }
@@ -257,6 +373,7 @@ struct CameraView: View {
                 }
             }
             .frame(width: 80, alignment: .trailing)
+            .rotationEffect(glyphRotation)
         }
     }
 
@@ -388,7 +505,12 @@ private struct CameraPreviewView: UIViewRepresentable {
     func makeUIView(context: Context) -> PreviewUIView {
         let v = PreviewUIView()
         v.previewLayer.session = session
-        v.previewLayer.videoGravity = .resizeAspectFill
+        // Letterbox to the captured aspect rather than crop-fill. With
+        // .resizeAspectFill the live preview was showing a tighter crop
+        // than the saved JPEG, so what the engineer framed wasn't what
+        // they got — switching to .resizeAspect makes preview and capture
+        // line up. Black bars fill the unused screen area.
+        v.previewLayer.videoGravity = .resizeAspect
         context.coordinator.view = v
         context.coordinator.onTap = onTap
         let tap = UITapGestureRecognizer(target: context.coordinator,

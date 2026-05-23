@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import Observation
+import UIKit
 
 enum CameraError: LocalizedError {
     case denied
@@ -47,7 +48,27 @@ final class CameraController: NSObject {
     private(set) var configured: Bool = false
 
     var userZoom: Double = 1.0
-    var flashMode: FlashMode = .auto
+    var flashMode: FlashMode = .auto {
+        didSet { Self.persistFlashMode(flashMode) }
+    }
+
+    /// Physical orientation of the device, sampled by `CameraView` from
+    /// `UIDevice.current.orientation` notifications and pushed in here so
+    /// the photo-output connection can stamp the correct rotation on each
+    /// captured JPEG. The preview layer is rotated separately by the view
+    /// (see `CameraView`) — keeping the two paths independent lets us
+    /// letterbox the preview without also rotating the captured frame.
+    var captureOrientation: UIDeviceOrientation = .portrait {
+        didSet { applyCaptureOrientation() }
+    }
+
+    /// Storage keys for the user's last flash + zoom selection. Persisted
+    /// so the engineer doesn't have to re-tick "flash on" or re-zoom to 2×
+    /// every time they bounce out of the camera to drop a plan pin and
+    /// come back. Keys match the `@AppStorage`-named keys elsewhere in
+    /// the camera UI.
+    private static let flashStorageKey = "sitephoto.camera.flashMode"
+    private static let zoomStorageKey = "sitephoto.camera.zoom"
 
     /// True when the active device's sensor supports a "high-res" capture
     /// (≥40 megapixels — i.e. the 48 MP main on iPhone Pro models). Used by
@@ -60,6 +81,22 @@ final class CameraController: NSObject {
 
     private var captureContinuation: CheckedContinuation<Data, Error>?
     private let sessionQueue = DispatchQueue(label: "sitephoto.camera.session")
+
+    override init() {
+        super.init()
+        // Hydrate the last flash + zoom selection before configure(); the
+        // zoom can't be applied until we know which lens we ended up on,
+        // so configure() consults `userZoom` after picking the device.
+        // didSet's harmless roundtrip write back to UserDefaults is OK.
+        if let raw = UserDefaults.standard.string(forKey: Self.flashStorageKey),
+           let mode = FlashMode(rawValue: raw) {
+            flashMode = mode
+        }
+        let z = UserDefaults.standard.double(forKey: Self.zoomStorageKey)
+        if z > 0 {
+            userZoom = z
+        }
+    }
 
     /// Configure the capture session and start running.
     func configure() async throws {
@@ -128,8 +165,14 @@ final class CameraController: NSObject {
 
         session.commitConfiguration()
 
-        // Apply initial zoom (1x in user-facing terms).
-        try applyUserZoom(1.0)
+        // Apply initial zoom — prefer the persisted user choice if it
+        // still lines up with this lens's zoom rail, else 1x.
+        let initialZoom = availableUserZooms.contains(userZoom) ? userZoom : 1.0
+        try applyUserZoom(initialZoom)
+
+        // Stamp the active orientation onto the output connection so the
+        // first capture is right-way-up even if the user hasn't moved yet.
+        applyCaptureOrientation()
 
         // Start session on a background queue so the UI thread is not blocked.
         sessionQueue.async {
@@ -162,7 +205,33 @@ final class CameraController: NSObject {
         device.videoZoomFactor = clamped
         device.unlockForConfiguration()
         userZoom = z
+        UserDefaults.standard.set(z, forKey: Self.zoomStorageKey)
         updateLensName(deviceZoom: clamped)
+    }
+
+    private static func persistFlashMode(_ mode: FlashMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: flashStorageKey)
+    }
+
+    /// Convert the cached `captureOrientation` into a rotation angle and
+    /// push it onto the photo-output connection. AVFoundation measures
+    /// `videoRotationAngle` clockwise from the sensor's native (landscape)
+    /// frame. The values here are what every Apple sample app uses for a
+    /// back camera: portrait = 90°, upside-down = 270°, landscape-left
+    /// (home button on right) = 0°, landscape-right = 180°.
+    private func applyCaptureOrientation() {
+        guard let connection = photoOutput.connection(with: .video) else { return }
+        let angle: CGFloat
+        switch captureOrientation {
+        case .portrait:                angle = 90
+        case .portraitUpsideDown:      angle = 270
+        case .landscapeLeft:           angle = 0
+        case .landscapeRight:          angle = 180
+        default:                       return  // .unknown / .faceUp / .faceDown: keep last
+        }
+        if connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
     }
 
     private func updateLensName(deviceZoom: CGFloat) {

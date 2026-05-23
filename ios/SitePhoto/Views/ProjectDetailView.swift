@@ -231,6 +231,9 @@ struct ProjectDetailView: View {
                     exportSection(project)
                     photosSection(project)
                 }
+                .overlay(alignment: .bottomTrailing) {
+                    takePhotoFAB
+                }
                 .searchable(text: $searchText,
                             placement: .navigationBarDrawer(displayMode: .automatic),
                             prompt: "Search photos by tag, caption, or #")
@@ -634,15 +637,34 @@ struct ProjectDetailView: View {
         }
     }
 
+    /// Floating action button anchored to the bottom-right of the
+    /// project detail screen. Triggers the camera capture flow — the
+    /// same flow the now-removed inline "Take Photo" row used to drive.
+    /// Tinted with the user's accent so it picks up theme changes.
+    private var takePhotoFAB: some View {
+        Button {
+            showingCamera = true
+            Haptics.tap()
+        } label: {
+            Image(systemName: "camera.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 60, height: 60)
+                .background(AppearanceSettings.currentAccent(), in: Circle())
+                .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
+        }
+        .padding(.trailing, 20)
+        .padding(.bottom, 24)
+        .accessibilityLabel("Take Photo")
+    }
+
     @ViewBuilder
     private func actionsSection(_ project: Project) -> some View {
         Section("Photo Documentation") {
-            Button {
-                showingCamera = true
-            } label: {
-                Label("Take Photo", systemImage: "camera")
-            }
-
+            // Take Photo is no longer surfaced here — it's a floating
+            // camera FAB anchored to the bottom-right of the project
+            // detail screen (see `takePhotoFAB`). Keeping the import
+            // actions inline so they don't fight the FAB for attention.
             PhotosPicker(
                 selection: $photoPickerItems,
                 // No cap — the loop in importFromPhotosLibrary processes
