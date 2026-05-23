@@ -71,6 +71,37 @@ struct SitePhotoApp: App {
     }
 }
 
+/// Loads the bundled `BaykalLogo` asset when available, otherwise
+/// renders a "Baykal Consulting" text mark. The PNG file is intentionally
+/// not committed (see commit 0451287's note) — until the user drops it
+/// into `Assets.xcassets/BaykalLogo.imageset/`, this avoids the
+/// "asset can't be found" runtime warning and gives a sensible
+/// visible fallback.
+struct BaykalLogo: View {
+    var maxHeight: CGFloat
+    var maxWidth: CGFloat?
+
+    var body: some View {
+        if let uiImage = UIImage(named: "BaykalLogo") {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                .accessibilityLabel("Baykal Consulting")
+        } else {
+            Text("Baykal Consulting")
+                .font(.system(size: max(12, maxHeight * 0.4),
+                               weight: .semibold,
+                               design: .serif))
+                .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.31))
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                .accessibilityLabel("Baykal Consulting")
+        }
+    }
+}
+
 /// Full white background with the logo centered + a loading indicator
 /// underneath. Covers the entire window until the app fades it out.
 private struct SplashScreen: View {
@@ -78,11 +109,7 @@ private struct SplashScreen: View {
         ZStack {
             Color.white.ignoresSafeArea()
             VStack(spacing: 28) {
-                Image("BaykalLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 280, maxHeight: 200)
-                    .accessibilityLabel("Baykal Consulting")
+                BaykalLogo(maxHeight: 200, maxWidth: 280)
                 ProgressView()
                     .controlSize(.regular)
                     // Match the navy from the logo so it reads as part of
@@ -104,13 +131,9 @@ private struct SplashScreen: View {
 /// at the bottom of the list doesn't visually bleed through the logo.
 private struct FooterLogoBar: View {
     var body: some View {
-        Image("BaykalLogo")
-            .resizable()
-            .scaledToFit()
-            .frame(height: 32)
+        BaykalLogo(maxHeight: 32, maxWidth: nil)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 2)
             .background(.thinMaterial)
-            .accessibilityLabel("Baykal Consulting")
     }
 }

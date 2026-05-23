@@ -388,9 +388,7 @@ struct SettingsSheet: View {
                                     .aspectRatio(contentMode: .fit)
                                     .padding(6)
                             } else {
-                                Image("BaykalLogo")
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
+                                BaykalLogo(maxHeight: 56, maxWidth: nil)
                                     .padding(6)
                             }
                         }

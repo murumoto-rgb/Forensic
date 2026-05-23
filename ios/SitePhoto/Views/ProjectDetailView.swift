@@ -271,12 +271,7 @@ struct ProjectDetailView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    VStack(spacing: 12) {
-                        if project.floorPlan != nil {
-                            distressFAB
-                        }
-                        takePhotoFAB
-                    }
+                    fabStack(for: project)
                 }
                 .searchable(text: $searchText,
                             placement: .navigationBarDrawer(displayMode: .automatic),
@@ -706,6 +701,23 @@ struct ProjectDetailView: View {
             Image(systemName: "chevron.right")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Bottom-right floating-action stack. Threading `project` through
+    /// as an explicit parameter (rather than capturing it from the
+    /// outer `if let project { ... }` binding inside an overlay
+    /// closure) gives SwiftUI a stable dependency to track — without
+    /// it, the distress FAB would sometimes only appear after the
+    /// view re-rendered due to an unrelated state change (e.g. after
+    /// a photo capture).
+    @ViewBuilder
+    private func fabStack(for project: Project) -> some View {
+        VStack(spacing: 12) {
+            if !project.floorPlans.isEmpty {
+                distressFAB
+            }
+            takePhotoFAB
         }
     }
 
