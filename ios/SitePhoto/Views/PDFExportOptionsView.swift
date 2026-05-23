@@ -11,6 +11,7 @@ import SwiftUI
 /// every change so the picks persist across exports and launches.
 struct PDFExportOptionsView: View {
     let projectID: UUID
+    @Environment(ProjectStore.self) private var store
 
     @AppStorage("sitephoto.pdfExportOptions") private var storedData: Data = Data()
 
@@ -18,6 +19,10 @@ struct PDFExportOptionsView: View {
     @State private var loaded: Bool = false
 
     private let perPageChoices: [Int] = [2, 4, 6]
+
+    private var project: Project? {
+        store.project(withID: projectID)
+    }
 
     var body: some View {
         Form {
@@ -32,6 +37,13 @@ struct PDFExportOptionsView: View {
                 Text("Layout")
             } footer: {
                 Text("2 photos per page = full-width cells, ideal when each photo needs to read large. 6 is the legacy default.")
+            }
+
+            if let project, project.floorPlans.count > 1 {
+                floorsSection(project)
+            }
+            if let project, project.floorPlan != nil {
+                planRenderingSection(project)
             }
 
             Section {
@@ -123,6 +135,83 @@ struct PDFExportOptionsView: View {
             // Persist on every change so the next export sees the same
             // picks without an explicit save action.
             storedData = newValue.jsonData()
+        }
+    }
+
+    @ViewBuilder
+    private func floorsSection(_ project: Project) -> some View {
+        Section {
+            ForEach(project.floorPlans) { plan in
+                Button {
+                    toggleFloor(plan.id, in: project)
+                } label: {
+                    HStack {
+                        Image(systemName: isSelected(plan.id, in: project)
+                              ? "checkmark.square.fill"
+                              : "square")
+                            .foregroundStyle(isSelected(plan.id, in: project)
+                                              ? Color.accentColor
+                                              : .secondary)
+                        Text(plan.label)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            HStack {
+                Text("Floors to include")
+                Spacer()
+                Button("All") {
+                    options.selectedFloorIDs = nil
+                }
+                .font(.caption)
+                .textCase(nil)
+            }
+        } footer: {
+            Text("Tick the floors you want in this PDF. The report renders each selected floor's plan(s) followed by that floor's photos, then a separator page and a final section of photos not located on any plan.")
+        }
+    }
+
+    /// Returns whether `planID` is currently included in the export.
+    /// `selectedFloorIDs == nil` is the "all included" sentinel.
+    private func isSelected(_ planID: UUID, in project: Project) -> Bool {
+        if let selected = options.selectedFloorIDs {
+            return selected.contains(planID)
+        }
+        return true
+    }
+
+    /// Toggle a floor's inclusion. Migrates the sentinel `nil` to an
+    /// explicit set when the engineer first deselects a floor; collapses
+    /// back to `nil` when the explicit set re-includes every floor.
+    private func toggleFloor(_ planID: UUID, in project: Project) {
+        let allIDs = Set(project.floorPlans.map(\.id))
+        var current = options.selectedFloorIDs ?? allIDs
+        if current.contains(planID) {
+            current.remove(planID)
+        } else {
+            current.insert(planID)
+        }
+        options.selectedFloorIDs = (current == allIDs) ? nil : current
+    }
+
+    @ViewBuilder
+    private func planRenderingSection(_ project: Project) -> some View {
+        Section {
+            Picker("Plan pages", selection: $options.planMode) {
+                ForEach(PDFExportOptions.PlanRenderMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } header: {
+            Text("Plan rendering")
+        } footer: {
+            Text("Choose what each floor's `.plan` section contains. \"Distress\" pages render the door + crack marks you placed on the plan. \"Merged\" overlays the photo pins and distress marks on a single page.")
         }
     }
 

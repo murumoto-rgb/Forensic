@@ -21,6 +21,51 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
     /// any whose data isn't applicable (no plan → skip `.plan`,
     /// `includeMetadataTable == false` → skip `.metadataTable`).
     var sectionOrder: [Section]
+    /// Specific floor plans to include in the export. `nil` = "include
+    /// all floors" (also the default for projects that pre-date this
+    /// option). Photos not on any included plan land in the trailing
+    /// "Unlocated photos" section so nothing gets dropped.
+    var selectedFloorIDs: Set<UUID>?
+    /// How each floor's `.plan` section is rendered. The default
+    /// `.photoOnly` matches the legacy behaviour so existing exports
+    /// produce the same output.
+    var planMode: PlanRenderMode
+
+    /// Choices for the `.plan` section rendering when distress
+    /// annotations are present on a floor. The four modes cover the
+    /// cross-product of {photo pins, distress marks} × {separate
+    /// pages, one merged page}.
+    enum PlanRenderMode: String, Codable, CaseIterable, Sendable, Identifiable {
+        case photoOnly
+        case distressOnly
+        case photoAndDistressSeparate
+        case merged
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .photoOnly:                return "Photo plan only"
+            case .distressOnly:             return "Distress plan only"
+            case .photoAndDistressSeparate: return "Both on separate pages"
+            case .merged:                   return "Both merged on one page"
+            }
+        }
+
+        /// Whether the photo-pin overlay should be drawn for this mode.
+        var rendersPhotos: Bool {
+            self == .photoOnly || self == .photoAndDistressSeparate || self == .merged
+        }
+        /// Whether the distress overlay should be drawn for this mode.
+        var rendersDistress: Bool {
+            self == .distressOnly || self == .photoAndDistressSeparate || self == .merged
+        }
+        /// Whether photos + distress share a single page (otherwise
+        /// they get one page each).
+        var collapsesOntoOnePage: Bool {
+            self == .merged || self == .photoOnly || self == .distressOnly
+        }
+    }
 
     /// Bag of independent toggles for per-photo annotations rendered
     /// under each contact-sheet cell. Adding a new annotation = adding
@@ -92,7 +137,9 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
         groupByBucket: false,
         includeMetadataTable: false,
         annotations: .defaults,
-        sectionOrder: [.plan, .contactSheets, .metadataTable]
+        sectionOrder: [.plan, .contactSheets, .metadataTable],
+        selectedFloorIDs: nil,
+        planMode: .photoOnly
     )
 
     /// Tolerant decoder — every field falls back to its default when
@@ -121,18 +168,25 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
             resolved.append(s); seen.insert(s)
         }
         self.sectionOrder = resolved
+        self.selectedFloorIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .selectedFloorIDs)
+        self.planMode = try c.decodeIfPresent(PlanRenderMode.self, forKey: .planMode)
+            ?? PDFExportOptions.defaults.planMode
     }
 
     init(perPage: Int,
          groupByBucket: Bool,
          includeMetadataTable: Bool,
          annotations: AnnotationOptions = .defaults,
-         sectionOrder: [Section]) {
+         sectionOrder: [Section],
+         selectedFloorIDs: Set<UUID>? = nil,
+         planMode: PlanRenderMode = .photoOnly) {
         self.perPage = perPage
         self.groupByBucket = groupByBucket
         self.includeMetadataTable = includeMetadataTable
         self.annotations = annotations
         self.sectionOrder = sectionOrder
+        self.selectedFloorIDs = selectedFloorIDs
+        self.planMode = planMode
     }
 
     /// Encode + decode helpers used by `@AppStorage` callers that need

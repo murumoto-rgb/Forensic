@@ -52,13 +52,19 @@ struct PDFExportService {
             }
         }
 
-        onProgress("Loading floor plan…")
-        var planImage: UIImage?
-        if let url = store.floorPlanURL(for: project),
-           let data = await store.loadFileBytes(at: url),
-           // Plan is drawn full-page (~7.5×9.7 in at 200 PPI ≈ 1934 px max).
-           let img = downsample(data: data, maxPixel: 2000) {
-            planImage = jpegEncoded(img, quality: 0.85)
+        // Load every selected floor plan's rasterised image. Skipped
+        // plans (or plans whose image is missing in iCloud) are silently
+        // omitted; downstream rendering treats absence as "no plan
+        // page for this floor" rather than failing the whole export.
+        let selectedPlans = self.selectedPlans
+        var planImagesByID: [UUID: UIImage] = [:]
+        for plan in selectedPlans {
+            onProgress("Loading \(plan.label)…")
+            guard let url = store.floorPlanURL(for: project, planID: plan.id),
+                  let data = await store.loadFileBytes(at: url),
+                  // Plan is drawn full-page (~7.5×9.7 in at 200 PPI ≈ 1934 px max).
+                  let img = downsample(data: data, maxPixel: 2000) else { continue }
+            planImagesByID[plan.id] = jpegEncoded(img, quality: 0.85)
         }
 
         onProgress("Generating map…")
@@ -71,10 +77,12 @@ struct PDFExportService {
 
         // ── 2. Pre-pass: count pages so footers can read "Page N of M" ─────────
 
-        let contactSheetGroups = makeContactSheetGroups(loaded: loaded)
+        let floorPartitions = partitionByFloor(loaded: loaded,
+                                                selectedPlans: selectedPlans)
         let totalPages = countPages(
-            planAvailable: planImage != nil && project.floorPlan != nil,
-            contactSheetGroups: contactSheetGroups,
+            selectedPlans: selectedPlans,
+            planImagesByID: planImagesByID,
+            floorPartitions: floorPartitions,
             metadataPhotoCount: sortedPhotos.count
         )
 
@@ -99,43 +107,56 @@ struct PDFExportService {
             for section in options.sectionOrder {
                 switch section {
                 case .plan:
-                    guard let img = planImage, project.floorPlan != nil else { continue }
-                    ctx.beginPage()
-                    pageIndex += 1
-                    drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin, planImage: img)
-                    drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
-                                    pageRect: pageRect, margin: margin,
-                                    pageIndex: pageIndex, total: totalPages)
+                    // One pass per selected floor — each plan can yield
+                    // multiple pages depending on the engineer's choice
+                    // of `planMode` (photo only / distress only / both
+                    // separate / merged). Floors whose image failed to
+                    // load are skipped silently.
+                    for plan in selectedPlans {
+                        guard let img = planImagesByID[plan.id] else { continue }
+                        for content in planPages(for: options.planMode, plan: plan) {
+                            ctx.beginPage()
+                            pageIndex += 1
+                            drawPlan(ctx.cgContext, pageRect: pageRect, margin: margin,
+                                     plan: plan, planImage: img, mode: content)
+                            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                            pageRect: pageRect, margin: margin,
+                                            pageIndex: pageIndex, total: totalPages)
+                        }
+                    }
                 case .contactSheets:
-                    for group in contactSheetGroups {
-                        if let header = group.header {
-                            ctx.beginPage()
-                            pageIndex += 1
-                            drawBucketHeader(ctx.cgContext,
-                                              name: header.name,
-                                              color: header.color,
-                                              photoCount: group.items.count,
-                                              pageRect: pageRect, margin: margin)
-                            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
-                                            pageRect: pageRect, margin: margin,
-                                            pageIndex: pageIndex, total: totalPages)
-                        }
-                        for start in stride(from: 0, to: group.items.count, by: options.perPage) {
-                            ctx.beginPage()
-                            pageIndex += 1
-                            let slice = Array(
-                                group.items[start..<min(start + options.perPage, group.items.count)]
-                            )
-                            drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
-                                             photos: slice,
-                                             rangeStart: start,
-                                             total: group.items.count,
-                                             perPage: options.perPage,
-                                             groupName: group.header?.name)
-                            drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
-                                            pageRect: pageRect, margin: margin,
-                                            pageIndex: pageIndex, total: totalPages)
-                        }
+                    // Per-floor first (floors render in floorPartitions
+                    // order), then a separator + the "Unlocated photos"
+                    // trailing section so every photo is accounted for
+                    // in the final PDF.
+                    for partition in floorPartitions.placed {
+                        renderContactGroupBlock(
+                            ctx: ctx, pageRect: pageRect, margin: margin,
+                            groups: partition.groups,
+                            allItemsInBlock: partition.allItems,
+                            blockLabel: partition.floor.label,
+                            logo: logo, branding: branding,
+                            totalPages: totalPages,
+                            pageIndex: &pageIndex
+                        )
+                    }
+                    if !floorPartitions.unplaced.isEmpty {
+                        ctx.beginPage()
+                        pageIndex += 1
+                        drawSeparator(ctx.cgContext, pageRect: pageRect,
+                                       margin: margin, title: "Unlocated Photos")
+                        drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                        pageRect: pageRect, margin: margin,
+                                        pageIndex: pageIndex, total: totalPages)
+                        renderContactGroupBlock(
+                            ctx: ctx, pageRect: pageRect, margin: margin,
+                            groups: makeContactSheetGroups(loaded: floorPartitions.unplaced),
+                            allItemsInBlock: floorPartitions.unplaced,
+                            blockLabel: "Unlocated",
+                            logo: logo, branding: branding,
+                            totalPages: totalPages,
+                            pageIndex: &pageIndex
+                        )
                     }
                 case .metadataTable:
                     guard options.includeMetadataTable, !sortedPhotos.isEmpty else { continue }
@@ -208,19 +229,138 @@ struct PDFExportService {
         return groups
     }
 
-    private func countPages(planAvailable: Bool,
-                              contactSheetGroups: [ContactSheetGroup],
+    // MARK: - Floor partitioning (multi-floor export support)
+
+    /// Plans included in the export, in the project's natural
+    /// declaration order. Honors `options.selectedFloorIDs` — `nil`
+    /// (the default) means "every floor", an explicit set keeps only
+    /// the listed plans.
+    private var selectedPlans: [FloorPlan] {
+        let allowed = options.selectedFloorIDs
+        return project.floorPlans.filter { plan in
+            allowed.map { $0.contains(plan.id) } ?? true
+        }
+    }
+
+    private struct FloorPartition {
+        let floor: FloorPlan
+        let groups: [ContactSheetGroup]
+        let allItems: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+    }
+
+    private struct FloorPartitions {
+        let placed: [FloorPartition]
+        let unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+    }
+
+    /// Slice `loaded` into per-floor partitions + a leftover bucket of
+    /// photos not on any selected floor. Each per-floor partition then
+    /// re-uses `makeContactSheetGroups` so the optional bucket grouping
+    /// still applies inside each floor.
+    private func partitionByFloor(
+        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
+        selectedPlans: [FloorPlan]
+    ) -> FloorPartitions {
+        let selectedIDs = Set(selectedPlans.map(\.id))
+        var byFloor: [UUID: [(photo: Photo, image: UIImage, includeMarkup: Bool)]] = [:]
+        var unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []
+        for item in loaded {
+            if let pid = item.photo.floorPlanID, selectedIDs.contains(pid) {
+                byFloor[pid, default: []].append(item)
+            } else {
+                unplaced.append(item)
+            }
+        }
+        let placed: [FloorPartition] = selectedPlans.compactMap { plan in
+            let items = byFloor[plan.id] ?? []
+            guard !items.isEmpty else { return nil }
+            return FloorPartition(
+                floor: plan,
+                groups: makeContactSheetGroups(loaded: items),
+                allItems: items
+            )
+        }
+        return FloorPartitions(placed: placed, unplaced: unplaced)
+    }
+
+    /// Render one block of contact-sheet groups (e.g. all photos on a
+    /// floor, or the trailing unlocated batch). Handles the bucket
+    /// header pages + each group's slice loop. Mutates `pageIndex` so
+    /// the page-number footer stays accurate across blocks.
+    private func renderContactGroupBlock(
+        ctx: UIGraphicsPDFRendererContext,
+        pageRect: CGRect,
+        margin: CGFloat,
+        groups: [ContactSheetGroup],
+        allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
+        blockLabel: String,
+        logo: UIImage?,
+        branding: ReportBranding,
+        totalPages: Int,
+        pageIndex: inout Int
+    ) {
+        for group in groups {
+            if let header = group.header {
+                ctx.beginPage()
+                pageIndex += 1
+                drawBucketHeader(ctx.cgContext,
+                                  name: "\(blockLabel) · \(header.name)",
+                                  color: header.color,
+                                  photoCount: group.items.count,
+                                  pageRect: pageRect, margin: margin)
+                drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                pageRect: pageRect, margin: margin,
+                                pageIndex: pageIndex, total: totalPages)
+            }
+            for start in stride(from: 0, to: group.items.count, by: options.perPage) {
+                ctx.beginPage()
+                pageIndex += 1
+                let slice = Array(
+                    group.items[start..<min(start + options.perPage, group.items.count)]
+                )
+                let headerName = group.header.map { "\(blockLabel) · \($0.name)" }
+                    ?? blockLabel
+                drawContactSheet(ctx.cgContext, pageRect: pageRect, margin: margin,
+                                 photos: slice,
+                                 rangeStart: start,
+                                 total: group.items.count,
+                                 perPage: options.perPage,
+                                 groupName: headerName,
+                                 allItemsInBlock: allItemsInBlock)
+                drawPageChrome(ctx.cgContext, logo: logo, branding: branding,
+                                pageRect: pageRect, margin: margin,
+                                pageIndex: pageIndex, total: totalPages)
+            }
+        }
+    }
+
+    private func countPages(selectedPlans: [FloorPlan],
+                              planImagesByID: [UUID: UIImage],
+                              floorPartitions: FloorPartitions,
                               metadataPhotoCount: Int) -> Int {
         var pages = 1  // cover
         for section in options.sectionOrder {
             switch section {
             case .plan:
-                if planAvailable { pages += 1 }
+                for plan in selectedPlans
+                    where planImagesByID[plan.id] != nil {
+                    pages += planPages(for: options.planMode, plan: plan).count
+                }
             case .contactSheets:
-                for group in contactSheetGroups {
-                    if group.header != nil { pages += 1 }
-                    pages += Int((Double(group.items.count)
-                                   / Double(options.perPage)).rounded(.up))
+                for partition in floorPartitions.placed {
+                    for group in partition.groups {
+                        if group.header != nil { pages += 1 }
+                        pages += Int((Double(group.items.count)
+                                       / Double(options.perPage)).rounded(.up))
+                    }
+                }
+                if !floorPartitions.unplaced.isEmpty {
+                    pages += 1  // separator
+                    for group in makeContactSheetGroups(loaded: floorPartitions.unplaced) {
+                        if group.header != nil { pages += 1 }
+                        pages += Int((Double(group.items.count)
+                                       / Double(options.perPage)).rounded(.up))
+                    }
                 }
             case .metadataTable:
                 guard options.includeMetadataTable, metadataPhotoCount > 0 else { continue }
@@ -357,18 +497,24 @@ struct PDFExportService {
 
     // MARK: - Floor plan page
 
-    private func drawPlan(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat, planImage: UIImage) {
-        guard let plan = project.floorPlan else { return }
+    /// Renders one floor plan page. `mode` controls whether photo
+    /// bubbles, distress marks, or both are overlaid. The legend space
+    /// below the plan image is reserved unconditionally so the layout
+    /// is stable across modes — when there are no photo stacks or
+    /// distress marks, the bottom strip simply renders empty.
+    private func drawPlan(_ ctx: CGContext,
+                           pageRect: CGRect,
+                           margin: CGFloat,
+                           plan: FloorPlan,
+                           planImage: UIImage,
+                           mode: PlanPageContent) {
         var y = margin
-        drawText("\(project.name) · Floor Plan",
+        let title = "\(project.name) · \(plan.label)\(mode.titleSuffix)"
+        drawText(title,
                  at: CGPoint(x: margin, y: y), font: .boldSystemFont(ofSize: 12), color: .black)
         y += 22
 
         let contentW = pageRect.width - 2 * margin
-        // Reserve a bit of bottom space in case a "Photo stacks" legend
-        // needs to render below the image. Cheap to reserve even when no
-        // stacks exist on this plan — the image just sits a few points
-        // higher than before.
         let legendReserve: CGFloat = 80
         let areaH = pageRect.height - y - margin - legendReserve
         let imgSize = planImage.size
@@ -376,18 +522,186 @@ struct PDFExportService {
         let dispW = imgSize.width * scale
         let dispH = imgSize.height * scale
         let imgX = margin + (contentW - dispW) / 2
-        // Top-align the image inside the area so any leftover space sits
-        // beneath the image, where the photo-stacks legend goes.
         let imgY = y
 
         planImage.draw(in: CGRect(x: imgX, y: imgY, width: dispW, height: dispH))
-        let stacks = drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY,
+
+        var stacks: [PhotoStack] = []
+        if mode.includePhotos {
+            stacks = drawBubbles(ctx, plan: plan, originX: imgX, originY: imgY,
                                   scale: scale, imgSize: imgSize)
+        }
+        if mode.includeDistress {
+            drawDistress(ctx, plan: plan, originX: imgX, originY: imgY,
+                          scale: scale, imgSize: imgSize)
+        }
         if !stacks.isEmpty {
             drawPhotoStacksLegend(ctx, pageRect: pageRect, margin: margin,
                                    stacks: stacks,
                                    topY: imgY + dispH + 12)
         }
+        if mode.includeDistress, !plan.distress.isEmpty {
+            // Distress legend sits below the stacks legend (or right
+            // under the image if no stacks were drawn) — counts each
+            // distress kind so a reviewer can interpret the marks at
+            // a glance without flipping back to the legend page.
+            drawDistressLegend(ctx, pageRect: pageRect, margin: margin,
+                                marks: plan.distress,
+                                topY: imgY + dispH + 12
+                                    + (stacks.isEmpty ? 0 : 56))
+        }
+    }
+
+    /// Per-page recipe — distinct from the user-chosen `PlanRenderMode`
+    /// because the "separate pages" mode produces TWO `PlanPageContent`
+    /// entries per plan (one for photos, one for distress).
+    private struct PlanPageContent {
+        let includePhotos: Bool
+        let includeDistress: Bool
+
+        var titleSuffix: String {
+            switch (includePhotos, includeDistress) {
+            case (true, true):    return ""
+            case (true, false):   return " · Photos"
+            case (false, true):   return " · Distress"
+            case (false, false):  return ""
+            }
+        }
+    }
+
+    /// Expand the user's `PlanRenderMode` into the ordered list of
+    /// page contents to render for one floor. `.photoOnly` → one photo
+    /// page; `.distressOnly` → one distress page; `.merged` → one page
+    /// with both; `.photoAndDistressSeparate` → photo page followed by
+    /// distress page. Distress pages are skipped when the plan has no
+    /// distress marks (so engineers don't get a blank page for empty
+    /// plans).
+    private func planPages(for mode: PDFExportOptions.PlanRenderMode,
+                            plan: FloorPlan) -> [PlanPageContent] {
+        let hasDistress = !plan.distress.isEmpty
+        switch mode {
+        case .photoOnly:
+            return [PlanPageContent(includePhotos: true, includeDistress: false)]
+        case .distressOnly:
+            return hasDistress
+                ? [PlanPageContent(includePhotos: false, includeDistress: true)]
+                : []
+        case .merged:
+            return [PlanPageContent(includePhotos: true,
+                                     includeDistress: hasDistress)]
+        case .photoAndDistressSeparate:
+            var pages = [PlanPageContent(includePhotos: true, includeDistress: false)]
+            if hasDistress {
+                pages.append(PlanPageContent(includePhotos: false, includeDistress: true))
+            }
+            return pages
+        }
+    }
+
+    /// Render each distress mark onto the plan in its kind's colour.
+    /// Dots are small filled circles with a white halo for visibility
+    /// over busy line work; the floor-crack stroke is a smoothed
+    /// polyline. Mirrors `DistressViewerView.renderMark`.
+    private func drawDistress(_ ctx: CGContext,
+                                plan: FloorPlan,
+                                originX: CGFloat, originY: CGFloat,
+                                scale: CGFloat, imgSize: CGSize) {
+        for mark in plan.distress {
+            let color = uiColor(for: mark.kind).cgColor
+            if mark.kind.isStroke {
+                guard mark.points.count >= 2 else { continue }
+                ctx.saveGState()
+                ctx.setStrokeColor(color)
+                ctx.setLineWidth(2.5)
+                ctx.setLineCap(.round)
+                ctx.setLineJoin(.round)
+                let first = mark.points[0]
+                ctx.move(to: CGPoint(x: originX + CGFloat(first.x) * scale,
+                                      y: originY + CGFloat(first.y) * scale))
+                for p in mark.points.dropFirst() {
+                    ctx.addLine(to: CGPoint(x: originX + CGFloat(p.x) * scale,
+                                             y: originY + CGFloat(p.y) * scale))
+                }
+                ctx.strokePath()
+                ctx.restoreGState()
+            } else if let pt = mark.points.first {
+                let cx = originX + CGFloat(pt.x) * scale
+                let cy = originY + CGFloat(pt.y) * scale
+                let r: CGFloat = 5
+                ctx.saveGState()
+                // White halo first so coloured dots stay legible on
+                // dark plan backgrounds.
+                ctx.setFillColor(UIColor.white.cgColor)
+                ctx.fillEllipse(in: CGRect(x: cx - r - 1.2, y: cy - r - 1.2,
+                                            width: 2 * (r + 1.2),
+                                            height: 2 * (r + 1.2)))
+                ctx.setFillColor(color)
+                ctx.fillEllipse(in: CGRect(x: cx - r, y: cy - r,
+                                            width: 2 * r, height: 2 * r))
+                ctx.restoreGState()
+            }
+        }
+    }
+
+    /// Compact legend listing the distress kinds present on this plan
+    /// with the count of each. Rendered below the image, optionally
+    /// stacked under the photo-stacks legend.
+    private func drawDistressLegend(_ ctx: CGContext,
+                                     pageRect: CGRect,
+                                     margin: CGFloat,
+                                     marks: [DistressMark],
+                                     topY: CGFloat) {
+        var counts: [DistressKind: Int] = [:]
+        for m in marks { counts[m.kind, default: 0] += 1 }
+        drawText("Distress markers on this plan",
+                 at: CGPoint(x: margin, y: topY),
+                 font: .boldSystemFont(ofSize: 9),
+                 color: .black)
+        var y = topY + 12
+        for kind in DistressKind.allCases {
+            guard let n = counts[kind] else { continue }
+            ctx.saveGState()
+            ctx.setFillColor(uiColor(for: kind).cgColor)
+            ctx.fillEllipse(in: CGRect(x: margin, y: y + 1, width: 7, height: 7))
+            ctx.restoreGState()
+            drawText("\(kind.displayName) — \(n)",
+                     at: CGPoint(x: margin + 12, y: y - 1),
+                     font: .systemFont(ofSize: 8.5),
+                     color: .black)
+            y += 12
+        }
+    }
+
+    private func uiColor(for kind: DistressKind) -> UIColor {
+        switch kind {
+        case .outOfPlumbDoor:    return UIColor.systemYellow
+        case .doorNotLatching:   return UIColor.systemOrange
+        case .crackGradeBeam:    return UIColor.systemPurple
+        case .crackFloor:        return UIColor.systemRed
+        }
+    }
+
+    /// Full-page separator with a centred title. Used to introduce the
+    /// "Unlocated photos" trailing section so reviewers can tell where
+    /// the per-floor contact sheets end.
+    private func drawSeparator(_ ctx: CGContext,
+                                 pageRect: CGRect,
+                                 margin: CGFloat,
+                                 title: String) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: 22),
+            .foregroundColor: UIColor.black
+        ]
+        let s = NSAttributedString(string: title, attributes: attrs)
+        let bounds = s.boundingRect(
+            with: CGSize(width: pageRect.width - 2 * margin,
+                          height: pageRect.height),
+            options: [.usesLineFragmentOrigin],
+            context: nil
+        )
+        let x = (pageRect.width - bounds.width) / 2
+        let y = (pageRect.height - bounds.height) / 2
+        s.draw(at: CGPoint(x: x, y: y))
     }
 
     // MARK: - Contact sheet page
@@ -396,7 +710,8 @@ struct PDFExportService {
                                    photos: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
                                    rangeStart: Int, total: Int,
                                    perPage: Int,
-                                   groupName: String?) {
+                                   groupName: String?,
+                                   allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []) {
         let end = rangeStart + photos.count
         let prefix = groupName ?? project.name
         drawText("\(prefix) · Photos \(rangeStart + 1)–\(end) of \(total)",
@@ -427,6 +742,12 @@ struct PDFExportService {
         )
         let annotations = options.annotations
 
+        // Pre-compute "Same location as #N" labels for each non-primary
+        // photo in a group, scoped to photos that actually live in this
+        // contact-sheet block — anchor sequence numbers reference photos
+        // the reviewer can find in the same chapter of the PDF.
+        let sameLocationLabels: [UUID: String] = sameLocationLookup(in: allItemsInBlock)
+
         for (i, item) in photos.enumerated() {
             let col = i % cols; let row = i / cols
             let cx = margin + CGFloat(col) * cellW
@@ -446,7 +767,8 @@ struct PDFExportService {
                 item: item,
                 innerW: innerW,
                 options: annotations,
-                threshold: threshold
+                threshold: threshold,
+                sameLocationLabel: sameLocationLabels[item.photo.id]
             )
             let maxCaptionH = cellH - 2 * pad - minPhotoH
             let captionH = max(0, min(measuredCaptionH, maxCaptionH))
@@ -485,9 +807,36 @@ struct PDFExportService {
                 pad: pad,
                 options: annotations,
                 threshold: threshold,
-                dateFmt: dateFmt
+                dateFmt: dateFmt,
+                sameLocationLabel: sameLocationLabels[item.photo.id]
             )
         }
+    }
+
+    /// Build a `{photoID: "Same location as #N"}` lookup for every
+    /// photo in `items` that belongs to a multi-member group and isn't
+    /// itself the primary. The lookup uses the primary's sequence
+    /// number — the reviewer can flip back to it in the same block.
+    /// Falls back to the smallest sequence number in the group when
+    /// no explicit primary is marked.
+    private func sameLocationLookup(
+        in items: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+    ) -> [UUID: String] {
+        var result: [UUID: String] = [:]
+        var byGroup: [UUID: [Photo]] = [:]
+        for item in items {
+            guard let gid = item.photo.groupID else { continue }
+            byGroup[gid, default: []].append(item.photo)
+        }
+        for (_, members) in byGroup {
+            guard members.count >= 2 else { continue }
+            let primary = members.first(where: { $0.isPrimary })
+                ?? members.min(by: { $0.sequenceNumber < $1.sequenceNumber })!
+            for m in members where m.id != primary.id {
+                result[m.id] = "Same location as #\(primary.sequenceNumber)"
+            }
+        }
+        return result
     }
 
     // MARK: - Contact-sheet cell helpers
@@ -499,12 +848,14 @@ struct PDFExportService {
     private func measureCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool),
                                       innerW: CGFloat,
                                       options: PDFExportOptions.AnnotationOptions,
-                                      threshold: Double) -> CGFloat {
+                                      threshold: Double,
+                                      sameLocationLabel: String? = nil) -> CGFloat {
         // The seq + date line is always drawn (it identifies the photo).
         // Skip when literally nothing else is enabled? — no, the seq
         // number is what links a contact-sheet entry back to the
         // metadata table / floor plan bubble. Always keep it.
         var h: CGFloat = 12
+        if sameLocationLabel != nil { h += 11 }
 
         if options.includeTags {
             h += measureTagBlock(item.photo.tags,
@@ -540,7 +891,8 @@ struct PDFExportService {
                                    pad: CGFloat,
                                    options: PDFExportOptions.AnnotationOptions,
                                    threshold: Double,
-                                   dateFmt: DateFormatter) {
+                                   dateFmt: DateFormatter,
+                                   sameLocationLabel: String? = nil) {
         let x = cellX + pad
         let maxW = cellW - 2 * pad
         let captionEndY = captionTopY + captionMaxH
@@ -565,6 +917,17 @@ struct PDFExportService {
                      color: UIColor(white: 0.35, alpha: 1))
         }
         y += 12
+
+        // Co-location pointer: flags non-primary group members back to
+        // the group's lead photo so reviewers can see the shared spot
+        // without flipping through the plan.
+        if let same = sameLocationLabel, y < captionEndY {
+            drawText(same,
+                     at: CGPoint(x: x, y: y),
+                     font: .italicSystemFont(ofSize: 7.5),
+                     color: UIColor(white: 0.3, alpha: 1))
+            y += 11
+        }
 
         // Tags are first after the identifier because the user
         // requirement explicitly named them as "must not be
@@ -837,8 +1200,14 @@ struct PDFExportService {
         let arrowBase    = 14 * bs * sizeMultiplier
         let strokeWidth  = 3 * bs * sizeMultiplier
 
+        // Scope bubbles to photos placed on THIS plan only. Without the
+        // floorPlanID filter, multi-floor exports would project every
+        // photo's planPixelX/Y (which is plan-specific) onto every
+        // plan image, dragging photos from other floors onto the wrong
+        // page.
         var groups: [String: [Photo]] = [:]
-        for p in project.photos where p.planPixelX != nil {
+        for p in project.photos
+            where p.planPixelX != nil && p.floorPlanID == plan.id {
             let key = p.groupID?.uuidString ?? p.id.uuidString
             groups[key, default: []].append(p)
         }
