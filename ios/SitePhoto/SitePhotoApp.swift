@@ -123,6 +123,23 @@ struct SitePhotoApp: App {
                 .fullScreenCover(isPresented: signInPresented) {
                     SignInSheet(auth: auth)
                 }
+                // Trigger pull-from-server + photo upload sweep
+                // whenever a session becomes available — either
+                // because Keychain restore succeeded (covered by the
+                // launch trigger above) OR the user just signed in
+                // via the SignInSheet (NOT covered by the launch
+                // trigger, because at the time it ran `auth.session`
+                // was still nil — bootstrap had completed but the
+                // user hadn't authenticated yet). Both passes are
+                // idempotent so a double-fire on the persisted-
+                // session case is harmless.
+                .onChange(of: auth.session?.user.id) { _, newUserId in
+                    guard newUserId != nil else { return }
+                    Task {
+                        await syncer.pullAllFromServer()
+                        await photoSyncer.syncAll()
+                    }
+                }
         }
     }
 
