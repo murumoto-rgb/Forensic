@@ -5,6 +5,7 @@ struct SitePhotoApp: App {
     @State private var store: ProjectStore
     @State private var location = LocationService()
     @State private var toastCenter = ToastCenter()
+    @State private var auth = AuthService()
 
     init() {
         let toast = ToastCenter()
@@ -41,6 +42,7 @@ struct SitePhotoApp: App {
                 .environment(store)
                 .environment(location)
                 .environment(toastCenter)
+                .environment(auth)
                 .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
@@ -60,14 +62,37 @@ struct SitePhotoApp: App {
                 .animation(.easeInOut(duration: 0.5), value: splashDone)
                 .task {
                     let start = Date()
+                    // Auth bootstrap (restore persisted Supabase session
+                    // from Keychain) runs concurrently with the project
+                    // store load so the splash isn't sequentially gated.
+                    async let authReady: Void = auth.bootstrap()
                     await store.loadInitial()
+                    await authReady
                     let elapsed = Date().timeIntervalSince(start)
                     if elapsed < minSplashDuration {
                         try? await Task.sleep(for: .seconds(minSplashDuration - elapsed))
                     }
                     splashDone = true
                 }
+                // Once the splash is dismissed, gate the rest of the
+                // app behind a valid Supabase session. The sign-in
+                // sheet auto-dismisses the moment `auth.session`
+                // becomes non-nil (i.e. when the user signs in or
+                // signs up + completes email confirmation).
+                .fullScreenCover(isPresented: signInPresented) {
+                    SignInSheet(auth: auth)
+                }
         }
+    }
+
+    /// True when the splash is done AND there's no signed-in user.
+    /// Binding is read-only — flipping it programmatically would be
+    /// nonsensical (the cover is controlled by the auth state).
+    private var signInPresented: Binding<Bool> {
+        Binding(
+            get: { splashDone && !auth.isInitializing && auth.session == nil },
+            set: { _ in }
+        )
     }
 }
 
