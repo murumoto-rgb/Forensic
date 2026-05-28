@@ -93,7 +93,7 @@ struct SignInSheet: View {
                     }
                 }
             }
-            .navigationTitle("Forensic")
+            .navigationTitle("SitePhoto - Forensic")
             .navigationBarTitleDisplayMode(.large)
         }
         .interactiveDismissDisabled(true)

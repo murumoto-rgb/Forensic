@@ -32,9 +32,25 @@ final class AuthService {
     let supabase: SupabaseClient
 
     init() {
+        // `emitLocalSessionAsInitialSession: true` opts into
+        // supabase-swift's pending behaviour change (per their PR
+        // #822): `auth.session` returns the locally-persisted
+        // session immediately, even if expired, instead of trying
+        // to refresh first. We surface the warning otherwise; with
+        // this opt-in we read the local session and let the SDK's
+        // background auto-refresh keep it fresh. If the refresh
+        // fails (e.g. the token was revoked), the first
+        // authenticated network call will return 401 and the
+        // Phase 1B-2 API client will sign out at that point.
+        let options = SupabaseClientOptions(
+            auth: SupabaseClientOptions.AuthOptions(
+                emitLocalSessionAsInitialSession: true
+            )
+        )
         self.supabase = SupabaseClient(
             supabaseURL: ServerConfig.supabaseURL,
-            supabaseKey: ServerConfig.supabasePublishableKey
+            supabaseKey: ServerConfig.supabasePublishableKey,
+            options: options
         )
     }
 
