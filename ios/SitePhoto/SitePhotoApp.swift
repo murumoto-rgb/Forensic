@@ -62,7 +62,12 @@ struct SitePhotoApp: App {
                 }
                 .overlay {
                     if !splashDone {
-                        SplashScreen()
+                        // SplashScreen is rendered inside `.overlay`,
+                        // which makes it a sibling of ContentView — it
+                        // doesn't inherit environment values applied
+                        // below it in the modifier chain. Pass `store`
+                        // explicitly so the live `loadStatus` line works.
+                        SplashScreen(store: store)
                             .transition(.opacity)
                     }
                 }
@@ -142,8 +147,15 @@ struct BaykalLogo: View {
 /// underneath. Covers the entire window until the app fades it out.
 /// Renders the current `ProjectStore.loadStatus` so the engineer can
 /// see which stage is running (or stuck) on a slow launch.
+///
+/// `store` is passed in as a parameter rather than read from
+/// `@Environment` because SwiftUI's `.overlay { … }` content does
+/// not inherit environment values applied to the modified view (only
+/// values applied to the outer composite are visible). The
+/// `@Observable` macro means property reads inside `body` still
+/// drive re-renders when `store.loadStatus` changes.
 private struct SplashScreen: View {
-    @Environment(ProjectStore.self) private var store
+    let store: ProjectStore
 
     var body: some View {
         ZStack {
