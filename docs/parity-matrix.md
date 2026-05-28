@@ -26,6 +26,15 @@ versa). Every schema change bumps `manifestSchemaVersion` and lands in
 
 Current `manifestSchemaVersion`: **1**
 
+## Phase status
+
+- **Phase 0** — Parity machinery (✅ closed). Shared TS package, parity contract test, matrix doc, CLAUDE.md addendum, iOS `manifestSchemaVersion` field.
+- **Phase 1** — Server foundation + auth + iOS↔server manifest sync (✅ closed). Supabase project + DB schema, Fastify server on Render, React+Vite web app on Vercel, iOS Supabase Auth + manifest push. End-to-end verified: saving a project on iPhone makes it appear in the web project list within seconds.
+- **Phase 2** — Photos visible on web (📋 planned). Photo file upload to Supabase Storage, web photo viewer.
+- **Phase 3** — Floor plans + distress visible on web (📋 planned).
+- **Phase 4** — AI tagging + PDF export on web (📋 planned).
+- **Phase 5** — Multi-user collaboration + edit-lock (📋 planned).
+
 ## Features
 
 | Feature | iOS | Web | Shared schema | Notes |
