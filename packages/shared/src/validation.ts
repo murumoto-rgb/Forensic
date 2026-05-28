@@ -13,6 +13,33 @@ import { z } from "zod";
 const isoDate = z.string().datetime({ offset: true });
 const uuid = z.string().uuid();
 
+/**
+ * Wraps a zod schema in "accept null OR missing, normalize to null".
+ *
+ * iOS encoders use `encodeIfPresent` for optional fields, which OMITS
+ * the key when the value is nil. Plain `.nullable()` requires the
+ * key to be present (as string or null) and rejects undefined /
+ * missing. This helper allows either shape:
+ *
+ *   `{ "startedAt": "2026-05-28T11:23:00Z" }`  → "2026-…"
+ *   `{ "startedAt": null }`                    → null
+ *   `{}` (key missing)                          → null
+ *
+ * The `.transform(v => v ?? null)` normalizes undefined to null so
+ * downstream code (database storage, response shape) sees a clean
+ * `T | null` instead of `T | null | undefined`.
+ *
+ * The parity contract test's normalizer collapses `ZodEffects(
+ * ZodOptional(ZodNullable<X>))` back to `nullable<X>` so the iOS-side
+ * `T?` descriptor still matches.
+ */
+function nullable<T extends z.ZodTypeAny>(schema: T) {
+  return schema
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null);
+}
+
 export const PositionSourceSchema = z.enum(["manual", "gps", "none"]);
 export const FlashModeSchema = z.enum(["auto", "on", "off"]);
 export const TagSourceSchema = z.enum(["vision", "claude"]);
@@ -32,14 +59,14 @@ export const RecommendedUseSchema = z.string();
 export const TagSchema = z.object({
   label: z.string(),
   confidence: z.number().min(0).max(1),
-  parentTag: z.string().nullable(),
+  parentTag: nullable(z.string()),
 });
 
 export const TagSuggestionSchema = z.object({
   label: z.string(),
   confidence: z.number().min(0).max(1),
   source: TagSourceSchema,
-  parentTag: z.string().nullable(),
+  parentTag: nullable(z.string()),
 });
 
 export const AIPhotoAnalysisSchema = z.object({
@@ -49,13 +76,13 @@ export const AIPhotoAnalysisSchema = z.object({
   tagConfidences: z.record(z.string(), z.number()),
   locationInferred: z.string(),
   scalePresent: ScalePresentSchema,
-  measurementVisible: z.string().nullable(),
+  measurementVisible: nullable(z.string()),
   summaryObservation: z.string(),
   captionDraft: z.string(),
   recommendedUse: RecommendedUseSchema,
   reviewerFlag: z.string(),
   validationErrors: z.array(z.string()),
-  rawResponse: z.string().nullable(),
+  rawResponse: nullable(z.string()),
   parseFailed: z.boolean(),
 });
 
@@ -64,39 +91,39 @@ export const PhotoSchema = z.object({
   sequenceNumber: z.number().int(),
   timestamp: isoDate,
   imageFilename: z.string(),
-  thumbnailFilename: z.string().nullable(),
+  thumbnailFilename: nullable(z.string()),
 
-  floorPlanID: uuid.nullable(),
-  localXFeet: z.number().nullable(),
-  localYFeet: z.number().nullable(),
-  planPixelX: z.number().nullable(),
-  planPixelY: z.number().nullable(),
-  headingDegrees: z.number().nullable(),
+  floorPlanID: nullable(uuid),
+  localXFeet: nullable(z.number()),
+  localYFeet: nullable(z.number()),
+  planPixelX: nullable(z.number()),
+  planPixelY: nullable(z.number()),
+  headingDegrees: nullable(z.number()),
 
   positionSource: PositionSourceSchema,
-  groupID: uuid.nullable(),
+  groupID: nullable(uuid),
   isPrimary: z.boolean(),
   cameraZoom: z.number(),
-  lensName: z.string().nullable(),
+  lensName: nullable(z.string()),
   flashMode: FlashModeSchema,
 
-  aiDescription: z.string().nullable(),
-  aiSeverity: z.string().nullable(),
-  aiObservation: z.string().nullable(),
-  aiFollowUp: z.string().nullable(),
-  aiAnalysis: AIPhotoAnalysisSchema.nullable(),
+  aiDescription: nullable(z.string()),
+  aiSeverity: nullable(z.string()),
+  aiObservation: nullable(z.string()),
+  aiFollowUp: nullable(z.string()),
+  aiAnalysis: nullable(AIPhotoAnalysisSchema),
 
   tags: z.array(TagSchema),
   pendingSuggestions: z.array(TagSuggestionSchema),
 
-  bucketID: uuid.nullable(),
-  markupOverlayFilename: z.string().nullable(),
-  markupDrawingFilename: z.string().nullable(),
-  reshootsPhotoID: uuid.nullable(),
+  bucketID: nullable(uuid),
+  markupOverlayFilename: nullable(z.string()),
+  markupDrawingFilename: nullable(z.string()),
+  reshootsPhotoID: nullable(uuid),
   isFavorite: z.boolean(),
-  trashedAt: isoDate.nullable(),
-  userCaption: z.string().nullable(),
-  userObservation: z.string().nullable(),
+  trashedAt: nullable(isoDate),
+  userCaption: nullable(z.string()),
+  userObservation: nullable(z.string()),
   previewRotation: z.number().int(),
 });
 
@@ -107,7 +134,7 @@ export const DistressMarkSchema = z.object({
   // in `manifest.ts`. Switches to a structured `{ x, y }` shape in
   // Phase 3 when distress sync to web goes live.
   points: z.array(z.record(z.string(), z.unknown())),
-  note: z.string().nullable(),
+  note: nullable(z.string()),
   createdAt: isoDate,
 });
 
@@ -128,8 +155,8 @@ export const FloorPlanSchema = z.object({
 export const ProjectGPSSchema = z.object({
   latitude: z.number(),
   longitude: z.number(),
-  altitude: z.number().nullable(),
-  accuracyFeet: z.number().nullable(),
+  altitude: nullable(z.number()),
+  accuracyFeet: nullable(z.number()),
   timestamp: isoDate,
 });
 
@@ -138,7 +165,7 @@ export const BucketSchema = z.object({
   name: z.string(),
   colorHex: z.string().regex(/^#?[0-9a-fA-F]{6}$/),
   sortOrder: z.number().int(),
-  libraryCategoryID: uuid.nullable(),
+  libraryCategoryID: nullable(uuid),
 });
 
 export const ProjectTagSelectionSchema = z.object({
@@ -155,20 +182,20 @@ export const ProjectSchema = z.object({
   id: uuid,
   name: z.string(),
   createdAt: isoDate,
-  startedAt: isoDate.nullable(),
-  lastResumedAt: isoDate.nullable(),
-  lastStoppedAt: isoDate.nullable(),
+  startedAt: nullable(isoDate),
+  lastResumedAt: nullable(isoDate),
+  lastStoppedAt: nullable(isoDate),
   stopped: z.boolean(),
-  projectGPS: ProjectGPSSchema.nullable(),
-  projectAddress: z.string().nullable(),
+  projectGPS: nullable(ProjectGPSSchema),
+  projectAddress: nullable(z.string()),
   photos: z.array(PhotoSchema),
   trashedPhotos: z.array(PhotoSchema),
   floorPlans: z.array(FloorPlanSchema),
-  activeFloorPlanID: uuid.nullable(),
-  folderName: z.string().nullable(),
-  aiInstructions: z.string().nullable(),
+  activeFloorPlanID: nullable(uuid),
+  folderName: nullable(z.string()),
+  aiInstructions: nullable(z.string()),
   buckets: z.array(BucketSchema),
-  tagSelection: ProjectTagSelectionSchema.nullable(),
-  aiExtraVocabulary: ProjectExtraVocabularySchema.nullable(),
+  tagSelection: nullable(ProjectTagSelectionSchema),
+  aiExtraVocabulary: nullable(ProjectExtraVocabularySchema),
   manifestSchemaVersion: z.number().int().min(1),
 });
