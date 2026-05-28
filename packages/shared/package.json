@@ -1,0 +1,27 @@
+{
+  "name": "@forensic/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Canonical TypeScript types + zod schemas for the Forensic manifest. iOS Swift structs mirror these field-for-field.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./validation": "./src/validation.ts",
+    "./api": "./src/api.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit && node --test --import tsx tests/ios-parity.test.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0"
+  }
+}

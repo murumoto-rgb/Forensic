@@ -63,6 +63,15 @@ struct Project: Identifiable, Codable, Hashable {
     /// an empty `primaries` array) means the project doesn't add any
     /// custom vocabulary.
     var aiExtraVocabulary: ProjectExtraVocabulary?
+    /// Integer schema version of the on-disk manifest format. Bumped
+    /// whenever a field is added, removed, renamed, or its semantics
+    /// change — in one PR that touches `packages/shared/`,
+    /// `docs/parity-matrix.md`, and any iOS / server code that reads
+    /// or writes the changed field. The server rejects writes from
+    /// clients reporting a higher version than it knows about
+    /// (forces server-first updates). Legacy manifests written before
+    /// this field shipped default to `1` at decode time.
+    var manifestSchemaVersion: Int = 1
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -83,6 +92,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.buckets = []
         self.tagSelection = nil
         self.aiExtraVocabulary = nil
+        self.manifestSchemaVersion = 1
     }
 
     /// Explicit keys so the decoder can read the legacy singular
@@ -98,6 +108,7 @@ struct Project: Identifiable, Codable, Hashable {
         case activeFloorPlanID  // new sticky plan ID
         case folderName, aiInstructions, buckets, tagSelection
         case aiExtraVocabulary
+        case manifestSchemaVersion
     }
 
     /// Tolerate manifests written before any of the optional fields
@@ -141,6 +152,12 @@ struct Project: Identifiable, Codable, Hashable {
                                                        forKey: .tagSelection)
         self.aiExtraVocabulary = try c.decodeIfPresent(ProjectExtraVocabulary.self,
                                                          forKey: .aiExtraVocabulary)
+        // Legacy manifests written before this field shipped default
+        // to version 1 — the schema as it stood at the moment the
+        // field was introduced. New manifests written by this code
+        // always emit an explicit value.
+        self.manifestSchemaVersion = try c.decodeIfPresent(Int.self,
+                                                             forKey: .manifestSchemaVersion) ?? 1
     }
 
     /// Encoder mirrors the new on-disk shape (no legacy `floorPlan`
@@ -166,6 +183,7 @@ struct Project: Identifiable, Codable, Hashable {
         try c.encode(buckets,                     forKey: .buckets)
         try c.encodeIfPresent(tagSelection,       forKey: .tagSelection)
         try c.encodeIfPresent(aiExtraVocabulary,  forKey: .aiExtraVocabulary)
+        try c.encode(manifestSchemaVersion,       forKey: .manifestSchemaVersion)
     }
 
     var isActive: Bool { startedAt != nil && !stopped }

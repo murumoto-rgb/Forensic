@@ -1,0 +1,186 @@
+{
+  "_generated_by": "scripts/regen-ios-fixtures.ts — do not edit by hand. Run `pnpm parity:regen-fixtures`.",
+  "manifestSchemaVersion": 1,
+  "models": {
+    "Project": {
+      "source": "ios/SitePhoto/Models/Project.swift",
+      "fields": {
+        "id": "UUID",
+        "name": "String",
+        "createdAt": "Date",
+        "startedAt": "Date?",
+        "lastResumedAt": "Date?",
+        "lastStoppedAt": "Date?",
+        "stopped": "Bool",
+        "projectGPS": "ProjectGPS?",
+        "projectAddress": "String?",
+        "photos": "[Photo]",
+        "trashedPhotos": "[Photo]",
+        "floorPlans": "[FloorPlan]",
+        "activeFloorPlanID": "UUID?",
+        "folderName": "String?",
+        "aiInstructions": "String?",
+        "buckets": "[Bucket]",
+        "tagSelection": "ProjectTagSelection?",
+        "aiExtraVocabulary": "ProjectExtraVocabulary?",
+        "manifestSchemaVersion": "Int"
+      }
+    },
+    "Photo": {
+      "source": "ios/SitePhoto/Models/Photo.swift",
+      "fields": {
+        "id": "UUID",
+        "sequenceNumber": "Int",
+        "timestamp": "Date",
+        "imageFilename": "String",
+        "thumbnailFilename": "String?",
+        "floorPlanID": "UUID?",
+        "localXFeet": "Double?",
+        "localYFeet": "Double?",
+        "planPixelX": "Double?",
+        "planPixelY": "Double?",
+        "headingDegrees": "Double?",
+        "positionSource": "PositionSource",
+        "groupID": "UUID?",
+        "isPrimary": "Bool",
+        "cameraZoom": "Double",
+        "lensName": "String?",
+        "flashMode": "FlashMode",
+        "aiDescription": "String?",
+        "aiSeverity": "String?",
+        "aiObservation": "String?",
+        "aiFollowUp": "String?",
+        "aiAnalysis": "AIPhotoAnalysis?",
+        "tags": "[Tag]",
+        "pendingSuggestions": "[TagSuggestion]",
+        "bucketID": "UUID?",
+        "markupOverlayFilename": "String?",
+        "markupDrawingFilename": "String?",
+        "reshootsPhotoID": "UUID?",
+        "isFavorite": "Bool",
+        "trashedAt": "Date?",
+        "userCaption": "String?",
+        "userObservation": "String?",
+        "previewRotation": "Int"
+      }
+    },
+    "FloorPlan": {
+      "source": "ios/SitePhoto/Models/Project.swift",
+      "fields": {
+        "id": "UUID",
+        "label": "String",
+        "imageFilename": "String",
+        "pixelsPerFoot": "Double",
+        "calibrationDistanceFeet": "Double",
+        "anchorPixelX": "Double",
+        "anchorPixelY": "Double",
+        "anchorLocalXFeet": "Double",
+        "anchorLocalYFeet": "Double",
+        "northDeg": "Double",
+        "distress": "[DistressMark]"
+      }
+    },
+    "DistressMark": {
+      "source": "ios/SitePhoto/Models/Project.swift",
+      "fields": {
+        "id": "UUID",
+        "kind": "DistressKind",
+        "points": "[CGPoint]",
+        "note": "String?",
+        "createdAt": "Date"
+      }
+    },
+    "ProjectGPS": {
+      "source": "ios/SitePhoto/Models/Project.swift",
+      "fields": {
+        "latitude": "Double",
+        "longitude": "Double",
+        "altitude": "Double?",
+        "accuracyFeet": "Double?",
+        "timestamp": "Date"
+      }
+    },
+    "Bucket": {
+      "source": "ios/SitePhoto/Models/Bucket.swift",
+      "fields": {
+        "id": "UUID",
+        "name": "String",
+        "colorHex": "String",
+        "sortOrder": "Int",
+        "libraryCategoryID": "UUID?"
+      }
+    },
+    "Tag": {
+      "source": "ios/SitePhoto/Models/Photo.swift",
+      "fields": {
+        "label": "String",
+        "confidence": "Double",
+        "parentTag": "String?"
+      }
+    },
+    "TagSuggestion": {
+      "source": "ios/SitePhoto/Models/Photo.swift",
+      "fields": {
+        "label": "String",
+        "confidence": "Double",
+        "source": "TagSource",
+        "parentTag": "String?"
+      }
+    },
+    "AIPhotoAnalysis": {
+      "source": "ios/SitePhoto/Models/Photo.swift",
+      "fields": {
+        "photoID": "String",
+        "primaryTags": "[String]",
+        "secondaryTagsByPrimary": "[String: [String]]",
+        "locationInferred": "String",
+        "tagConfidences": "[String: Double]",
+        "scalePresent": "ScalePresent",
+        "measurementVisible": "String?",
+        "summaryObservation": "String",
+        "captionDraft": "String",
+        "recommendedUse": "RecommendedUse",
+        "reviewerFlag": "String",
+        "validationErrors": "[String]",
+        "rawResponse": "String?",
+        "parseFailed": "Bool"
+      }
+    },
+    "ProjectTagSelection": {
+      "source": "ios/SitePhoto/Models/ProjectTagSelection.swift",
+      "fields": {
+        "contextIDs": "[UUID]",
+        "primariesByContext": "[UUID: Set<UUID>]",
+        "deselectedSecondariesByPrimary": "[UUID: Set<UUID>]"
+      }
+    },
+    "ProjectExtraVocabulary": {
+      "source": "ios/SitePhoto/Models/ProjectExtraVocabulary.swift",
+      "fields": {
+        "primaries": "[PrimaryTagEntry]"
+      }
+    }
+  },
+  "enums": {
+    "PositionSource": [
+      "manual",
+      "gps",
+      "none"
+    ],
+    "FlashMode": [
+      "auto",
+      "on",
+      "off"
+    ],
+    "TagSource": [
+      "vision",
+      "claude"
+    ],
+    "DistressKind": [
+      "outOfPlumbDoor",
+      "doorNotLatching",
+      "crackGradeBeam",
+      "crackFloor"
+    ]
+  }
+}
