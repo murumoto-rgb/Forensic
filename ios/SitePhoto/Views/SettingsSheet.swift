@@ -7,6 +7,7 @@ struct SettingsSheet: View {
     @Environment(ProjectStore.self) private var store
     @Environment(ToastCenter.self) private var toastCenter
     @Environment(AuthService.self) private var auth
+    @Environment(ManifestSyncer.self) private var syncer
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -57,6 +58,11 @@ struct SettingsSheet: View {
                     }
                     Button(role: .destructive) {
                         Task {
+                            // Clear per-project server-revision cache so a
+                            // subsequent user signing in on the same device
+                            // doesn't try to PUT with the previous user's
+                            // (stale) revision tokens.
+                            syncer.resetRevisions()
                             try? await auth.signOut()
                             dismiss()
                         }

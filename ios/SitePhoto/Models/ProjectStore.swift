@@ -54,10 +54,22 @@ final class ProjectStore {
     /// ToastCenter into this slot during init — `nil` is a perfectly
     /// valid state (e.g. unit tests, previews).
     var toastCenter: ToastCenter?
+    /// Loose-coupled hook called after every successful `save(_:)`,
+    /// including the implicit save that `loadInitial()` does after
+    /// the iCloud migration. The hosting app wires this to push the
+    /// project to the Forensic server (`ManifestSyncer.sync`). Nil
+    /// in tests/previews — safe.
+    var onAfterSave: ((Project) -> Void)?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
     private(set) var isReady: Bool = false
+    /// Human-readable description of what `loadInitial()` is currently
+    /// doing. Rendered on the splash screen so the engineer can see
+    /// which stage is stuck when a launch takes longer than expected
+    /// (typically the iCloud container probe on a fresh install or a
+    /// simulator with a wedged iCloud daemon).
+    private(set) var loadStatus: String = "Starting up…"
 
     private let fileManager = FileManager.default
     /// Mutated once during `loadInitial()` when the iCloud probe finishes.
@@ -95,9 +107,17 @@ final class ProjectStore {
     /// Async setup: probe iCloud (slow on cold launch), promote storageRoot
     /// to iCloud if available, run the local→iCloud migration, then load
     /// projects. Safe to call multiple times — guarded by `isReady`.
+    ///
+    /// Sets `loadStatus` at each stage so the splash screen can show what
+    /// the app is doing while the user waits. The iCloud probe is the
+    /// dominant cost (1–3 s on a real device on cold launch; can be
+    /// indefinitely stuck on a simulator where the iCloud daemon is
+    /// wedged — flag for the user to recognize that case).
     @MainActor
     func loadInitial() async {
         guard !isReady else { return }
+
+        loadStatus = "Checking iCloud Drive…"
 
         // The iCloud-container probe is the dominant cost on first launch
         // (sometimes 1–3 s while iOS sets up the container). Run it on a
@@ -118,9 +138,11 @@ final class ProjectStore {
             self.storageRoot = iCloud
             self.usingICloud = true
             self.iCloudUnavailableReason = nil
+            loadStatus = "Setting up iCloud storage…"
         } else {
             self.usingICloud = false
             self.iCloudUnavailableReason = "iCloud Drive isn't enabled. Open Settings → Apple ID → iCloud → iCloud Drive and turn it on (and SitePhoto inside the app list) to back projects up to iCloud."
+            loadStatus = "Using local storage only…"
         }
 
         Self.ensureSubfolders(in: storageRoot)
@@ -129,6 +151,7 @@ final class ProjectStore {
         // local storage (because iCloud was offline) up to iCloud now that
         // it's available. Fast no-op when local is empty.
         if usingICloud {
+            loadStatus = "Migrating local projects to iCloud…"
             let local = Self.localProjectsURL
             let activeLocal   = local.appending(path: Self.activeFolderName,  directoryHint: .isDirectory)
             let activeICloud  = storageRoot.appending(path: Self.activeFolderName,  directoryHint: .isDirectory)
@@ -140,14 +163,21 @@ final class ProjectStore {
             }.value
         }
 
+        loadStatus = "Loading projects…"
         load()
+        loadStatus = "Loading report branding…"
         loadBrandingFromDisk()
+        loadStatus = "Loading bucket library…"
         loadBucketLibraryFromDisk()
+        loadStatus = "Loading AI templates…"
         loadAIPromptTemplatesFromDisk()
+        loadStatus = "Loading tag library…"
         loadTagLibraryFromDisk()
         loadAIRulesTemplateFromDisk()
+        loadStatus = "Finalizing…"
         pruneStaleTagSelections()
         purgeOldTrash()
+        loadStatus = "Ready."
         isReady = true
     }
 
@@ -1188,6 +1218,7 @@ final class ProjectStore {
         }
         commitInMemory(project)
         checkForUnresolvedConflicts(at: manifest, projectName: project.name)
+        onAfterSave?(project)
         return project
     }
 

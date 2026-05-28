@@ -6,13 +6,23 @@ struct SitePhotoApp: App {
     @State private var location = LocationService()
     @State private var toastCenter = ToastCenter()
     @State private var auth = AuthService()
+    @State private var syncer: ManifestSyncer
 
     init() {
         let toast = ToastCenter()
         let store = ProjectStore()
+        let auth = AuthService()
+        let api = APIClient(auth: auth)
+        let syncer = ManifestSyncer(api: api, auth: auth, toast: toast)
         store.toastCenter = toast
+        // Wire saves → sync. Fire-and-forget; errors toast.
+        store.onAfterSave = { [weak syncer] project in
+            syncer?.sync(project)
+        }
         _toastCenter = State(initialValue: toast)
         _store = State(initialValue: store)
+        _auth = State(initialValue: auth)
+        _syncer = State(initialValue: syncer)
     }
 
     /// True once the white splash screen has faded out.
@@ -43,6 +53,7 @@ struct SitePhotoApp: App {
                 .environment(location)
                 .environment(toastCenter)
                 .environment(auth)
+                .environment(syncer)
                 .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
@@ -129,21 +140,33 @@ struct BaykalLogo: View {
 
 /// Full white background with the logo centered + a loading indicator
 /// underneath. Covers the entire window until the app fades it out.
+/// Renders the current `ProjectStore.loadStatus` so the engineer can
+/// see which stage is running (or stuck) on a slow launch.
 private struct SplashScreen: View {
+    @Environment(ProjectStore.self) private var store
+
     var body: some View {
         ZStack {
             Color.white.ignoresSafeArea()
-            VStack(spacing: 28) {
+            VStack(spacing: 24) {
                 BaykalLogo(maxHeight: 200, maxWidth: 280)
                 ProgressView()
                     .controlSize(.regular)
                     // Match the navy from the logo so it reads as part of
                     // the same identity rather than a system grey spinner.
                     .tint(Color(red: 0.06, green: 0.16, blue: 0.31))
-                Text("Please wait. First launch may take a few minutes while iCloud sets up. Do not navigate away from this screen.")
-                    .font(.callout)
+                // Live status from ProjectStore.loadInitial() — updates
+                // through "Checking iCloud Drive…", "Loading projects…",
+                // etc. as each stage runs.
+                Text(store.loadStatus)
+                    .font(.callout.weight(.semibold))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.31))
+                    .padding(.horizontal, 32)
+                Text("First launch can take a few minutes while iCloud sets up. Do not navigate away from this screen. If \"Checking iCloud Drive…\" stays for more than 2 minutes, that's a sign iOS's iCloud daemon is stuck — usually only seen in the simulator. Force-quit + relaunch the app, or run on a real device.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.31).opacity(0.7))
                     .padding(.horizontal, 32)
             }
         }
