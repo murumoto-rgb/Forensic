@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #22896f;
+  --color-accent-dark: #1a6b5c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-neutral-950 text-neutral-100 antialiased;
+}

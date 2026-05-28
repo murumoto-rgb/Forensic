@@ -1,0 +1,31 @@
+# Render Blueprint for the Forensic server.
+#
+# When you connect this repo to Render and create a new Blueprint
+# (Dashboard → New + → Blueprint), Render reads this file and
+# proposes the services below. You fill in the `sync: false` env
+# vars (the secrets) in the Render UI when prompted.
+#
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: forensic-server
+    runtime: node
+    region: oregon            # change if a closer region matters
+    plan: free
+    branch: main
+    rootDir: .
+    buildCommand: "corepack enable && pnpm install --frozen-lockfile"
+    startCommand: "pnpm --filter @forensic/server start"
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
