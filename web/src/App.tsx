@@ -4,6 +4,7 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
+import { BuildInfoFooter } from "./components/BuildInfoFooter";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -43,6 +44,7 @@ export function App() {
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <BuildInfoFooter />
     </BrowserRouter>
   );
 }
