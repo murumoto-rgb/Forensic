@@ -1,3 +1,3 @@
-export * from "./manifest.ts";
-export * from "./validation.ts";
-export * from "./api.ts";
+export * from "./manifest.js";
+export * from "./validation.js";
+export * from "./api.js";
