@@ -37,7 +37,7 @@ export function LoginPage() {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="w-full max-w-sm rounded-lg border border-neutral-800 bg-neutral-900 p-8 shadow-2xl">
-        <h1 className="mb-2 text-2xl font-semibold text-neutral-100">Forensic</h1>
+        <h1 className="mb-2 text-2xl font-semibold text-neutral-100">SitePhoto - Forensic</h1>
         <p className="mb-6 text-sm text-neutral-400">
           {mode === "sign-in" ? "Sign in to continue." : "Create your account."}
         </p>
