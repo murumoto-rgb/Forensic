@@ -17,6 +17,7 @@
     "@forensic/shared": "workspace:*",
     "@supabase/supabase-js": "^2.49.4",
     "fastify": "^5.5.0",
+    "fastify-plugin": "^5.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

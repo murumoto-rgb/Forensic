@@ -11,7 +11,9 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import { env, corsOrigins } from "./env.js";
+import "./types.js";
 import { healthzRoute } from "./routes/healthz.js";
+import { projectsRoute } from "./routes/projects.js";
 
 async function main() {
   const app = Fastify({
@@ -36,6 +38,7 @@ async function main() {
   });
 
   await app.register(healthzRoute);
+  await app.register(projectsRoute);
 
   try {
     await app.listen({ port: env.PORT, host: "0.0.0.0" });
