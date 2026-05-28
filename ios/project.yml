@@ -1,0 +1,69 @@
+name: SitePhoto
+options:
+  bundleIdPrefix: com.murumoto
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    DEVELOPMENT_TEAM: "C73QVZSGPX"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  SitePhoto:
+    type: application
+    platform: iOS
+    sources:
+      - path: SitePhoto
+    entitlements:
+      path: SitePhoto/SitePhoto.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.murumoto.sitephoto
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.com.murumoto.sitephoto
+    info:
+      path: SitePhoto/Info.plist
+      properties:
+        CFBundleDisplayName: SitePhoto
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities:
+          - arm64
+        NSCameraUsageDescription: "SitePhoto uses the camera to capture site documentation photos."
+        NSLocationWhenInUseUsageDescription: "SitePhoto records the GPS location and address of each project at the start of a session."
+        NSPhotoLibraryAddUsageDescription: "SitePhoto can save exported PDFs and photos to your Photos library."
+        NSMicrophoneUsageDescription: "SitePhoto uses the microphone so you can dictate photo captions and observations in the field instead of typing."
+        NSSpeechRecognitionUsageDescription: "SitePhoto converts your dictated observations into text. Recognition runs on-device when possible so the audio doesn't leave your iPhone."
+        NSUbiquitousContainers:
+          iCloud.com.murumoto.sitephoto:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerSupportedFolderLevels: Any
+            NSUbiquitousContainerName: SitePhoto
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
+        # iPad supports all four orientations so Split View and Stage
+        # Manager can place SitePhoto in any orientation. iPhone keeps
+        # the system default (portrait + landscape both ways).
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        # Universal binary: 1 = iPhone, 2 = iPad. Multitasking
+        # (Split View, Slide Over, Stage Manager) is enabled
+        # automatically because we don't set UIRequiresFullScreen=YES.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        PRODUCT_BUNDLE_IDENTIFIER: com.murumoto.sitephoto
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

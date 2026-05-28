@@ -1,0 +1,19 @@
+{
+  "name": "forensic-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Forensic monorepo: iOS app (ios/), Fastify server (server/), React web app (web/), shared TS schema (packages/shared/).",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "parity": "pnpm --filter @forensic/shared run test",
+    "parity:regen-fixtures": "bash scripts/regen-ios-fixtures.sh"
+  }
+}

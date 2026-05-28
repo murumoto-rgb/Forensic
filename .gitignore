@@ -1,0 +1,32 @@
+# Node / pnpm
+node_modules/
+*.log
+.pnpm-store/
+dist/
+build/
+.next/
+.vite/
+coverage/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Xcode
+ios/build/
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcworkspace/xcuserdata/
+ios/DerivedData/
+
+# xcodegen-generated artifacts (source of truth is ios/project.yml).
+# Running `xcodegen generate` rewrites these from the inline
+# `info.properties` / `entitlements.properties` blocks.
+ios/SitePhoto/Info.plist
+ios/SitePhoto/*.entitlements
+ios/SitePhoto.xcodeproj/

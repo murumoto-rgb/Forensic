@@ -1,0 +1,30 @@
+# Xcode-generated project — regenerate with `xcodegen` after pulling
+*.xcodeproj/
+*.xcworkspace/
+
+# Build artefacts
+build/
+DerivedData/
+.build/
+
+# User-specific Xcode state
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Swift Package Manager
+.swiftpm/
+Packages/
+Package.resolved
+
+# CocoaPods (not used today, but just in case)
+Pods/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# macOS junk
+.DS_Store
