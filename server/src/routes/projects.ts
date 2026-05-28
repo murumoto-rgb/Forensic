@@ -134,6 +134,19 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
     const parsed = PutBodySchema.safeParse(request.body);
     if (!parsed.success) {
+      // Surface the specific zod issues to Render's logs so we can
+      // debug client/server schema drift. Without this, all the
+      // client sees is "Request body failed validation" with no
+      // pointer to which field. iOS / web clients still get the
+      // `details` array in the response body — this log just makes
+      // it visible to engineering operators too.
+      request.log.warn(
+        {
+          projectId: id,
+          issues: parsed.error.issues,
+        },
+        "PUT /v1/projects/:id zod validation failed"
+      );
       reply.code(400).send({
         error: "bad_request",
         message: "Request body failed validation",
