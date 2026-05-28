@@ -157,8 +157,13 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     const { project, expectedRevision } = parsed.data;
 
     // The URL identifies the project. The body's project.id must
-    // agree or it's a client bug.
-    if (project.id !== id) {
+    // agree or it's a client bug. Compared case-insensitively
+    // because RFC 4122 doesn't mandate a UUID-string case
+    // convention — Swift's `UUID.uuidString` is uppercase while
+    // the iOS APIClient lowercases the URL segment. Both
+    // representations refer to the same UUID; rejecting one for
+    // the other is a server-side mistake.
+    if (project.id.toLowerCase() !== id.toLowerCase()) {
       reply.code(400).send({
         error: "bad_request",
         message: `URL :id (${id}) does not match body project.id (${project.id})`,
