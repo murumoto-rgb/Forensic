@@ -20,6 +20,17 @@ struct ProjectTagSelection: Codable, Hashable, Sendable {
     var primariesByContext: [UUID: Set<UUID>]
     var deselectedSecondariesByPrimary: [UUID: Set<UUID>]
 
+    /// Explicit `CodingKeys` so the custom `init(from:)` + `encode(to:)`
+    /// pair below compiles. Swift only auto-synthesizes `CodingKeys`
+    /// when at most one of init/encode is custom; providing both kills
+    /// synthesis. Keys match property names exactly — same on-disk and
+    /// on-wire field names the previous synthesized version used.
+    private enum CodingKeys: String, CodingKey {
+        case contextIDs
+        case primariesByContext
+        case deselectedSecondariesByPrimary
+    }
+
     init(contextIDs: [UUID] = [],
          primariesByContext: [UUID: Set<UUID>] = [:],
          deselectedSecondariesByPrimary: [UUID: Set<UUID>] = [:]) {
