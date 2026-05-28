@@ -249,6 +249,24 @@ struct SettingsSheet: View {
                     Link("Anthropic rate limits →",
                          destination: URL(string: "https://docs.anthropic.com/en/api/rate-limits")!)
                 }
+
+                // Build version — useful for confirming the on-device
+                // app matches the most recently pushed code. Regenerated
+                // on every `ios/scripts/regen-project.sh` run.
+                Section {
+                    HStack {
+                        Label("Build", systemImage: "hammer")
+                        Spacer()
+                        Text(BuildInfo.display)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .textSelection(.enabled)
+                    }
+                } header: {
+                    Text("About")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

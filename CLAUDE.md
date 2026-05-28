@@ -125,6 +125,14 @@ Rules:
   `ios/project.yml`. Both files are gitignored; running
   `xcodegen generate` rewrites them. Never edit either file
   directly — edit `project.yml` and regenerate.
+- **`ios/SitePhoto/Generated/BuildInfo.swift`** is auto-generated
+  by `ios/scripts/gen-build-info.sh` and gitignored. It holds the
+  git SHA + branch + UTC timestamp that the in-app "About"
+  section displays. To regenerate it, run
+  `ios/scripts/regen-project.sh` instead of `xcodegen generate`
+  directly — the wrapper runs `gen-build-info.sh` first, then
+  `xcodegen generate`. This is the standard "regenerate the
+  project" entry point now.
 - App models persist via `Codable` JSON on disk; older saves
   must remain decodable when fields are added — always default
   new fields and verify via the regression-sanity step above.
