@@ -27,6 +27,13 @@ async function main() {
           : undefined,
     },
     trustProxy: true,
+    // Manifest JSON can grow with photo count + AI-analysis blobs.
+    // A forensic project with hundreds of photos easily exceeds
+    // Fastify's 1 MB default. 50 MB matches the per-photo binary
+    // cap on the upload endpoints — sized to handle ~500-1000
+    // photos worth of metadata. Render free tier has 512 MB RAM
+    // so a single 50 MB body is comfortably within budget.
+    bodyLimit: 50 * 1024 * 1024,
   });
 
   await app.register(sensible);
