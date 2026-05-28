@@ -173,12 +173,23 @@ function normalizeZodType(schema: ZodTypeAny): string {
     case "ZodUnknown":
     case "ZodAny":
       return "unknown";
-    case "ZodNullable":
-      return `nullable<${normalizeZodType(def.innerType)}>`;
-    case "ZodOptional":
-      // Optional and nullable collapse to the same descriptor — both
-      // represent "may be missing" on the wire.
-      return `nullable<${normalizeZodType(def.innerType)}>`;
+    case "ZodEffects":
+      // `.transform()` / `.preprocess()` wrap the actual schema in
+      // ZodEffects. The descriptor is whatever the inner schema is.
+      return normalizeZodType(def.schema);
+    case "ZodNullable": {
+      const inner = normalizeZodType(def.innerType);
+      // Already-nullable inner means `nullable(nullable(X))` — collapse.
+      return inner.startsWith("nullable<") ? inner : `nullable<${inner}>`;
+    }
+    case "ZodOptional": {
+      // Optional collapses to the same descriptor as nullable — both
+      // represent "may be missing" on the wire. Nested
+      // `optional(nullable(X))` (from our `nullable()` helper in
+      // validation.ts) collapses to a single `nullable<X>`.
+      const inner = normalizeZodType(def.innerType);
+      return inner.startsWith("nullable<") ? inner : `nullable<${inner}>`;
+    }
     case "ZodArray":
       return `array<${normalizeZodType(def.type)}>`;
     case "ZodRecord":
