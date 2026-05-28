@@ -32,10 +32,68 @@ struct ProjectTagSelection: Codable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.contextIDs = try c.decodeIfPresent([UUID].self,
                                                  forKey: .contextIDs) ?? []
-        self.primariesByContext = try c.decodeIfPresent([UUID: Set<UUID>].self,
-                                                         forKey: .primariesByContext) ?? [:]
-        self.deselectedSecondariesByPrimary = try c.decodeIfPresent([UUID: Set<UUID>].self,
-                                                         forKey: .deselectedSecondariesByPrimary) ?? [:]
+        self.primariesByContext = Self.decodeUUIDDict(
+            in: c, key: .primariesByContext)
+        self.deselectedSecondariesByPrimary = Self.decodeUUIDDict(
+            in: c, key: .deselectedSecondariesByPrimary)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(contextIDs, forKey: .contextIDs)
+        try c.encode(Self.encodeUUIDDict(primariesByContext),
+                     forKey: .primariesByContext)
+        try c.encode(Self.encodeUUIDDict(deselectedSecondariesByPrimary),
+                     forKey: .deselectedSecondariesByPrimary)
+    }
+
+    // MARK: - Codable helpers for the [UUID: Set<UUID>] sub-dictionaries
+    //
+    // Foundation's default Codable for `[UUID: Set<UUID>]` encodes as
+    // a flat JSON *array* of alternating UUID strings and arrays
+    // (because JSON objects can only have string keys; Foundation
+    // falls back to alternating-array form for non-String-keyed
+    // Swift dictionaries). That round-trips fine through Foundation
+    // but is unparseable by the server's `z.record(uuid, …)` zod
+    // schema, which expects a proper JSON object.
+    //
+    // To fix the wire format, we explicitly encode as
+    // `[String: [String]]` (JSON object) using lowercase UUID
+    // strings as keys. Decode tries the new shape first, falls back
+    // to the legacy array form so on-disk manifests written by
+    // earlier builds still load. The first save after this update
+    // upgrades the on-disk format automatically.
+
+    private static func encodeUUIDDict(_ dict: [UUID: Set<UUID>]) -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for (key, value) in dict {
+            result[key.uuidString.lowercased()] =
+                value.map { $0.uuidString.lowercased() }
+        }
+        return result
+    }
+
+    private static func decodeUUIDDict(
+        in container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> [UUID: Set<UUID>] {
+        // Prefer the new String-keyed JSON-object form.
+        if let stringKeyed = try? container.decodeIfPresent(
+            [String: [String]].self, forKey: key) {
+            var result: [UUID: Set<UUID>] = [:]
+            for (k, v) in stringKeyed {
+                guard let kUUID = UUID(uuidString: k) else { continue }
+                let uuids = v.compactMap(UUID.init(uuidString:))
+                result[kUUID] = Set(uuids)
+            }
+            return result
+        }
+        // Legacy: Foundation's flat-array form for `[UUID: Set<UUID>]`.
+        if let legacy = try? container.decodeIfPresent(
+            [UUID: Set<UUID>].self, forKey: key) {
+            return legacy
+        }
+        return [:]
     }
 
     /// True when nothing's picked. Drives the "Pick at least one
