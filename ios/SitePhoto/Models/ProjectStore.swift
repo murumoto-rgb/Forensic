@@ -119,11 +119,19 @@ final class ProjectStore {
 
         loadStatus = "Checking iCloud Drive…"
 
-        // The iCloud-container probe is the dominant cost on first launch
-        // (sometimes 1–3 s while iOS sets up the container). Run it on a
-        // background task so the main actor stays free to render the
-        // splash screen.
+        // The iCloud-container probe (`forUbiquityContainerIdentifier`)
+        // is the dominant cost on first launch and *can hang
+        // indefinitely* on the iOS Simulator when Apple's iCloud
+        // daemon is wedged (a well-known simulator-side bug with no
+        // fix from our side). On a real device the call returns in
+        // 1–3 s. Compile-time `targetEnvironment(simulator)` skips
+        // the probe entirely on simulator builds — engineering
+        // preview / UI work in the simulator gets a fast launch;
+        // iCloud sync is verified on real iPhone.
         let iCloudURL: URL? = await Task.detached {
+            #if targetEnvironment(simulator)
+            return nil
+            #else
             guard let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
                 return nil
             }
@@ -132,6 +140,7 @@ final class ProjectStore {
             let projects = docs.appending(path: "Projects", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
             return projects
+            #endif
         }.value
 
         if let iCloud = iCloudURL {
@@ -141,7 +150,11 @@ final class ProjectStore {
             loadStatus = "Setting up iCloud storage…"
         } else {
             self.usingICloud = false
+            #if targetEnvironment(simulator)
+            self.iCloudUnavailableReason = "Running in iOS Simulator — iCloud Drive intentionally disabled to avoid known simulator iCloud-daemon hangs. iCloud sync is verified on real iPhone."
+            #else
             self.iCloudUnavailableReason = "iCloud Drive isn't enabled. Open Settings → Apple ID → iCloud → iCloud Drive and turn it on (and SitePhoto inside the app list) to back projects up to iCloud."
+            #endif
             loadStatus = "Using local storage only…"
         }
 
