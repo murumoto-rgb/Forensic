@@ -85,6 +85,88 @@ final class APIClient {
                                   body: body)
     }
 
+    // MARK: Phase 2 — files (Cloudflare R2)
+
+    /// Ask the server for a presigned R2 PUT URL the client can
+    /// upload directly to. 15-min TTL on the URL.
+    func getUploadUrl(projectId: UUID,
+                      photoId: UUID,
+                      kind: FileKind,
+                      sizeBytes: Int,
+                      sha256: String?,
+                      contentType: String) async throws -> UploadUrlResponse {
+        let body = UploadUrlRequest(
+            photoId: photoId.uuidString.lowercased(),
+            kind: kind,
+            sizeBytes: sizeBytes,
+            sha256: sha256,
+            contentType: contentType
+        )
+        return try await request(
+            "POST",
+            "/v1/projects/\(projectId.uuidString.lowercased())/files/upload-url",
+            body: body
+        )
+    }
+
+    /// Record a successful upload in the server's `files` table.
+    /// Called AFTER the R2 PUT succeeds.
+    @discardableResult
+    func commitUpload(projectId: UUID,
+                      objectKey: String,
+                      photoId: UUID,
+                      kind: FileKind,
+                      sizeBytes: Int,
+                      sha256: String?) async throws -> CommitUploadResponse {
+        let body = CommitUploadRequest(
+            objectKey: objectKey,
+            photoId: photoId.uuidString.lowercased(),
+            kind: kind,
+            sizeBytes: sizeBytes,
+            sha256: sha256
+        )
+        return try await request(
+            "POST",
+            "/v1/projects/\(projectId.uuidString.lowercased())/files/commit",
+            body: body
+        )
+    }
+
+    /// Ask the server which of the given object keys are already in
+    /// R2. Used at launch to skip re-uploads.
+    func syncFilesCheck(objectKeys: [String]) async throws -> SyncFilesCheckResponse {
+        try await request(
+            "POST",
+            "/v1/sync/files/check",
+            body: SyncFilesCheckRequest(objectKeys: objectKeys)
+        )
+    }
+
+    // MARK: Direct PUT to R2
+
+    /// Upload bytes to an R2 presigned URL. No auth header — the
+    /// signed query string IS the auth. The Content-Type MUST match
+    /// what was passed to `getUploadUrl(contentType:)` or the
+    /// signature won't validate.
+    func uploadBytesToPresignedURL(_ url: URL,
+                                    data: Data,
+                                    contentType: String) async throws {
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        req.setValue("\(data.count)", forHTTPHeaderField: "Content-Length")
+        let (_, response) = try await session.upload(for: req, from: data)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw APIError.http(
+                status: code,
+                code: "r2_upload_failed",
+                message: "R2 upload returned \(code)"
+            )
+        }
+    }
+
     // MARK: Core
 
     private struct Empty: Encodable {}
@@ -200,4 +282,59 @@ struct ProjectListItem: Decodable, Identifiable {
 struct GetManifestResponse: Decodable {
     let project: Project
     let revision: String
+}
+
+// MARK: - Phase 2: Files (Cloudflare R2)
+
+/// Categories of binary stored in R2. Must match the server's
+/// FileKind in `packages/shared/src/api.ts` and the SQL CHECK
+/// constraint in migration 0003. Wire format is the raw string.
+enum FileKind: String, Codable {
+    case photo
+    case thumb
+    case markupPng = "markup_png"
+    case markupDrawing = "markup_drawing"
+    case plan
+}
+
+/// Max bytes per upload (50 MB). Matches `FILE_MAX_BYTES` server-side.
+let FILE_MAX_BYTES = 50 * 1024 * 1024
+
+struct UploadUrlRequest: Encodable {
+    let photoId: String
+    let kind: FileKind
+    let sizeBytes: Int
+    let sha256: String?
+    let contentType: String
+}
+
+struct UploadUrlResponse: Decodable {
+    let uploadUrl: String
+    let objectKey: String
+    let expiresAt: String
+}
+
+struct CommitUploadRequest: Encodable {
+    let objectKey: String
+    let photoId: String
+    let kind: FileKind
+    let sizeBytes: Int
+    let sha256: String?
+}
+
+struct CommitUploadResponse: Decodable {
+    let ok: Bool
+}
+
+struct SyncFilesCheckRequest: Encodable {
+    let objectKeys: [String]
+}
+
+struct SyncFilesCheckResponse: Decodable {
+    let existing: [String]
+}
+
+struct PhotoUrlResponse: Decodable {
+    let url: String
+    let expiresAt: String
 }

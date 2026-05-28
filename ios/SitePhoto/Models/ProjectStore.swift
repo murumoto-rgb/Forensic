@@ -1252,6 +1252,35 @@ final class ProjectStore {
         }
     }
 
+    /// Apply a server-pulled project to the local store. Writes the
+    /// manifest to disk in the project's folder (creating the folder
+    /// structure if needed) and updates the in-memory list. **Does
+    /// NOT call `onAfterSave`** — this is a pull from the server, not
+    /// a local edit; firing the save hook would echo the same data
+    /// straight back as a push and loop.
+    ///
+    /// Called by `ManifestSyncer.pullAllFromServer()` for projects
+    /// whose server revision differs from the locally-cached one
+    /// AND that aren't dirty (have no unsynced local edits).
+    func applyServerProject(_ project: Project) {
+        let dir = projectURL(project)
+        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: photosFolder(for: project),
+                                          withIntermediateDirectories: true)
+        let manifest = manifestURL(for: project)
+        do {
+            let data = try encoder().encode(project)
+            try data.write(to: manifest, options: .atomic)
+        } catch {
+            #if DEBUG
+            print("applyServerProject failed to write manifest: \(error)")
+            #endif
+            return
+        }
+        commitInMemory(project)
+        lastSavedAt = Date()
+    }
+
     /// Surface a toast when iCloud reports the project manifest has been
     /// edited from two devices since the last sync. Auto-resolution
     /// (`removeOtherVersionsOfItem`) is offered as the toast's action —
