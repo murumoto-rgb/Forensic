@@ -6,6 +6,7 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ProjectStore.self) private var store
     @Environment(ToastCenter.self) private var toastCenter
+    @Environment(AuthService.self) private var auth
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -44,6 +45,26 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // Account first — most relevant identity info.
+                Section("Account") {
+                    if let email = auth.userEmail {
+                        LabeledContent("Signed in as") {
+                            Text(email)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button(role: .destructive) {
+                        Task {
+                            try? await auth.signOut()
+                            dismiss()
+                        }
+                    } label: {
+                        Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                }
+
                 Section {
                     SecureField("sk-ant-…", text: $apiKey, prompt: Text("Anthropic API key"))
                         .textContentType(.password)

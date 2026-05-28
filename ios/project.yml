@@ -5,6 +5,15 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# Swift Package Manager dependencies.
+# After editing this section, regenerate the Xcode project:
+#   cd ios && xcodegen generate
+# Then in Xcode, wait for "Package Resolution" to finish before building.
+packages:
+  Supabase:
+    url: https://github.com/supabase/supabase-swift
+    from: 2.0.0
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -20,6 +29,9 @@ targets:
     platform: iOS
     sources:
       - path: SitePhoto
+    dependencies:
+      - package: Supabase
+        product: Supabase
     entitlements:
       path: SitePhoto/SitePhoto.entitlements
       properties:
