@@ -18,6 +18,15 @@ const EnvSchema = z.object({
   SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
   SUPABASE_SECRET_KEY: z.string().min(1),
 
+  // Cloudflare R2 — S3-compatible object store for photo binaries.
+  // Account ID is shown on the R2 dashboard; access keys come from a
+  // bucket-scoped R2 API token created with "Object Read & Write"
+  // permission on the bucket.
+  R2_ACCOUNT_ID: z.string().min(1),
+  R2_ACCESS_KEY_ID: z.string().min(1),
+  R2_SECRET_ACCESS_KEY: z.string().min(1),
+  R2_BUCKET: z.string().min(1),
+
   // Comma-separated list of allowed origins for CORS. Empty string
   // means "no cross-origin requests allowed" (locks the server
   // down for same-origin only — fine if web is hosted under the
