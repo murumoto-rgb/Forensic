@@ -31,10 +31,10 @@ Current `manifestSchemaVersion`: **1**
 | Feature | iOS | Web | Shared schema | Notes |
 |---|---|---|---|---|
 | **Authentication** | | | | |
-| Email + password sign in | 📋 Phase 1 | 📋 Phase 1 | `auth/User` | Supabase Auth, shared session |
-| Magic-link sign in | 📋 Phase 1 | 📋 Phase 1 | n/a | Resend email transport |
+| Email + password sign in | 📋 Phase 1B | ✅ Phase 1A | n/a (Supabase Auth handles user records) | Web shipped in PR #4; iOS lands in PR #5 |
+| Magic-link sign in | 📋 Phase 2 | 📋 Phase 2 | n/a | Defers until Resend is configured |
 | **Project list & metadata** | | | | |
-| List projects | ✅ | 📋 Phase 1 | `manifest.projects[]` | |
+| List projects | ✅ | ✅ Phase 1A | server: `projects.manifest`, list endpoint at `GET /v1/projects` | Web read-only project list shipped; iOS sync lands in PR #5 |
 | Create / rename project | ✅ | 📋 Phase 2 | `Project.name` | |
 | Project GPS + address | ✅ | 📋 Phase 2 | `Project.projectGPS`, `Project.projectAddress` | |
 | Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |

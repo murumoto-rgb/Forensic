@@ -4,11 +4,11 @@
   "private": true,
   "description": "Fastify + TypeScript API for the Forensic project. Hosted on Render. Talks to Supabase via the secret key.",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./src/index.ts",
   "scripts": {
     "dev": "tsx watch --env-file=.env.local src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
+    "build": "tsc --noEmit",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,12 +18,12 @@
     "@supabase/supabase-js": "^2.49.4",
     "fastify": "^5.5.0",
     "fastify-plugin": "^5.1.0",
+    "pino-pretty": "^13.1.3",
+    "tsx": "^4.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
-    "pino-pretty": "^13.1.3",
-    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
 }
