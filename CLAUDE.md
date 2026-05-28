@@ -119,6 +119,12 @@ Rules:
   - `packages/shared/` — TypeScript types + zod schemas; the
     **canonical schema** that both server and web consume,
     and that iOS Codable structs mirror field-for-field.
+- `Info.plist` and `SitePhoto.entitlements` are **xcodegen
+  artifacts**, not source files. Source of truth is the inline
+  `info.properties` and `entitlements.properties` blocks in
+  `ios/project.yml`. Both files are gitignored; running
+  `xcodegen generate` rewrites them. Never edit either file
+  directly — edit `project.yml` and regenerate.
 - App models persist via `Codable` JSON on disk; older saves
   must remain decodable when fields are added — always default
   new fields and verify via the regression-sanity step above.
