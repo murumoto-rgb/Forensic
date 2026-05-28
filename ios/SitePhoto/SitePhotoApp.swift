@@ -7,6 +7,7 @@ struct SitePhotoApp: App {
     @State private var toastCenter = ToastCenter()
     @State private var auth = AuthService()
     @State private var syncer: ManifestSyncer
+    @State private var photoSyncer: PhotoSyncer
 
     init() {
         let toast = ToastCenter()
@@ -14,15 +15,23 @@ struct SitePhotoApp: App {
         let auth = AuthService()
         let api = APIClient(auth: auth)
         let syncer = ManifestSyncer(api: api, auth: auth, toast: toast)
+        syncer.store = store          // Phase 2 pull-from-server writeback
+        let photoSyncer = PhotoSyncer(api: api,
+                                       auth: auth,
+                                       store: store,
+                                       toast: toast)
         store.toastCenter = toast
-        // Wire saves → sync. Fire-and-forget; errors toast.
-        store.onAfterSave = { [weak syncer] project in
+        // Wire saves → manifest sync + photo upload. Fire-and-forget;
+        // each runs its own retries / toast policy.
+        store.onAfterSave = { [weak syncer, weak photoSyncer] project in
             syncer?.sync(project)
+            photoSyncer?.sync(project)
         }
         _toastCenter = State(initialValue: toast)
         _store = State(initialValue: store)
         _auth = State(initialValue: auth)
         _syncer = State(initialValue: syncer)
+        _photoSyncer = State(initialValue: photoSyncer)
     }
 
     /// True once the white splash screen has faded out.
@@ -54,6 +63,7 @@ struct SitePhotoApp: App {
                 .environment(toastCenter)
                 .environment(auth)
                 .environment(syncer)
+                .environment(photoSyncer)
                 .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
@@ -89,6 +99,21 @@ struct SitePhotoApp: App {
                         try? await Task.sleep(for: .seconds(minSplashDuration - elapsed))
                     }
                     splashDone = true
+
+                    // After splash dismisses, kick off the
+                    // server-pull + photo-upload sweep in the
+                    // background. Server is the authoritative manifest
+                    // source from Phase 2 onward; this is what flips
+                    // a new device or a server-side edit into the
+                    // local store. Photo upload runs after the pull so
+                    // any newly-arrived projects also get their photos
+                    // uploaded if iOS has the files locally.
+                    if auth.session != nil {
+                        Task {
+                            await syncer.pullAllFromServer()
+                            await photoSyncer.syncAll()
+                        }
+                    }
                 }
                 // Once the splash is dismissed, gate the rest of the
                 // app behind a valid Supabase session. The sign-in

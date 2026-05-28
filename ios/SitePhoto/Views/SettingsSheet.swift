@@ -8,6 +8,7 @@ struct SettingsSheet: View {
     @Environment(ToastCenter.self) private var toastCenter
     @Environment(AuthService.self) private var auth
     @Environment(ManifestSyncer.self) private var syncer
+    @Environment(PhotoSyncer.self) private var photoSyncer
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -58,11 +59,13 @@ struct SettingsSheet: View {
                     }
                     Button(role: .destructive) {
                         Task {
-                            // Clear per-project server-revision cache so a
-                            // subsequent user signing in on the same device
-                            // doesn't try to PUT with the previous user's
-                            // (stale) revision tokens.
+                            // Clear per-project server-revision cache and
+                            // per-object upload cache so a subsequent user
+                            // signing in on the same device doesn't try to
+                            // reuse the previous user's revision tokens or
+                            // skip uploads to a different R2 bucket.
                             syncer.resetRevisions()
+                            photoSyncer.resetUploadCache()
                             try? await auth.signOut()
                             dismiss()
                         }

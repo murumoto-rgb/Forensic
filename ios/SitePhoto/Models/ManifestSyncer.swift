@@ -25,8 +25,20 @@ final class ManifestSyncer {
     private let api: APIClient
     private let auth: AuthService
     private let toast: ToastCenter
+    /// Set on init by SitePhotoApp so the syncer can write pulled
+    /// projects back to the local store. Weak to avoid a retain
+    /// cycle (store keeps a strong ref to syncer via the
+    /// onAfterSave closure).
+    weak var store: ProjectStore?
 
     private let revisionKeyPrefix = "sitephoto.serverRevision."
+    /// In-memory set of project IDs whose local file has been
+    /// modified since the last successful push. `pullAllFromServer`
+    /// skips these so an in-progress local edit isn't clobbered by
+    /// a pull. Cleared on successful push. Lives only in memory —
+    /// on relaunch we treat all projects as clean (subsequent local
+    /// edits re-mark them).
+    private var dirty: Set<UUID> = []
 
     /// Project IDs currently mid-sync. Lets the UI surface a
     /// "syncing" indicator later without races.
@@ -48,15 +60,18 @@ final class ManifestSyncer {
         let id = project.id
         guard !inFlight.contains(id) else { return }
         inFlight.insert(id)
+        dirty.insert(id)  // local edit pending until push succeeds
 
         Task {
             defer { inFlight.remove(id) }
             do {
                 try await pushOnce(project: project)
+                dirty.remove(id)
             } catch APIClient.APIError.http(status: 409, _, _) {
                 // Stale revision — refetch and retry once.
                 do {
                     try await refetchRevisionAndRetry(project: project)
+                    dirty.remove(id)
                 } catch {
                     surfaceError(error, projectName: project.name)
                 }
@@ -70,6 +85,32 @@ final class ManifestSyncer {
         }
     }
 
+    /// Walk the server's project list and pull anything where the
+    /// server's revision differs from what we have locally cached
+    /// AND the local project isn't dirty (i.e. has no unsynced
+    /// edits). Called from launch and pull-to-refresh.
+    ///
+    /// On 409 during a parallel push (very unlikely in practice
+    /// because syncs are serialized through `inFlight`), the
+    /// existing push retry path handles it; we just skip projects
+    /// that are inFlight at this moment.
+    func pullAllFromServer() async {
+        guard auth.session != nil else { return }
+        let response: ProjectListResponse
+        do {
+            response = try await api.listProjects()
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, projectName: "project list")
+            return
+        }
+
+        for item in response.projects {
+            await pullIfNeeded(item: item)
+        }
+    }
+
     /// Clear all stored revisions. Called on sign-out so the next
     /// user (or a fresh sign-in by the same user) starts clean.
     func resetRevisions() {
@@ -78,6 +119,7 @@ final class ManifestSyncer {
         where key.hasPrefix(revisionKeyPrefix) {
             defaults.removeObject(forKey: key)
         }
+        dirty.removeAll()
     }
 
     // MARK: Internals
@@ -101,6 +143,31 @@ final class ManifestSyncer {
             expectedRevision: current.revision
         )
         storeRevision(response.revision, for: project.id)
+    }
+
+    private func pullIfNeeded(item: ProjectListItem) async {
+        let id = item.id
+        // Don't trample an in-flight push.
+        if inFlight.contains(id) { return }
+        // Don't trample local edits the user hasn't pushed yet.
+        if dirty.contains(id) { return }
+        // No-op when server matches local.
+        if storedRevision(for: id) == item.revision { return }
+
+        do {
+            let resp = try await api.getProject(id: id)
+            storeRevision(resp.revision, for: id)
+            store?.applyServerProject(resp.project)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch APIClient.APIError.http(status: 404, _, _) {
+            // Server says it's gone — could be a soft-delete or
+            // access change. Skip silently for Phase 2; clean up
+            // local copy in a later phase.
+            return
+        } catch {
+            surfaceError(error, projectName: item.name)
+        }
     }
 
     private func storedRevision(for id: UUID) -> String? {
