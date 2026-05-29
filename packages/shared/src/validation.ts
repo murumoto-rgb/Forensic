@@ -130,10 +130,14 @@ export const PhotoSchema = z.object({
 export const DistressMarkSchema = z.object({
   id: uuid,
   kind: DistressKindSchema,
-  // Opaque pass-through for Phase 0 — see comment on `DistressMark`
-  // in `manifest.ts`. Switches to a structured `{ x, y }` shape in
-  // Phase 3 when distress sync to web goes live.
-  points: z.array(z.record(z.string(), z.unknown())),
+  // Phase 0 opaque pass-through. iOS stores points as `[CGPoint]`,
+  // which Apple's default Codable encodes as a two-element
+  // `[x, y]` array — NOT a `{ x, y }` object. We accept any
+  // element shape on the wire and defer first-class typing to
+  // Phase 3 when distress rendering on web requires interpreting
+  // them (the web client at that point reads `point[0]`/`point[1]`
+  // directly until iOS's encoder switches to keyed objects).
+  points: z.array(z.unknown()),
   note: nullable(z.string()),
   createdAt: isoDate,
 });

@@ -156,6 +156,13 @@ final class PhotoSyncer {
         } catch APIClient.APIError.notAuthenticated {
             // Sign-in sheet is (or about to be) showing; just stop.
             return
+        } catch APIClient.APIError.http(status: 404, _, _) {
+            // Project hasn't been pushed to the server yet. Happens
+            // when a brand-new project's manifest sync hasn't
+            // completed (per-save race) — the next syncAll sweep
+            // (after pushAllToServer) will pick it up. Silently
+            // skip; don't toast or log.
+            return
         } catch {
             // Don't toast every per-photo failure — at hundreds of
             // photos that would spam the user. Drop a single

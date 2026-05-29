@@ -111,6 +111,27 @@ final class ManifestSyncer {
         }
     }
 
+    /// Push every local project to the server. Idempotent — projects
+    /// that match server's current revision are no-ops (server bumps
+    /// revision regardless, but the wire shape is unchanged from
+    /// what the server already stored).
+    ///
+    /// Called at launch AFTER `pullAllFromServer` so we don't race
+    /// in the "server is ahead" case, and BEFORE `PhotoSyncer.syncAll`
+    /// so every project exists on the server when photo uploads
+    /// start asking for `/files/upload-url` (which 404s on unknown
+    /// projects). Without this pass, projects created before iOS
+    /// gained the manifest-sync layer (Phase 1B-2) never reach the
+    /// server, and their photos generate a 404 storm on
+    /// upload-url.
+    func pushAllToServer() async {
+        guard auth.session != nil else { return }
+        guard let store else { return }
+        for project in store.activeProjects {
+            await pushAwait(project: project)
+        }
+    }
+
     /// Clear all stored revisions. Called on sign-out so the next
     /// user (or a fresh sign-in by the same user) starts clean.
     func resetRevisions() {
@@ -143,6 +164,34 @@ final class ManifestSyncer {
             expectedRevision: current.revision
         )
         storeRevision(response.revision, for: project.id)
+    }
+
+    /// Awaitable equivalent of `sync(_:)` — same push + 409-retry
+    /// logic but the caller waits for completion. Used by
+    /// `pushAllToServer()` so we know every project is on the
+    /// server before kicking off photo upload.
+    private func pushAwait(project: Project) async {
+        let id = project.id
+        if inFlight.contains(id) { return }
+        inFlight.insert(id)
+        dirty.insert(id)
+        defer { inFlight.remove(id) }
+
+        do {
+            try await pushOnce(project: project)
+            dirty.remove(id)
+        } catch APIClient.APIError.http(status: 409, _, _) {
+            do {
+                try await refetchRevisionAndRetry(project: project)
+                dirty.remove(id)
+            } catch {
+                surfaceError(error, projectName: project.name)
+            }
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, projectName: project.name)
+        }
     }
 
     private func pullIfNeeded(item: ProjectListItem) async {

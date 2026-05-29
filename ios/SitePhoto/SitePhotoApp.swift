@@ -100,17 +100,24 @@ struct SitePhotoApp: App {
                     }
                     splashDone = true
 
-                    // After splash dismisses, kick off the
-                    // server-pull + photo-upload sweep in the
-                    // background. Server is the authoritative manifest
-                    // source from Phase 2 onward; this is what flips
-                    // a new device or a server-side edit into the
-                    // local store. Photo upload runs after the pull so
-                    // any newly-arrived projects also get their photos
-                    // uploaded if iOS has the files locally.
+                    // After splash dismisses, kick off the launch
+                    // sync sweep: pull → push → photo upload.
+                    //
+                    //  * pull first so we don't trample server-side
+                    //    edits with our local state.
+                    //  * push second so every local project exists
+                    //    on the server BEFORE PhotoSyncer asks for
+                    //    upload URLs (the upload-url endpoint 404s
+                    //    when the project isn't in the projects
+                    //    table — happens for projects created before
+                    //    Phase 1B-2 shipped that never had their
+                    //    manifest synced).
+                    //  * photo upload last, once everything the
+                    //    server cares about is in place.
                     if auth.session != nil {
                         Task {
                             await syncer.pullAllFromServer()
+                            await syncer.pushAllToServer()
                             await photoSyncer.syncAll()
                         }
                     }
@@ -137,6 +144,7 @@ struct SitePhotoApp: App {
                     guard newUserId != nil else { return }
                     Task {
                         await syncer.pullAllFromServer()
+                        await syncer.pushAllToServer()
                         await photoSyncer.syncAll()
                     }
                 }
