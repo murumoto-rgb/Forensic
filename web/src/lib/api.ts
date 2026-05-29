@@ -10,6 +10,11 @@
 
 import { env } from "./env";
 import { supabase } from "./supabase";
+import type {
+  Project,
+  GetManifestResponse,
+  PhotoUrlResponse,
+} from "@forensic/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -77,7 +82,22 @@ export interface ProjectListResponse {
   projects: ProjectListItem[];
 }
 
+export type { Project, GetManifestResponse, PhotoUrlResponse };
+
 export const api = {
-  healthz: () => request<{ status: string; serverManifestSchemaVersion: number }>("/healthz"),
+  healthz: () =>
+    request<{ status: string; serverManifestSchemaVersion: number }>(
+      "/healthz"
+    ),
   listProjects: () => request<ProjectListResponse>("/v1/projects"),
+  getProject: (id: string) =>
+    request<GetManifestResponse>(`/v1/projects/${id}`),
+  getPhotoImageUrl: (projectId: string, photoId: string) =>
+    request<PhotoUrlResponse>(
+      `/v1/projects/${projectId}/photos/${photoId}/image`
+    ),
+  getPhotoThumbUrl: (projectId: string, photoId: string) =>
+    request<PhotoUrlResponse>(
+      `/v1/projects/${projectId}/photos/${photoId}/thumb`
+    ),
 };

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { api, ApiError, type ProjectListItem } from "../lib/api";
@@ -59,11 +60,21 @@ export function ProjectListPage({ session }: Props) {
       {projects !== null && projects.length > 0 && (
         <ul className="divide-y divide-neutral-800 rounded border border-neutral-800">
           {projects.map((p) => (
-            <li key={p.id} className="px-4 py-3">
-              <div className="font-medium text-neutral-100">{p.name}</div>
-              <div className="text-xs text-neutral-500">
-                Updated {new Date(p.updatedAt).toLocaleString()}
-              </div>
+            <li key={p.id}>
+              <Link
+                to={`/projects/${p.id}`}
+                className="flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-neutral-900"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-neutral-100">
+                    {p.name}
+                  </div>
+                  <div className="text-xs text-neutral-500">
+                    Updated {new Date(p.updatedAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="text-neutral-600">›</div>
+              </Link>
             </li>
           ))}
         </ul>
