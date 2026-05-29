@@ -20,21 +20,36 @@ interface Props {
   onClick?: () => void;
 }
 
+type LoadState = "loading" | "ready" | "pending" | "error";
+
 export function PhotoThumbnail({ projectId, photoId, alt, onClick }: Props) {
   const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<LoadState>("loading");
 
   useEffect(() => {
     let cancelled = false;
+    setState("loading");
+    setUrl(null);
     api
       .getPhotoThumbUrl(projectId, photoId)
       .then((res) => {
-        if (!cancelled) setUrl(res.url);
+        if (cancelled) return;
+        setUrl(res.url);
+        setState("ready");
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        if (e instanceof ApiError) setError(`${e.status} ${e.errorCode}`);
-        else setError("Failed to load");
+        // A 404 means the photo's binary hasn't been uploaded to R2
+        // yet — the iPhone has the manifest synced but the file is
+        // still pending (often because it lives in iCloud and hasn't
+        // been pulled to the device + uploaded). This is a normal,
+        // transient state, not an error: show a friendly "pending"
+        // placeholder. Everything else is a real error.
+        if (e instanceof ApiError && e.status === 404) {
+          setState("pending");
+        } else {
+          setState("error");
+        }
       });
     return () => {
       cancelled = true;
@@ -44,13 +59,24 @@ export function PhotoThumbnail({ projectId, photoId, alt, onClick }: Props) {
   const baseClasses =
     "aspect-square w-full overflow-hidden rounded border border-neutral-800 bg-neutral-900";
 
-  if (error) {
+  if (state === "pending") {
+    return (
+      <div
+        className={`${baseClasses} flex flex-col items-center justify-center gap-1 text-center text-[10px] text-neutral-500`}
+        title="This photo hasn't finished uploading from the iPhone yet."
+      >
+        <span className="text-base">⏳</span>
+        <span>Uploading…</span>
+      </div>
+    );
+  }
+
+  if (state === "error") {
     return (
       <div
         className={`${baseClasses} flex items-center justify-center text-[10px] text-red-400`}
-        title={error}
       >
-        {error}
+        Failed to load
       </div>
     );
   }

@@ -26,6 +26,7 @@ export function PhotoLightbox({ projectId, photos, startIndex, onClose }: Props)
   const [index, setIndex] = useState(startIndex);
   const [url, setUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
   const photo = photos[index];
 
@@ -38,6 +39,7 @@ export function PhotoLightbox({ projectId, photos, startIndex, onClose }: Props)
     let cancelled = false;
     setUrl(null);
     setLoadError(null);
+    setPending(false);
     api
       .getPhotoImageUrl(projectId, photo.id)
       .then((res) => {
@@ -45,8 +47,16 @@ export function PhotoLightbox({ projectId, photos, startIndex, onClose }: Props)
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        if (e instanceof ApiError) setLoadError(`${e.status} ${e.message}`);
-        else setLoadError("Failed to load image");
+        // 404 = binary not uploaded from the iPhone yet (often still
+        // in iCloud). Transient; show a "pending upload" message
+        // rather than an error code.
+        if (e instanceof ApiError && e.status === 404) {
+          setPending(true);
+        } else if (e instanceof ApiError) {
+          setLoadError(`${e.status} ${e.message}`);
+        } else {
+          setLoadError("Failed to load image");
+        }
       });
     return () => {
       cancelled = true;
@@ -139,12 +149,21 @@ export function PhotoLightbox({ projectId, photos, startIndex, onClose }: Props)
         className="flex max-h-full max-w-5xl flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-950 p-4 shadow-2xl"
       >
         <div className="flex items-center justify-center">
+          {pending && (
+            <div className="flex h-96 w-full flex-col items-center justify-center gap-2 rounded border border-neutral-800 bg-neutral-900 text-center text-sm text-neutral-400">
+              <span className="text-2xl">⏳</span>
+              <span>This photo hasn't finished uploading from the iPhone yet.</span>
+              <span className="text-xs text-neutral-500">
+                It'll appear once the device syncs it.
+              </span>
+            </div>
+          )}
           {loadError && (
             <div className="rounded border border-red-800 bg-red-950/40 p-6 text-sm text-red-300">
               {loadError}
             </div>
           )}
-          {!url && !loadError && (
+          {!url && !loadError && !pending && (
             <div className="flex h-96 w-full animate-pulse items-center justify-center rounded border border-neutral-800 bg-neutral-900 text-neutral-500">
               Loading…
             </div>

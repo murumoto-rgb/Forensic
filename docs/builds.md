@@ -65,6 +65,16 @@ each response, in one of two forms:
 
 ---
 
+## Build 3.1.1
+
+* **Date:** 2026-05-29
+* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
+* **Branch:** claude/local-signout-and-pending-placeholder
+* **Merge SHA:** TBD
+* **Summary:** Device-local sign-out (web + iOS) so signing out on one platform no longer kicks the other; web shows a "pending upload" placeholder instead of a 404 error for photos whose binaries haven't uploaded from the iPhone yet.
+
+---
+
 ## Build 2.1.1
 
 * **Date:** 2026-05-29
