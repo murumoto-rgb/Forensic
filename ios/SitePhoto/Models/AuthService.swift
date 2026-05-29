@@ -62,10 +62,15 @@ final class AuthService {
         defer { isInitializing = false }
         do {
             let restored = try await supabase.auth.session
+            print("[AuthService] bootstrap restored session for \(restored.user.email ?? "?")")
             self.session = restored
         } catch {
             // No persisted session, or it expired and refresh failed.
-            // Either way: not signed in.
+            // Either way: not signed in. Print the error so we can
+            // distinguish "never signed in" from "refresh failed" —
+            // important when diagnosing reports like 'iOS got kicked
+            // out when web signed out'.
+            print("[AuthService] bootstrap could not restore session: \(error)")
             self.session = nil
         }
     }
@@ -103,6 +108,7 @@ final class AuthService {
     /// on the web app would also kick the iPhone (and vice versa).
     /// We want device-local sign-out.
     func signOut() async throws {
+        print("[AuthService] signOut(scope: .local) — clearing this device's session only")
         try await supabase.auth.signOut(scope: .local)
         self.session = nil
     }

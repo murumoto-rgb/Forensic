@@ -5,8 +5,10 @@ import Foundation
 /// Authenticates every request with the current Supabase JWT
 /// (read live from `AuthService.currentJWT`, so token refresh by
 /// supabase-swift is picked up automatically). On 401 the client
-/// calls `auth.signOut()` so the UI falls back to the sign-in
-/// sheet — same pattern as the web's `api.ts`.
+/// surfaces the error to the caller but does NOT auto-signout —
+/// that would cascade-kick the user on any transient token blip
+/// (rotation race, brief Supabase outage, web sign-out side-
+/// effects). See the 401 branch in `send(...)` for details.
 ///
 /// Date encoding/decoding is ISO-8601 (the wire format declared
 /// in `packages/shared/src/validation.ts`). This is deliberately
@@ -205,12 +207,21 @@ final class APIClient {
             throw APIError.http(status: -1, code: "unknown", message: "Non-HTTP response")
         }
 
-        // 401: token is invalid or revoked. Sign out so the UI
-        // shows the sign-in sheet; the user signs in again with
-        // a fresh session.
+        // 401: token is invalid or revoked. We deliberately do NOT
+        // auto-signout here. A single transient 401 — from a token
+        // rotation race, a brief Supabase outage, or a server-side
+        // hiccup — should not cascade-clear the local session and
+        // kick the user back to sign-in. The user is signed in
+        // until they explicitly tap sign-out. If the token is
+        // genuinely revoked, every subsequent call will surface
+        // this same error message and they'll choose to re-auth.
+        // This also keeps iOS isolated from web sign-out events:
+        // even if the web's `scope: 'local'` logout briefly
+        // affects iOS via some Supabase-side path, iOS won't
+        // self-destruct.
         if httpResponse.statusCode == 401 {
-            Task { try? await auth.signOut() }
-            throw APIError.http(status: 401, code: "unauthorized", message: "Sign-in expired. Please sign in again.")
+            print("[APIClient] 401 on \(method) \(path) — surfacing as 'sign-in expired' (not auto-signing-out)")
+            throw APIError.http(status: 401, code: "unauthorized", message: "Sign-in expired. Tap sign-out and back in if this persists.")
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
