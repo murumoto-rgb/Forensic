@@ -53,10 +53,19 @@ const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Fixture;
 const OPAQUE_SWIFT_TYPES = new Set([
   "PrimaryTagEntry",
   "SecondaryTagEntry",
-  // CGPoint is Apple's CoreGraphics type with its own Codable
-  // conformance (encodes as `[x, y]`). Phase 0 round-trips it as
-  // an opaque record; Phase 3 switches iOS to a first-class
-  // `DistressMarkPoint` struct when distress sync goes live.
+]);
+
+/**
+ * Swift types whose default Codable encoding produces JSON arrays
+ * rather than JSON objects. We let the wire shape stay loose
+ * (`unknown` on both sides) for these; consumers (web, server) do
+ * any structural interpretation themselves.
+ *
+ * CGPoint encodes as `[x, y]` per Apple's default Codable, which
+ * means the distress `points` arrays serialize as arrays-of-arrays.
+ * Both the TS type and the zod schema reflect this as `unknown[]`.
+ */
+const OPAQUE_AS_UNKNOWN = new Set([
   "CGPoint",
 ]);
 
@@ -136,6 +145,11 @@ function normalizeSwiftType(swift: string): string {
   // Opaque types — substitute a record<string, unknown> on both sides.
   if (OPAQUE_SWIFT_TYPES.has(t)) {
     return "record<string, unknown>";
+  }
+  // Opaque types whose wire shape is itself an array (CGPoint's
+  // `[x, y]`). Both the zod side and Swift side land on `unknown`.
+  if (OPAQUE_AS_UNKNOWN.has(t)) {
+    return "unknown";
   }
   // Otherwise: a named manifest type (Project, Photo, Tag, …) or a
   // named enum (PositionSource, FlashMode, …). Pass through verbatim;

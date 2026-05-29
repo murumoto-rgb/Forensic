@@ -137,20 +137,19 @@ export interface Photo {
 /**
  * A point on a distress stroke or marker. On iOS this is currently
  * stored as `[CGPoint]`, which Apple's default Codable encodes as a
- * `[x, y]` two-element array. We treat the wire shape as opaque
- * (`Record<string, unknown>`) for Phase 0 because:
- *   1. Distress is iOS-only today — web syncs it in Phase 3.
- *   2. When Phase 3 lands, iOS will switch to a first-class
- *      `DistressMarkPoint` struct (encoded as `{ "x": …, "y": … }`),
- *      and this type can become `{ x: number; y: number }`.
- *
- * Until then, the field round-trips losslessly through the server
- * without anyone on the web side trying to interpret it.
+ * `[x, y]` two-element array. We carry `points` as `unknown[]` on
+ * the wire because the server doesn't interpret the elements —
+ * they're stored as JSONB and round-tripped to the web. Phase 3's
+ * distress-on-web work will either:
+ *   - Switch iOS to a structured `{ x: number; y: number }` encoder
+ *     (recommended; matches the type from then on), or
+ *   - Have the web client interpret `[x, y]` two-element arrays
+ *     directly.
  */
 export interface DistressMark {
   id: string;
   kind: DistressKind;
-  points: Array<Record<string, unknown>>;
+  points: unknown[];
   note: string | null;
   createdAt: string;
 }

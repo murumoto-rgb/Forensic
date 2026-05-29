@@ -65,6 +65,15 @@ each response, in one of two forms:
 
 ---
 
+## Build 1.1.5
+
+* **Date:** 2026-05-29
+* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
+* **Merge SHA:** TBD
+* **Summary:** Fix zod validation rejection of distress points. CGPoint encodes as `[x, y]` arrays; relax server zod to `z.array(z.unknown())` and update TS type to `unknown[]`. Distress-on-web Phase 3 will land structured `{ x, y }` encoding.
+
+---
+
 ## Build 1.1.4
 
 * **Date:** 2026-05-29
