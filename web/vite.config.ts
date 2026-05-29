@@ -18,17 +18,17 @@ function shellOrFallback(cmd: string, fallback: string): string {
 }
 
 /**
- * Read the sequential build number from `docs/builds.md`. Returns
- * the highest `## Build N` heading we find (entries should be in
- * descending order with the latest at the top). Returns empty
- * string if the file doesn't exist or has no entries — older
- * worktrees pre-Build-1.
+ * Read the dotted build number from `docs/builds.md`. Returns the
+ * topmost `## Build N.M.P` heading (entries are listed newest-
+ * first). Returns empty string if the file doesn't exist or has
+ * no entries — older worktrees pre-Build-1. See the registry file
+ * for the scheme.
  */
 function readBuildNumber(): string {
   try {
     const buildsPath = resolve(__dirname, "..", "docs", "builds.md");
     const text = readFileSync(buildsPath, "utf-8");
-    const match = /^## Build (\d+)/m.exec(text);
+    const match = /^## Build (\d+(?:\.\d+)*)/m.exec(text);
     return match?.[1] ?? "";
   } catch {
     return "";

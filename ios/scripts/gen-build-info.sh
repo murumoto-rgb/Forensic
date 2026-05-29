@@ -28,15 +28,16 @@ GIT_SHA="$(cd "${REPO_ROOT}" && git rev-parse --short=8 HEAD 2>/dev/null || echo
 GIT_BRANCH="$(cd "${REPO_ROOT}" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo dev)"
 BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# Build number from `docs/builds.md` — the topmost `## Build N`
+# Build number from `docs/builds.md` — the topmost `## Build N.M.P`
 # heading. Empty string when the file isn't present or has no
-# entries (older worktrees pre-Build-1).
+# entries (older worktrees pre-Build-1). Format is dotted-decimal
+# (e.g. `1.1.4`); see the registry file for the scheme.
 BUILDS_FILE="${REPO_ROOT}/docs/builds.md"
 BUILD_NUMBER=""
 if [ -f "${BUILDS_FILE}" ]; then
-    BUILD_NUMBER="$(grep -oE '^## Build [0-9]+' "${BUILDS_FILE}" 2>/dev/null \
+    BUILD_NUMBER="$(grep -oE '^## Build [0-9]+(\.[0-9]+)*' "${BUILDS_FILE}" 2>/dev/null \
                     | head -1 \
-                    | grep -oE '[0-9]+' \
+                    | sed -E 's/^## Build //' \
                     || echo "")"
 fi
 
