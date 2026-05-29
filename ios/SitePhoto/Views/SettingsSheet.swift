@@ -261,12 +261,22 @@ struct SettingsSheet: View {
 
                 // Build version — useful for confirming the on-device
                 // app matches the most recently pushed code. Regenerated
-                // on every `ios/scripts/regen-project.sh` run.
+                // on every `ios/scripts/regen-project.sh` run. Build #
+                // is the sequential number tracked in `docs/builds.md`;
+                // when blank, the current worktree is older than the
+                // build-tracking system.
                 Section {
+                    if !BuildInfo.buildNumber.isEmpty {
+                        LabeledContent("Build #") {
+                            Text(BuildInfo.buildNumber)
+                                .font(.body.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
                     HStack {
-                        Label("Build", systemImage: "hammer")
+                        Label("Commit", systemImage: "hammer")
                         Spacer()
-                        Text(BuildInfo.display)
+                        Text("\(BuildInfo.gitBranch)@\(BuildInfo.gitSHA) · \(BuildInfo.buildTime)")
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
