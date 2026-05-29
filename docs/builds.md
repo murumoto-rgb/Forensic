@@ -65,6 +65,16 @@ each response, in one of two forms:
 
 ---
 
+## Build 2.1.1
+
+* **Date:** 2026-05-29
+* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
+* **Branch:** claude/phase-2-c-web-photo-viewer
+* **Merge SHA:** TBD
+* **Summary:** Phase 2 PR C — web project-detail page with photo viewer. New `/projects/:id` route, photo grid, lightbox modal with keyboard nav, project list rows now clickable.
+
+---
+
 ## Build 1.1.5
 
 * **Date:** 2026-05-29
