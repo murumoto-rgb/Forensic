@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import type { Project } from "@forensic/shared";
-import { supabase } from "../lib/supabase";
+import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { PhotoLightbox } from "../components/PhotoLightbox";
@@ -73,7 +73,7 @@ export function ProjectDetailPage({ session }: Props) {
           <span className="text-xs text-neutral-500">{session.user.email}</span>
           <button
             type="button"
-            onClick={() => supabase.auth.signOut()}
+            onClick={() => signOutLocal()}
             className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
           >
             Sign out

@@ -14,3 +14,15 @@ export const supabase = createClient(
     },
   }
 );
+
+/**
+ * Sign out **this browser only**. `{ scope: 'local' }` is deliberate:
+ * Supabase's default (`'global'`) revokes every session for the user
+ * across all devices, which meant signing out on the web also kicked
+ * the iPhone. We want device-local sign-out. Every sign-out path
+ * (the buttons + the 401 handler in api.ts) routes through here so
+ * the scope choice lives in exactly one place.
+ */
+export function signOutLocal() {
+  return supabase.auth.signOut({ scope: "local" });
+}

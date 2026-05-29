@@ -9,7 +9,7 @@
  */
 
 import { env } from "./env";
-import { supabase } from "./supabase";
+import { supabase, signOutLocal } from "./supabase";
 import type {
   Project,
   GetManifestResponse,
@@ -54,8 +54,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     if (res.status === 401) {
-      // Stale session — drop it so the UI rerenders to login.
-      await supabase.auth.signOut();
+      // Stale session — drop it (this browser only) so the UI
+      // rerenders to login. Local scope so an expired token here
+      // doesn't revoke the user's iPhone session too.
+      await signOutLocal();
     }
     const apiErr = body as { error?: string; message?: string; details?: unknown } | null;
     throw new ApiError(

@@ -97,9 +97,13 @@ final class AuthService {
         return true
     }
 
-    /// Signs out + clears the persisted session.
+    /// Signs out **this device only** + clears the persisted session.
+    /// `.local` scope is deliberate: the default (`.global`) revokes
+    /// every session for the user across all devices, so signing out
+    /// on the web app would also kick the iPhone (and vice versa).
+    /// We want device-local sign-out.
     func signOut() async throws {
-        try await supabase.auth.signOut()
+        try await supabase.auth.signOut(scope: .local)
         self.session = nil
     }
 

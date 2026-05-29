@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { supabase } from "../lib/supabase";
+import { signOutLocal } from "../lib/supabase";
 import { api, ApiError, type ProjectListItem } from "../lib/api";
 
 interface Props {
@@ -34,7 +34,7 @@ export function ProjectListPage({ session }: Props) {
         </div>
         <button
           type="button"
-          onClick={() => supabase.auth.signOut()}
+          onClick={() => signOutLocal()}
           className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
         >
           Sign out
