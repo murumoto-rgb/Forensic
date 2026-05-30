@@ -52,12 +52,19 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
   // GET /v1/projects — list calling user's projects.
   // Returns the metadata columns only (no manifest blob) so the
   // project-list view loads quickly on slow connections.
+  // Filters out soft-deleted projects (iOS sets `isDeleted=true` on
+  // the manifest when the user trashes a project; we read that
+  // straight from the JSONB so there's no extra writer to keep in
+  // sync). The `.or` clause keeps projects whose manifest never
+  // carried the field (older clients pre-isDeleted) as well as
+  // those that explicitly set it to false.
   // -----------------------------------------------------------------
   app.get<{ Reply: ProjectListResponse | ApiError }>("/v1/projects", async (request, reply) => {
     const { data, error } = await supabaseAdmin
       .from("projects")
       .select("id, name, manifest_schema_version, revision, created_at, updated_at")
       .eq("owner_id", request.user.id)
+      .or("manifest->>isDeleted.is.null,manifest->>isDeleted.eq.false")
       .order("updated_at", { ascending: false });
 
     if (error) {
@@ -106,8 +113,19 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // as an already-parsed object. Cast through unknown to the
       // shared Project type — the data was written via PUT after
       // ProjectSchema validation, so the shape is trusted.
+      const manifest = data.manifest as unknown as GetManifestResponse["project"] & {
+        isDeleted?: boolean;
+      };
+
+      // Treat soft-deleted projects as 404 so deep-linking a deleted
+      // project's URL doesn't bypass the list-level filter above.
+      if (manifest.isDeleted === true) {
+        reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
+        return;
+      }
+
       return {
-        project: data.manifest as unknown as GetManifestResponse["project"],
+        project: manifest,
         revision: data.revision as string,
       };
     }
