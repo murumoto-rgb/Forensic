@@ -24,7 +24,7 @@ fails CI if iOS adds a field without updating the TS types (or vice
 versa). Every schema change bumps `manifestSchemaVersion` and lands in
 **both** stacks in one PR.
 
-Current `manifestSchemaVersion`: **1**
+Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Project.isDeleted: boolean`)
 
 ## Phase status
 
@@ -47,7 +47,7 @@ Current `manifestSchemaVersion`: **1**
 | Create / rename project | ✅ | 📋 Phase 2 | `Project.name` | |
 | Project GPS + address | ✅ | 📋 Phase 2 | `Project.projectGPS`, `Project.projectAddress` | |
 | Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |
-| Soft-delete / restore project | ✅ | 📋 Phase 2 | n/a (file-level) | |
+| Soft-delete / restore project | ✅ | ✅ (Build #5.6.1) | `Project.isDeleted` (bool, default false) | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`; server filters list + detail on this flag (PR #35 = Build #5.5.1); web simply omits trashed rows from the project list. Schema bumped to v2 in the same PR. |
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
 | Import floor plan (PDF / image) | ✅ | 📋 Phase 3 PR-C | `FloorPlan.imageFilename` | |

@@ -63,6 +63,14 @@ struct Project: Identifiable, Codable, Hashable {
     /// an empty `primaries` array) means the project doesn't add any
     /// custom vocabulary.
     var aiExtraVocabulary: ProjectExtraVocabulary?
+    /// Soft-delete flag. `ProjectStore.delete(_:)` sets this to
+    /// `true` and `restore(_:)` sets it back to `false`. The web
+    /// client uses it to hide trashed projects from the list; iOS
+    /// uses the on-disk folder location as its primary source of
+    /// truth but ALSO writes this field so the manifest pushed to
+    /// the server carries the correct state. Defaults to `false`
+    /// for new projects + older manifests pre-Build #5.6.1.
+    var isDeleted: Bool = false
     /// Integer schema version of the on-disk manifest format. Bumped
     /// whenever a field is added, removed, renamed, or its semantics
     /// change — in one PR that touches `packages/shared/`,
@@ -71,7 +79,7 @@ struct Project: Identifiable, Codable, Hashable {
     /// clients reporting a higher version than it knows about
     /// (forces server-first updates). Legacy manifests written before
     /// this field shipped default to `1` at decode time.
-    var manifestSchemaVersion: Int = 1
+    var manifestSchemaVersion: Int = 2
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -92,7 +100,8 @@ struct Project: Identifiable, Codable, Hashable {
         self.buckets = []
         self.tagSelection = nil
         self.aiExtraVocabulary = nil
-        self.manifestSchemaVersion = 1
+        self.isDeleted = false
+        self.manifestSchemaVersion = 2
     }
 
     /// Explicit keys so the decoder can read the legacy singular
@@ -108,6 +117,7 @@ struct Project: Identifiable, Codable, Hashable {
         case activeFloorPlanID  // new sticky plan ID
         case folderName, aiInstructions, buckets, tagSelection
         case aiExtraVocabulary
+        case isDeleted
         case manifestSchemaVersion
     }
 
@@ -152,6 +162,12 @@ struct Project: Identifiable, Codable, Hashable {
                                                        forKey: .tagSelection)
         self.aiExtraVocabulary = try c.decodeIfPresent(ProjectExtraVocabulary.self,
                                                          forKey: .aiExtraVocabulary)
+        // Older manifests (pre-Build #5.6.1) didn't carry isDeleted.
+        // Default to false so existing on-disk projects keep behaving
+        // as not-deleted; ProjectStore.delete(_:) writes true going
+        // forward.
+        self.isDeleted = try c.decodeIfPresent(Bool.self,
+                                                  forKey: .isDeleted) ?? false
         // Legacy manifests written before this field shipped default
         // to version 1 — the schema as it stood at the moment the
         // field was introduced. New manifests written by this code
@@ -183,6 +199,7 @@ struct Project: Identifiable, Codable, Hashable {
         try c.encode(buckets,                     forKey: .buckets)
         try c.encodeIfPresent(tagSelection,       forKey: .tagSelection)
         try c.encodeIfPresent(aiExtraVocabulary,  forKey: .aiExtraVocabulary)
+        try c.encode(isDeleted,                   forKey: .isDeleted)
         try c.encode(manifestSchemaVersion,       forKey: .manifestSchemaVersion)
     }
 

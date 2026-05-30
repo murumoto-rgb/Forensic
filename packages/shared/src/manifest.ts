@@ -17,7 +17,7 @@
  * we normalize on read.
  */
 
-export const MANIFEST_SCHEMA_VERSION = 1 as const;
+export const MANIFEST_SCHEMA_VERSION = 2 as const;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -223,6 +223,13 @@ export interface Project {
   lastResumedAt: string | null;
   lastStoppedAt: string | null;
   stopped: boolean;
+  /**
+   * Soft-delete flag. iOS sets this to `true` when the user trashes
+   * a project, and to `false` on restore. The web client uses it to
+   * hide trashed projects from the list. Defaults to `false` for
+   * new projects + older manifests that pre-date this field.
+   */
+  isDeleted: boolean;
   projectGPS: ProjectGPS | null;
   projectAddress: string | null;
   photos: Photo[];

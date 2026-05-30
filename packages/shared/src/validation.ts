@@ -190,6 +190,11 @@ export const ProjectSchema = z.object({
   lastResumedAt: nullable(isoDate),
   lastStoppedAt: nullable(isoDate),
   stopped: z.boolean(),
+  // Older manifests (pre-Build #5.6.1) didn't carry this field. We
+  // accept payloads that omit it and default to false at the
+  // server boundary so old iOS clients can still PUT cleanly while
+  // the rollout propagates via TestFlight.
+  isDeleted: z.boolean().default(false),
   projectGPS: nullable(ProjectGPSSchema),
   projectAddress: nullable(z.string()),
   photos: z.array(PhotoSchema),
