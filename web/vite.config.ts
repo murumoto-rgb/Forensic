@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 // Build info — embedded into the bundle at compile time via Vite's
@@ -18,18 +18,30 @@ function shellOrFallback(cmd: string, fallback: string): string {
 }
 
 /**
- * Read the dotted build number from `docs/builds.md`. Returns the
- * topmost `## Build N.M.P` heading (entries are listed newest-
- * first). Returns empty string if the file doesn't exist or has
- * no entries — older worktrees pre-Build-1. See the registry file
- * for the scheme.
+ * Read the dotted build number from `docs/builds/`. One file per
+ * build, named `N.M.P.md`; take the version-sorted maximum
+ * filename and strip the `.md` extension. Returns empty string if
+ * the directory doesn't exist or is empty (older worktrees pre-
+ * Build-1). See `docs/builds.md` for the registry layout.
  */
 function readBuildNumber(): string {
   try {
-    const buildsPath = resolve(__dirname, "..", "docs", "builds.md");
-    const text = readFileSync(buildsPath, "utf-8");
-    const match = /^## Build (\d+(?:\.\d+)*)/m.exec(text);
-    return match?.[1] ?? "";
+    const buildsDir = resolve(__dirname, "..", "docs", "builds");
+    const versions = readdirSync(buildsDir)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => f.replace(/\.md$/, ""));
+    if (versions.length === 0) return "";
+    versions.sort((a, b) => {
+      const aParts = a.split(".").map(Number);
+      const bParts = b.split(".").map(Number);
+      const len = Math.max(aParts.length, bParts.length);
+      for (let i = 0; i < len; i++) {
+        const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    });
+    return versions[versions.length - 1] ?? "";
   } catch {
     return "";
   }
