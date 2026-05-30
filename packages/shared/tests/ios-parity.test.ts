@@ -191,6 +191,12 @@ function normalizeZodType(schema: ZodTypeAny): string {
       // `.transform()` / `.preprocess()` wrap the actual schema in
       // ZodEffects. The descriptor is whatever the inner schema is.
       return normalizeZodType(def.schema);
+    case "ZodDefault":
+      // `.default(value)` wraps the schema in ZodDefault. Semantically
+      // equivalent to a Swift struct field with a default value (the
+      // wire field is optional but the in-memory value is always
+      // present). Collapse to the inner type's descriptor.
+      return normalizeZodType(def.innerType);
     case "ZodNullable": {
       const inner = normalizeZodType(def.innerType);
       // Already-nullable inner means `nullable(nullable(X))` — collapse.

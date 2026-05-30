@@ -1312,7 +1312,22 @@ final class ProjectStore {
     /// Soft delete: move the project's folder from "Active Projects" to
     /// "Deleted Projects" so the data stays available for recovery. The
     /// permanent purge happens in `permanentlyDelete(_)`.
+    ///
+    /// Sets `project.isDeleted = true` and saves before the folder move
+    /// so the manifest pushed to the server (via `save(_:)` → onAfterSave
+    /// → SyncCoordinator) carries the trashed state. Without this, the
+    /// web client would keep showing the project because the server
+    /// only sees a stale manifest where isDeleted is still false.
     func delete(_ project: Project) {
+        // 1. Mark deleted on the manifest + save, which triggers the
+        //    server push via onAfterSave. The save writes to the
+        //    project's current location (the active folder); the
+        //    server gets the manifest with isDeleted=true.
+        var deletedManifest = project
+        deletedManifest.isDeleted = true
+        save(deletedManifest)
+
+        // 2. Now move the folder on disk + update in-memory arrays.
         let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
         let fullUUID = project.id.uuidString.lowercased()
 
@@ -1327,14 +1342,25 @@ final class ProjectStore {
         }
 
         activeProjects.removeAll { $0.id == project.id }
-        if !deletedProjects.contains(where: { $0.id == project.id }) {
-            deletedProjects.insert(project, at: 0)
+        if !deletedProjects.contains(where: { $0.id == deletedManifest.id }) {
+            deletedProjects.insert(deletedManifest, at: 0)
         }
     }
 
     /// Restore a soft-deleted project — move its folder from "Deleted
-    /// Projects" back to "Active Projects".
+    /// Projects" back to "Active Projects". Mirrors `delete(_:)`:
+    /// flips `isDeleted` back to false and saves so the server's
+    /// manifest reflects the restored state.
     func restore(_ project: Project) {
+        // 1. Flip the flag + save (pushes manifest with isDeleted=false
+        //    to the server). Note: this save writes to the project's
+        //    current location, which is the deleted folder. The move
+        //    in step 2 carries the freshly-written manifest along.
+        var restoredManifest = project
+        restoredManifest.isDeleted = false
+        save(restoredManifest)
+
+        // 2. Move folder back to active + update in-memory arrays.
         let idPrefix = String(project.id.uuidString.lowercased().prefix(6))
         let fullUUID = project.id.uuidString.lowercased()
 
@@ -1349,8 +1375,8 @@ final class ProjectStore {
         }
 
         deletedProjects.removeAll { $0.id == project.id }
-        if !activeProjects.contains(where: { $0.id == project.id }) {
-            activeProjects.insert(project, at: 0)
+        if !activeProjects.contains(where: { $0.id == restoredManifest.id }) {
+            activeProjects.insert(restoredManifest, at: 0)
         }
     }
 
