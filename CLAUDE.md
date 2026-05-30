@@ -217,3 +217,48 @@ The closing PR of each phase (0–5) includes an explicit "Parity
 sign-off" comment listing: shared-schema fields added, iOS struct
 changes, web UI added, matrix rows touched, and the parity
 contract test result on the merge commit.
+
+## Session conventions
+
+Durable rules for how Claude operates in this repo, captured so
+they survive across sessions instead of being re-explained each
+time. Authorized by the user in chat on 2026-05-30.
+
+### Local repo path on the user's Mac
+
+The user keeps the working clone at `~/Developer/Forensic`. Every
+pull/build one-liner included in a chat reply must start with
+`cd ~/Developer/Forensic && …` — do not guess `~/Code/Forensic`,
+`~/Projects/Forensic`, or any other path. If the user moves the
+clone, the new path lands here in a follow-up PR.
+
+### Auto-subscribe to PR activity
+
+For **every** PR opened in a session, call
+`subscribe_pr_activity` for that PR before ending the turn —
+without waiting for the user to ask. Subscribing means Claude
+auto-reacts to CI failures and review comments without the user
+having to flag them. This is a standing rule; the user does not
+need to repeat the request per PR.
+
+### Every chat response
+
+Three things appear in every response that involves work on the
+repo (not pure Q&A):
+
+1. **Lead with the build annotation** — `Build #N.M.P (new)`
+   when the response is about to push a commit creating that
+   build, or `Build #N.M.P (active)` when no push is happening
+   but the response references the latest build.
+2. **Include the pull + build terminal one-liner** when a PR is
+   pushed in the turn, so the user can paste it straight into
+   Terminal:
+   ```
+   cd ~/Developer/Forensic && git fetch origin && \
+     git checkout <branch> && git pull && \
+     ./ios/scripts/regen-project.sh && open ios/SitePhoto.xcodeproj
+   ```
+   (or, once PR #27 ships, `./scripts/sync-ios.sh <branch>`.)
+3. **Direct GitHub comment URL** for every checklist or self-test
+   report posted in the turn — link to the specific comment
+   (`#issuecomment-<id>`), not just the PR.
