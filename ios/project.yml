@@ -47,6 +47,13 @@ targets:
         CFBundleDisplayName: SitePhoto
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
+        # SitePhoto uses only HTTPS (URLSession) — no custom crypto,
+        # nothing that triggers US export-compliance review. Declaring
+        # this flag lets TestFlight skip the per-upload encryption-
+        # compliance prompt. Xcode Cloud's CFBundleVersion overrides
+        # the static "1" above on every workflow run (see
+        # ios/ci_scripts/ci_post_clone.sh).
+        ITSAppUsesNonExemptEncryption: false
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities:
           - arm64
