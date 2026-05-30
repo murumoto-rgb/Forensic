@@ -79,12 +79,30 @@ export function FloorPlanCanvas({
       })
       .catch((e: unknown) => {
         if (cancelled) return;
+        // 404 = plan binary not in R2 yet (Phase 2 iOS only uploads
+        // photos; plan upload lands in Phase 3 PR-B). Show the
+        // amber "pending upload" banner; pins/distress still render
+        // over the blank canvas.
         if (e instanceof ApiError && e.status === 404) {
           setImageState({ kind: "pending" });
         } else if (e instanceof ApiError) {
-          setImageState({ kind: "error", message: `${e.status} ${e.message}` });
+          setImageState({
+            kind: "error",
+            message: `${e.status} ${e.errorCode}: ${e.message}`,
+          });
         } else {
-          setImageState({ kind: "error", message: "Failed to load plan image" });
+          // Non-ApiError = pre-response failure (network, CORS,
+          // throw inside the fetch wrapper). Surface the underlying
+          // message instead of swallowing it so the user can see
+          // the actual cause.
+          const detail =
+            e instanceof Error
+              ? `${e.name}: ${e.message}`
+              : String(e);
+          setImageState({
+            kind: "error",
+            message: `Failed to load plan image — ${detail}`,
+          });
         }
       });
     return () => {
