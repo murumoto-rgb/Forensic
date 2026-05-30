@@ -65,8 +65,19 @@ export function ProjectDetailPage({ session }: Props) {
               {project.photos.length} photo
               {project.photos.length === 1 ? "" : "s"}
               {" · "}
+              {project.floorPlans.length} plan
+              {project.floorPlans.length === 1 ? "" : "s"}
+              {" · "}
               Created {new Date(project.createdAt).toLocaleDateString()}
             </div>
+          )}
+          {project && project.floorPlans.length > 0 && id && (
+            <Link
+              to={`/projects/${id}/plan`}
+              className="mt-1 inline-block text-sm text-blue-400 hover:text-blue-300"
+            >
+              View floor plan{project.floorPlans.length === 1 ? "" : "s"} →
+            </Link>
           )}
         </div>
         <div className="flex flex-col items-end gap-1 text-right">

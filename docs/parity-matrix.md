@@ -49,11 +49,13 @@ Current `manifestSchemaVersion`: **1**
 | Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |
 | Soft-delete / restore project | ✅ | 📋 Phase 2 | n/a (file-level) | |
 | **Floor plans** | | | | |
-| Import floor plan (PDF / image) | ✅ | 📋 Phase 2 | `FloorPlan.imageFilename` | |
-| Calibrate scale | ✅ | 📋 Phase 3 | `FloorPlan.pixelsPerFoot` | |
-| Set north heading | ✅ | 📋 Phase 3 | `FloorPlan.northDeg` | |
-| Multiple plans per project | ✅ | 📋 Phase 3 | `Project.floorPlans[]`, `activeFloorPlanID` | |
-| Reorder / rename plans | ✅ | 📋 Phase 3 | `FloorPlan.label` | |
+| View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
+| Import floor plan (PDF / image) | ✅ | 📋 Phase 3 PR-C | `FloorPlan.imageFilename` | |
+| iPhone uploads plan image binary to R2 | ✅ | n/a | n/a | Phase 3 PR-B (iOS-side change; web just consumes the URL) |
+| Calibrate scale | ✅ | 📋 Phase 3 PR-C | `FloorPlan.pixelsPerFoot` | |
+| Set north heading | ✅ | 📋 Phase 3 PR-C | `FloorPlan.northDeg` | |
+| Multiple plans per project | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `activeFloorPlanID` | Plan picker tabs on `/projects/:id/plan` |
+| Reorder / rename plans | ✅ | 📋 Phase 3 PR-C | `FloorPlan.label` | |
 | **Photos** | | | | |
 | Capture photo with camera | ✅ | ❌ | n/a | Web is desktop / tablet; capture is iOS-only |
 | Import from photo library | ✅ | 📋 Phase 2 | n/a | Web equivalent: upload from disk |

@@ -102,4 +102,8 @@ export const api = {
     request<PhotoUrlResponse>(
       `/v1/projects/${projectId}/photos/${photoId}/thumb`
     ),
+  getPlanImageUrl: (projectId: string, planId: string) =>
+    request<PhotoUrlResponse>(
+      `/v1/projects/${projectId}/plans/${planId}/image`
+    ),
 };

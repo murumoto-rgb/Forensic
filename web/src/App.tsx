@@ -5,6 +5,7 @@ import { supabase } from "./lib/supabase";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
+import { ProjectPlanPage } from "./pages/ProjectPlanPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
 
 export function App() {
@@ -46,6 +47,10 @@ export function App() {
         <Route
           path="/projects/:id"
           element={session ? <ProjectDetailPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/projects/:id/plan"
+          element={session ? <ProjectPlanPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
