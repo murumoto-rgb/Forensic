@@ -254,11 +254,57 @@ repo (not pure Q&A):
    pushed in the turn, so the user can paste it straight into
    Terminal:
    ```
-   cd ~/Developer/Forensic && git fetch origin && \
-     git checkout <branch> && git pull && \
-     ./ios/scripts/regen-project.sh && open ios/SitePhoto.xcodeproj
+   cd ~/Developer/Forensic && scripts/sync-ios.sh <branch>
    ```
-   (or, once PR #27 ships, `./scripts/sync-ios.sh <branch>`.)
+   (Earlier sessions used the longer
+   `git fetch && git checkout && git pull && ./ios/scripts/regen-project.sh && open …`
+   form; that still works, but `scripts/sync-ios.sh` shipped in
+   #27 and is the canonical one-liner now.)
 3. **Direct GitHub comment URL** for every checklist or self-test
    report posted in the turn — link to the specific comment
    (`#issuecomment-<id>`), not just the PR.
+
+### Flag non-main branch choices explicitly
+
+Whenever a reply asks the user to pick a branch — Xcode Cloud
+manual Start Build, `scripts/sync-ios.sh <branch>`, "which
+branch should I push to," etc. — call out the choice explicitly
+if the answer is anything other than `main`. Example:
+
+> Pick `claude/<branch>` here, **not** `main` — this PR is still
+> open and main doesn't have the fix yet.
+
+Default expectation: builds and deploys target `main`. Anything
+else needs the explicit nudge so the user notices.
+
+### Selective merging to main
+
+PRs do not auto-merge on green CI. The default is **branches
+stay open** while the user iterates with
+`scripts/sync-ios.sh <branch>` for tight-loop testing. Merge to
+`main` happens only when one of these is true:
+
+1. A big task or phase is complete (multiple PRs' worth of work
+   that belong together).
+2. The user explicitly asks for a TestFlight deploy, or asks to
+   ship the change.
+
+Both cases imply the user wants the change on their iPhone via
+TestFlight (since merging to `main` auto-triggers the Xcode
+Cloud workflow per its "Branch Changes (main)" start condition).
+Treat a merge as an intentional release event, not a routine
+end-of-PR step.
+
+Practical implications:
+
+- **Multiple concurrent open PRs are normal.** Don't pressure
+  the user to merge "to clean up the queue."
+- When `main` does move (because another PR merged), preemptively
+  rebase the other open branches and resolve
+  `docs/builds.md` conflicts — same dance documented during
+  Builds #4.1.1 through #4.5.1. The user shouldn't have to
+  notice the conflict before you fix it.
+- Iterative testing of an unmerged PR uses
+  `scripts/sync-ios.sh <branch>` or `--pr <N>`, not Xcode Cloud
+  (Xcode Cloud is the laptop-free TestFlight path; burning its
+  25 free hrs/mo on unmerged branches is the wrong trade).
