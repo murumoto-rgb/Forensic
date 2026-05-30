@@ -1,0 +1,54 @@
+name: CI
+
+# Typecheck + build for web/server on every PR and every push to main.
+# Sibling to parity.yml, which handles the shared-package contract
+# test on its own. Two workflows so a parity failure stays visually
+# separate from a typecheck/build failure in the PR Checks UI.
+#
+# iOS is intentionally NOT in this workflow — macOS runners on GHA
+# are ~10× the cost of Linux runners and Xcode Cloud (free 25 hrs/mo
+# with the Apple Developer Program) covers iOS archive + TestFlight
+# delivery. See docs/builds.md notes around Build #4.4.x for the
+# Xcode Cloud integration.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  web:
+    name: Web — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+      - name: Typecheck
+        run: pnpm --filter @forensic/web typecheck
+      - name: Build
+        run: pnpm --filter @forensic/web build
+
+  server:
+    name: Server — typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+      - name: Typecheck
+        run: pnpm --filter @forensic/server typecheck
