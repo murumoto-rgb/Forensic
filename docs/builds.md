@@ -1,8 +1,16 @@
 # Build registry
 
-This file is the **source of truth for build numbers**. iOS Settings →
-About and the web page footer display the topmost number below at
-build time.
+Build entries live as individual files in [`docs/builds/`](builds/).
+One file per build, named `<MAJOR>.<BRANCH>.<PUSH>.md`. This file is
+the conventions document only — see the directory for the actual
+build history.
+
+The latest build number (used by iOS Settings → About and the web
+page footer at compile time) is computed as the version-sorted
+maximum of the filenames in `docs/builds/`. Lookup logic lives in:
+
+- `ios/scripts/gen-build-info.sh` — embeds into iOS at xcodegen time.
+- `web/vite.config.ts` — embeds into the web bundle at compile time.
 
 ## Numbering scheme
 
@@ -36,9 +44,10 @@ The second concurrent branch would be `N.2.0`, third `N.3.0`, etc.
 
 ## How to add a build
 
-Insert a new section **at the top** with the next number. The number
-is embedded into iOS via `ios/scripts/gen-build-info.sh` and into
-web via `web/vite.config.ts` at build time.
+Create a new file at `docs/builds/<N>.<M>.<P>.md` with the section
+template below. Don't touch any other entry — the registry is a
+directory of independent files now, so multiple open PRs each add
+their own file without colliding.
 
 Section template:
 
@@ -47,6 +56,7 @@ Section template:
 
 * **Date:** YYYY-MM-DD
 * **PR:** [#NN](https://github.com/murumoto-rgb/Forensic/pull/NN)
+* **Branch:** claude/<branch-name>
 * **Merge SHA:** ... (filled in after merge; "TBD" while PR is open)
 * **Summary:** one-line description.
 
@@ -62,138 +72,3 @@ each response, in one of two forms:
   build N.M.P
 - **Build #N.M.P (active)** — current/latest build is N.M.P;
   testing or follow-up work in progress
-
----
-
-## Build 5.1.1
-
-* **Date:** 2026-05-30
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/xcode-cloud-spm-resolve
-* **Merge SHA:** TBD
-* **Summary:** Fix Xcode Cloud build #1 failure. Xcode Cloud disables SPM auto-resolution and expects a checked-in `Package.resolved`, but our flow regenerates `.xcodeproj` from scratch on every CI run (via xcodegen) so there's nothing to lean on. `ci_post_clone.sh` now re-enables auto-resolution (via `defaults write` on `IDEDisableAutomaticPackageResolution` + `IDEPackageOnlyUseVersionsFromResolvedFile`) and pre-resolves SPM packages with `xcodebuild -resolvePackageDependencies` before the archive step runs.
-
----
-
-## Build 4.5.1
-
-* **Date:** 2026-05-30
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/claudemd-repo-path-and-autosubscribe
-* **Merge SHA:** TBD
-* **Summary:** CLAUDE.md gains a "Session conventions" section: pins the user's local clone path at `~/Developer/Forensic` (so pull one-liners stop guessing), makes auto-subscribe to PR activity a standing rule (no more waiting for the user to ask), and codifies the "lead with build #", "include pull one-liner", "direct comment URL" reply conventions so they survive across sessions. User-authorized in chat 2026-05-30.
-
----
-
-## Build 4.4.1
-
-* **Date:** 2026-05-30
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/xcode-cloud-prep
-* **Merge SHA:** TBD
-* **Summary:** Repo-side wiring for Xcode Cloud + TestFlight: add `ios/ci_scripts/ci_post_clone.sh` (installs xcodegen, regenerates the project, stamps `CFBundleVersion` with Xcode Cloud's per-run `CI_BUILD_NUMBER`), and add `ITSAppUsesNonExemptEncryption: false` to `ios/project.yml` so TestFlight skips the export-compliance prompt on every upload. Manual setup steps (Xcode Cloud workflow + App Store Connect tester group) are documented in PR #XX.
-
----
-
-## Build 4.3.1
-
-* **Date:** 2026-05-30
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/github-actions-ci
-* **Merge SHA:** TBD
-* **Summary:** Add `.github/workflows/ci.yml` — runs web typecheck + build and server typecheck on every PR and every push to main, in two parallel jobs. Sibling to the existing `parity.yml` (which keeps owning the shared-package contract test). iOS deliberately not in GHA — Xcode Cloud handles that with its free 25 hrs/mo of macOS time.
-
----
-
-## Build 4.2.1
-
-* **Date:** 2026-05-30
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/cli-sync-ios
-* **Merge SHA:** TBD
-* **Summary:** Add `scripts/sync-ios.sh` — one-command pull + regen + build + install + launch for the iOS app on a tethered iPhone. Handles all of "which branch?" via positional arg, `main`, or `--pr <N>` (uses `gh pr checkout`). Replaces the multi-step manual loop that has been varying push-to-push.
-
----
-
-## Build 4.1.1
-
-* **Date:** 2026-05-29
-* **PR:** [#26](https://github.com/murumoto-rgb/Forensic/pull/26)
-* **Branch:** claude/review-code-visibility-izhPs
-* **Merge SHA:** 9e93307
-* **Summary:** Stop auto-signing-out iOS on a single 401. A transient 401 (token-rotation race, brief Supabase blip, web-sign-out side-effect) should not cascade-clear the local iOS session. Surface the error instead; user re-auths manually if it persists. Plus diagnostic prints on AuthService bootstrap/signOut and on the 401 path so future "iOS got kicked out" reports leave a breadcrumb in the iOS console.
-
----
-
-## Build 3.1.1
-
-* **Date:** 2026-05-29
-* **PR:** [#25](https://github.com/murumoto-rgb/Forensic/pull/25)
-* **Branch:** claude/local-signout-and-pending-placeholder
-* **Merge SHA:** 40c76f4
-* **Summary:** Device-local sign-out (web + iOS) so signing out on one platform no longer kicks the other; web shows a "pending upload" placeholder instead of a 404 error for photos whose binaries haven't uploaded from the iPhone yet.
-
----
-
-## Build 2.1.1
-
-* **Date:** 2026-05-29
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/phase-2-c-web-photo-viewer
-* **Merge SHA:** TBD
-* **Summary:** Phase 2 PR C — web project-detail page with photo viewer. New `/projects/:id` route, photo grid, lightbox modal with keyboard nav, project list rows now clickable.
-
----
-
-## Build 1.1.5
-
-* **Date:** 2026-05-29
-* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
-* **Merge SHA:** TBD
-* **Summary:** Fix zod validation rejection of distress points. CGPoint encodes as `[x, y]` arrays; relax server zod to `z.array(z.unknown())` and update TS type to `unknown[]`. Distress-on-web Phase 3 will land structured `{ x, y }` encoding.
-
----
-
-## Build 1.1.4
-
-* **Date:** 2026-05-29
-* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
-* **Merge SHA:** TBD
-* **Summary:** Restructure build-number scheme to `MAJOR.BRANCH.PUSH` per project preference.
-
----
-
-## Build 1.1.3
-
-* **Date:** 2026-05-29
-* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
-* **Merge SHA:** TBD
-* **Summary:** Add Build # tracking system (initial flat numbering).
-
----
-
-## Build 1.1.2
-
-* **Date:** 2026-05-29
-* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
-* **Merge SHA:** TBD
-* **Summary:** Push all local manifests before photo upload at launch (404 storm fix).
-
----
-
-## Build 1.1.1
-
-* **Date:** 2026-05-29
-* **Branch:** claude/push-before-photosync (initial creation)
-* **PR:** [#23](https://github.com/murumoto-rgb/Forensic/pull/23)
-* **Merge SHA:** TBD
-* **Summary:** Branch opened from main.
-
----
-
-## Build 1.0.0
-
-* **Date:** 2026-05-28
-* **Summary:** Initial baseline — current state of `main` at the time the build registry was introduced. Predates the per-build numbering system.
-
----

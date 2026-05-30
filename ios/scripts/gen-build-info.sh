@@ -28,16 +28,19 @@ GIT_SHA="$(cd "${REPO_ROOT}" && git rev-parse --short=8 HEAD 2>/dev/null || echo
 GIT_BRANCH="$(cd "${REPO_ROOT}" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo dev)"
 BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# Build number from `docs/builds.md` — the topmost `## Build N.M.P`
-# heading. Empty string when the file isn't present or has no
-# entries (older worktrees pre-Build-1). Format is dotted-decimal
-# (e.g. `1.1.4`); see the registry file for the scheme.
-BUILDS_FILE="${REPO_ROOT}/docs/builds.md"
+# Build number from `docs/builds/` — one file per build, named
+# `N.M.P.md`. Take the version-sorted maximum filename and strip
+# the `.md` extension. Returns empty string when the directory
+# doesn't exist or is empty (older worktrees pre-Build-1). Format
+# is dotted-decimal (e.g. `1.1.4`); see `docs/builds.md` for the
+# scheme.
+BUILDS_DIR="${REPO_ROOT}/docs/builds"
 BUILD_NUMBER=""
-if [ -f "${BUILDS_FILE}" ]; then
-    BUILD_NUMBER="$(grep -oE '^## Build [0-9]+(\.[0-9]+)*' "${BUILDS_FILE}" 2>/dev/null \
-                    | head -1 \
-                    | sed -E 's/^## Build //' \
+if [ -d "${BUILDS_DIR}" ]; then
+    BUILD_NUMBER="$(cd "${BUILDS_DIR}" && ls -1 *.md 2>/dev/null \
+                    | sed 's/\.md$//' \
+                    | sort -t. -k1,1n -k2,2n -k3,3n \
+                    | tail -1 \
                     || echo "")"
 fi
 
@@ -58,11 +61,11 @@ enum BuildInfo {
     /// UTC timestamp of the most recent xcodegen run, ISO-8601.
     static let buildTime = "${BUILD_TIME}"
 
-    /// Sequential build number from \`docs/builds.md\` (the
-    /// topmost \`## Build N\` heading). Empty string when the
-    /// file doesn't exist or has no entries — e.g. older
-    /// worktrees pre-Build-1. See \`docs/builds.md\` for the
-    /// number-to-commit registry.
+    /// Sequential build number — version-sorted maximum
+    /// filename in \`docs/builds/\`. Empty string when the
+    /// directory doesn't exist or is empty (older worktrees
+    /// pre-Build-1). See \`docs/builds.md\` for the
+    /// number-to-commit registry layout.
     static let buildNumber = "${BUILD_NUMBER}"
 
     /// Single-string display for UI surfaces — used by the
