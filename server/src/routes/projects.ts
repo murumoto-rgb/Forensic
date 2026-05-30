@@ -189,17 +189,26 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Server's known schema version is the source of truth — refuse
-    // writes from clients on a future version.
+    // Server's known schema version is the source of truth — but we
+    // LOG rather than REJECT on `client > server`. Hard-rejecting
+    // during a tandem-shipping window (iOS already updated via
+    // TestFlight, Render still building the new server) shows the
+    // user "sync failed" toasts for several minutes. The actual
+    // shapes are nearly always forward-compatible (new fields with
+    // defaults — see Build #5.6.1 `isDeleted`), so accepting +
+    // warning gives the user a working app while operations catches
+    // up. If a genuinely incompatible future change ships, the zod
+    // ProjectSchema parse will catch it.
     const { MANIFEST_SCHEMA_VERSION } = await import("@forensic/shared");
     if (project.manifestSchemaVersion > MANIFEST_SCHEMA_VERSION) {
-      reply.code(409).send({
-        error: "schema_version_too_new",
-        message:
-          `Client manifest is at v${project.manifestSchemaVersion}, server only knows v${MANIFEST_SCHEMA_VERSION}. ` +
-          "Update the server first, then retry.",
-      });
-      return;
+      request.log.warn(
+        {
+          projectId: id,
+          clientVersion: project.manifestSchemaVersion,
+          serverVersion: MANIFEST_SCHEMA_VERSION,
+        },
+        "Client manifest is newer than this server knows about — accepting anyway. Update server soon."
+      );
     }
 
     // Look up current state to honor optimistic-concurrency check.
