@@ -65,12 +65,22 @@ each response, in one of two forms:
 
 ---
 
-## Build 3.1.1
+## Build 4.1.1
 
 * **Date:** 2026-05-29
 * **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
-* **Branch:** claude/local-signout-and-pending-placeholder
+* **Branch:** claude/review-code-visibility-izhPs
 * **Merge SHA:** TBD
+* **Summary:** Stop auto-signing-out iOS on a single 401. A transient 401 (token-rotation race, brief Supabase blip, web-sign-out side-effect) should not cascade-clear the local iOS session. Surface the error instead; user re-auths manually if it persists. Plus diagnostic prints on AuthService bootstrap/signOut and on the 401 path so future "iOS got kicked out" reports leave a breadcrumb in the iOS console.
+
+---
+
+## Build 3.1.1
+
+* **Date:** 2026-05-29
+* **PR:** [#25](https://github.com/murumoto-rgb/Forensic/pull/25)
+* **Branch:** claude/local-signout-and-pending-placeholder
+* **Merge SHA:** 40c76f4
 * **Summary:** Device-local sign-out (web + iOS) so signing out on one platform no longer kicks the other; web shows a "pending upload" placeholder instead of a 404 error for photos whose binaries haven't uploaded from the iPhone yet.
 
 ---
