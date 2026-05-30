@@ -65,6 +65,16 @@ each response, in one of two forms:
 
 ---
 
+## Build 4.4.1
+
+* **Date:** 2026-05-30
+* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
+* **Branch:** claude/xcode-cloud-prep
+* **Merge SHA:** TBD
+* **Summary:** Repo-side wiring for Xcode Cloud + TestFlight: add `ios/ci_scripts/ci_post_clone.sh` (installs xcodegen, regenerates the project, stamps `CFBundleVersion` with Xcode Cloud's per-run `CI_BUILD_NUMBER`), and add `ITSAppUsesNonExemptEncryption: false` to `ios/project.yml` so TestFlight skips the export-compliance prompt on every upload. Manual setup steps (Xcode Cloud workflow + App Store Connect tester group) are documented in PR #XX.
+
+---
+
 ## Build 4.3.1
 
 * **Date:** 2026-05-30
