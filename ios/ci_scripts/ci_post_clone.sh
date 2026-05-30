@@ -11,7 +11,13 @@
 #      with Homebrew preinstalled but no xcodegen).
 #   2. Regenerate `ios/SitePhoto.xcodeproj` so Xcode Cloud builds
 #      from the same project graph local builds use.
-#   3. Stamp `CFBundleVersion` with Xcode Cloud's auto-incrementing
+#   3. Re-enable + run Swift Package Manager dependency resolution.
+#      Xcode Cloud disables auto-resolution by default and expects
+#      a checked-in Package.resolved. Since we regenerate the
+#      .xcodeproj fresh on every build (via xcodegen), there is no
+#      Package.resolved to lean on — we re-enable resolution and
+#      let xcodebuild fetch SPM deps now.
+#   4. Stamp `CFBundleVersion` with Xcode Cloud's auto-incrementing
 #      `CI_BUILD_NUMBER` — TestFlight requires each upload's
 #      CFBundleVersion to be unique within a CFBundleShortVersionString.
 #
@@ -41,7 +47,27 @@ fi
 echo "==> Regenerating Xcode project"
 "${IOS_DIR}/scripts/regen-project.sh"
 
-# 3. Stamp CFBundleVersion with Xcode Cloud's per-run integer.
+# 3. Re-enable SPM auto-resolution and pre-resolve packages.
+#    Xcode Cloud sets two IDE defaults before this script runs:
+#      IDEDisableAutomaticPackageResolution      = true
+#      IDEPackageOnlyUseVersionsFromResolvedFile = true
+#    Both expect a checked-in Package.resolved. Our build flow
+#    generates the .xcodeproj from scratch on every CI run (via
+#    xcodegen), so Package.resolved doesn't exist yet — we have to
+#    let xcodebuild create it. Override the defaults, then run
+#    -resolvePackageDependencies once. The archive step that
+#    follows reuses the resolved cache.
+echo "==> Re-enabling SPM automatic resolution"
+defaults write com.apple.dt.Xcode IDEDisableAutomaticPackageResolution -bool false
+defaults write com.apple.dt.Xcode IDEPackageOnlyUseVersionsFromResolvedFile -bool false
+
+echo "==> Resolving SPM package dependencies"
+xcodebuild -resolvePackageDependencies \
+  -project "${IOS_DIR}/SitePhoto.xcodeproj" \
+  -scheme SitePhoto \
+  -derivedDataPath "${CI_DERIVED_DATA_PATH:-${IOS_DIR}/build}"
+
+# 4. Stamp CFBundleVersion with Xcode Cloud's per-run integer.
 #    `CI_BUILD_NUMBER` is set by Xcode Cloud and increments on every
 #    workflow run — exactly what TestFlight wants. The generated
 #    Info.plist sits at ios/SitePhoto/Info.plist (xcodegen wrote it
@@ -61,7 +87,7 @@ else
   echo "     it inside Xcode Cloud, Apple changed the env-var name.)"
 fi
 
-# 4. (Optional) align CFBundleShortVersionString with the registry
+# 5. (Optional) align CFBundleShortVersionString with the registry
 #    build #. Comment-toggleable so the App Store Connect "Version"
 #    column doesn't proliferate on every merge to main. Off by
 #    default — toggle SITEPHOTO_SYNC_SHORT_VERSION=1 in the Xcode
