@@ -65,12 +65,22 @@ each response, in one of two forms:
 
 ---
 
+## Build 4.2.1
+
+* **Date:** 2026-05-30
+* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
+* **Branch:** claude/cli-sync-ios
+* **Merge SHA:** TBD
+* **Summary:** Add `scripts/sync-ios.sh` — one-command pull + regen + build + install + launch for the iOS app on a tethered iPhone. Handles all of "which branch?" via positional arg, `main`, or `--pr <N>` (uses `gh pr checkout`). Replaces the multi-step manual loop that has been varying push-to-push.
+
+---
+
 ## Build 4.1.1
 
 * **Date:** 2026-05-29
-* **PR:** [#XX](https://github.com/murumoto-rgb/Forensic/pull/XX) (to be assigned)
+* **PR:** [#26](https://github.com/murumoto-rgb/Forensic/pull/26)
 * **Branch:** claude/review-code-visibility-izhPs
-* **Merge SHA:** TBD
+* **Merge SHA:** 9e93307
 * **Summary:** Stop auto-signing-out iOS on a single 401. A transient 401 (token-rotation race, brief Supabase blip, web-sign-out side-effect) should not cascade-clear the local iOS session. Surface the error instead; user re-auths manually if it persists. Plus diagnostic prints on AuthService bootstrap/signOut and on the 401 path so future "iOS got kicked out" reports leave a breadcrumb in the iOS console.
 
 ---
