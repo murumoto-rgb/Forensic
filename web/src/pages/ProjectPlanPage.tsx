@@ -42,6 +42,19 @@ export function ProjectPlanPage({ session }: Props) {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
 
+  // Pins are NOT draggable by default — the user must explicitly
+  // "Unlock pins" first. This prevents accidental repositioning
+  // while panning / browsing. Even when unlocked, a completed drag
+  // shows a confirm dialog before the move is committed + saved.
+  const [pinsUnlocked, setPinsUnlocked] = useState(false);
+  const [pendingMove, setPendingMove] = useState<{
+    photoIndex: number;
+    photoLabel: number;
+    oldX: number;
+    oldY: number;
+    project: Project;
+  } | null>(null);
+
   // Save-queue refs. We never have more than one PUT in flight; if
   // a second drag arrives while a save is running, we stash the
   // newest project state in `pendingRef` and the running save
@@ -82,6 +95,29 @@ export function ProjectPlanPage({ session }: Props) {
     };
   }, [id]);
 
+  // PUT with one automatic retry on a network-level failure (no
+  // HTTP response). Render's free tier spins the server down after
+  // ~15 min idle; the first request after that hits a cold-start
+  // window where the connection can drop. A single retry after a
+  // short backoff converts most of those transient blips into a
+  // successful save without the user noticing. HTTP errors (4xx/5xx,
+  // including 409) are NOT retried — they're deterministic and the
+  // caller handles them.
+  async function putWithRetry(
+    projectId: string,
+    project: Project,
+    expectedRevision: string
+  ) {
+    try {
+      return await api.putProject(projectId, project, expectedRevision);
+    } catch (e: unknown) {
+      if (e instanceof ApiError) throw e; // deterministic — don't retry
+      // Network-level failure: wait for a possible cold-start, retry once.
+      await new Promise((r) => setTimeout(r, 2000));
+      return await api.putProject(projectId, project, expectedRevision);
+    }
+  }
+
   // Background save loop. Caller pre-populates `pendingRef` with
   // the latest project state, then calls this. If already running,
   // returns immediately — the running loop will see the new
@@ -96,11 +132,7 @@ export function ProjectPlanPage({ session }: Props) {
       const toSave = pendingRef.current;
       pendingRef.current = null;
       try {
-        const resp = await api.putProject(
-          id,
-          toSave,
-          revisionRef.current
-        );
+        const resp = await putWithRetry(id, toSave, revisionRef.current);
         revisionRef.current = resp.revision;
         setRevision(resp.revision);
       } catch (e: unknown) {
@@ -115,14 +147,22 @@ export function ProjectPlanPage({ session }: Props) {
             message: `${e.status} ${e.errorCode}: ${e.message}`,
           });
         } else {
+          // Network-level failure (no HTTP response) — e.g. a Render
+          // free-tier cold-start window or a dropped connection.
+          // Safari reports this as "Load failed", Chrome as "Failed
+          // to fetch". putWithRetry already retried; surface a
+          // human message and re-stash so the user can retry by
+          // dragging again (or it'll flush on the next drag).
+          pendingRef.current = toSave;
           setSaveStatus({
             kind: "error",
             message:
-              e instanceof Error ? e.message : "Save failed",
+              "Couldn't reach the server (network or server waking up). " +
+              "Your change isn't saved yet — drag again to retry.",
           });
         }
         savingRef.current = false;
-        return; // bail; user must reload to recover
+        return; // bail; user retries via another drag or reload
       }
     }
 
@@ -136,6 +176,10 @@ export function ProjectPlanPage({ session }: Props) {
     }, 2000);
   }
 
+  // Drag end → stage the move + show a confirm dialog. We
+  // optimistically render the pin at the new spot (so the user sees
+  // where it'll land) but DON'T save until they confirm. The pre-
+  // drag coords are stashed so Cancel can snap the pin back.
   function handlePinDrag(
     photoIndex: number,
     newPlanPixelX: number,
@@ -143,7 +187,9 @@ export function ProjectPlanPage({ session }: Props) {
   ) {
     if (!project || !revisionRef.current) return;
     const existing = project.photos[photoIndex];
-    if (!existing) return; // bounds guard — caller passes index from photos array, so this is a sanity check
+    if (!existing) return; // bounds guard
+    const oldX = existing.planPixelX ?? newPlanPixelX;
+    const oldY = existing.planPixelY ?? newPlanPixelY;
     const updatedPhotos = [...project.photos];
     updatedPhotos[photoIndex] = {
       ...existing,
@@ -151,9 +197,37 @@ export function ProjectPlanPage({ session }: Props) {
       planPixelY: newPlanPixelY,
     };
     const updated: Project = { ...project, photos: updatedPhotos };
-    setProject(updated);
-    pendingRef.current = updated;
+    setProject(updated); // optimistic preview under the dialog
+    setPendingMove({
+      photoIndex,
+      photoLabel: existing.sequenceNumber,
+      oldX,
+      oldY,
+      project: updated,
+    });
+  }
+
+  // Confirm → commit the staged move to the save queue.
+  function confirmMove() {
+    if (!pendingMove) return;
+    pendingRef.current = pendingMove.project;
+    setPendingMove(null);
     void runSaveLoop();
+  }
+
+  // Cancel → revert the pin to its pre-drag coords. Setting the
+  // photo's planPixelX/Y back to the old values re-renders the
+  // Konva Group at the original position, snapping the pin back.
+  function cancelMove() {
+    if (!pendingMove || !project) return;
+    const { photoIndex, oldX, oldY } = pendingMove;
+    const existing = project.photos[photoIndex];
+    if (existing) {
+      const reverted = [...project.photos];
+      reverted[photoIndex] = { ...existing, planPixelX: oldX, planPixelY: oldY };
+      setProject({ ...project, photos: reverted });
+    }
+    setPendingMove(null);
   }
 
   const activePlan: FloorPlan | null =
@@ -232,18 +306,43 @@ export function ProjectPlanPage({ session }: Props) {
             ) : (
               <div />
             )}
-            {saveStatus.kind !== "idle" && saveStatus.kind !== "error" && (
-              <span
+            <div className="flex items-center gap-3">
+              {saveStatus.kind !== "idle" && saveStatus.kind !== "error" && (
+                <span
+                  className={
+                    saveStatus.kind === "saving"
+                      ? "text-xs text-neutral-400"
+                      : "text-xs text-green-400"
+                  }
+                >
+                  {saveStatus.kind === "saving" ? "Saving…" : "Saved ✓"}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setPinsUnlocked((v) => !v)}
                 className={
-                  saveStatus.kind === "saving"
-                    ? "text-xs text-neutral-400"
-                    : "text-xs text-green-400"
+                  pinsUnlocked
+                    ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
+                    : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                }
+                title={
+                  pinsUnlocked
+                    ? "Pins are unlocked — drag to reposition. Click to lock."
+                    : "Pins are locked. Click to unlock and reposition."
                 }
               >
-                {saveStatus.kind === "saving" ? "Saving…" : "Saved ✓"}
-              </span>
-            )}
+                {pinsUnlocked ? "🔓 Pins unlocked" : "🔒 Unlock pins"}
+              </button>
+            </div>
           </div>
+
+          {pinsUnlocked && (
+            <div className="mb-3 rounded border border-amber-800 bg-amber-950/30 p-2 text-xs text-amber-200">
+              Pins are unlocked — drag a pin to reposition it. You'll be
+              asked to confirm each move before it saves.
+            </div>
+          )}
 
           {activePlan && id && (
             <FloorPlanCanvas
@@ -251,10 +350,42 @@ export function ProjectPlanPage({ session }: Props) {
               plan={activePlan}
               photos={project.photos}
               onSelectPhoto={(idx) => setLightboxIndex(idx)}
-              onPinDrag={handlePinDrag}
+              onPinDrag={pinsUnlocked ? handlePinDrag : undefined}
             />
           )}
         </>
+      )}
+
+      {pendingMove && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+            <div className="text-sm text-neutral-200">
+              Move photo{" "}
+              <span className="font-semibold">#{pendingMove.photoLabel}</span>{" "}
+              to the new position?
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelMove}
+                className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmMove}
+                className="rounded border border-blue-500 bg-blue-600/80 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600"
+              >
+                Move it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {project && id && lightboxIndex !== null && (
