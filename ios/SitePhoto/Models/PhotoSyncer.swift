@@ -84,6 +84,14 @@ final class PhotoSyncer {
                 await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
             }
         }
+        // Phase 3 PR-B: also upload floor plan images so the web
+        // viewer's plan canvas can fetch them. Same iOS → R2 direct
+        // upload pattern as photos; the server records the file row
+        // and the existing `GET /v1/projects/:id/plans/:planId/image`
+        // route serves them.
+        for plan in project.floorPlans {
+            await uploadPlanIfNeeded(plan: plan, in: project)
+        }
     }
 
     private func uploadIfNeeded(photo: Photo, in project: Project, kind: FileKind) async {
@@ -171,6 +179,82 @@ final class PhotoSyncer {
             // follow-up if real-world usage shows we need it.)
             #if DEBUG
             print("PhotoSyncer: upload failed for \(objectKey): \(error)")
+            #endif
+            return
+        }
+    }
+
+    /// Plan-image equivalent of `uploadIfNeeded`. Same iOS → R2
+    /// direct-upload pattern; the only differences are (1) the
+    /// on-disk source comes from `store.floorPlanURL(for:planID:)`
+    /// rather than the photos folder, and (2) the object key uses
+    /// the plan UUID in the `photoId` slot (the server's
+    /// `files` table reuses the column for plan IDs when
+    /// `kind == "plan"`, matching how PR #34's plans route reads
+    /// it back out).
+    private func uploadPlanIfNeeded(plan: FloorPlan, in project: Project) async {
+        let objectKey = Self.objectKey(projectId: project.id,
+                                        photoId: plan.id,
+                                        kind: .plan)
+
+        if tracker.isUploaded(objectKey) { return }
+        if inFlight.contains(objectKey) { return }
+        inFlight.insert(objectKey)
+        defer { inFlight.remove(objectKey) }
+
+        guard let fileURL = store.floorPlanURL(for: project, planID: plan.id),
+              fileManager.fileExists(atPath: fileURL.path) else {
+            // Plan referenced in the manifest but the rasterised image
+            // file isn't on disk. Could be a manifest sync that
+            // arrived before the plan-image file did (iCloud), or a
+            // half-finished import. Skip; next sweep retries.
+            return
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            return
+        }
+
+        guard data.count <= FILE_MAX_BYTES else { return }
+
+        let sha256 = Self.sha256Hex(data: data)
+        let contentType = Self.contentType(forExtension: fileURL.pathExtension)
+
+        do {
+            let urlResp = try await api.getUploadUrl(
+                projectId: project.id,
+                photoId: plan.id,
+                kind: .plan,
+                sizeBytes: data.count,
+                sha256: sha256,
+                contentType: contentType
+            )
+            guard let uploadURL = URL(string: urlResp.uploadUrl) else {
+                return
+            }
+            try await api.uploadBytesToPresignedURL(
+                uploadURL, data: data, contentType: contentType)
+            try await api.commitUpload(
+                projectId: project.id,
+                objectKey: urlResp.objectKey,
+                photoId: plan.id,
+                kind: .plan,
+                sizeBytes: data.count,
+                sha256: sha256
+            )
+            tracker.markUploaded(urlResp.objectKey)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch APIClient.APIError.http(status: 404, _, _) {
+            // Project hasn't been pushed to the server yet — same
+            // race as photos. Next sweep picks it up.
+            return
+        } catch {
+            #if DEBUG
+            print("PhotoSyncer: plan upload failed for \(objectKey): \(error)")
             #endif
             return
         }

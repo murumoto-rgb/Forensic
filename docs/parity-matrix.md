@@ -51,7 +51,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
 | Import floor plan (PDF / image) | ✅ | 📋 Phase 3 PR-C | `FloorPlan.imageFilename` | |
-| iPhone uploads plan image binary to R2 | ✅ | n/a | n/a | Phase 3 PR-B (iOS-side change; web just consumes the URL) |
+| iPhone uploads plan image binary to R2 | ✅ Build #5.9.1 | n/a | n/a | PhotoSyncer extended to iterate `project.floorPlans` alongside photos; same iOS → R2 direct upload pattern. Plan binaries fill in the floor plan canvas backgrounds on web. |
 | Calibrate scale | ✅ | 📋 Phase 3 PR-C | `FloorPlan.pixelsPerFoot` | |
 | Set north heading | ✅ | 📋 Phase 3 PR-C | `FloorPlan.northDeg` | |
 | Multiple plans per project | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `activeFloorPlanID` | Plan picker tabs on `/projects/:id/plan` |
