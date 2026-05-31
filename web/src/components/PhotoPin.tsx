@@ -1,4 +1,5 @@
 import { Circle, Group, Line, Text } from "react-konva";
+import type { KonvaEventObject } from "konva/lib/Node";
 import type { Photo } from "@forensic/shared";
 
 /**
@@ -7,6 +8,11 @@ import type { Photo } from "@forensic/shared";
  * photo carries a `headingDegrees`. Click handler is wired up so a
  * parent can open the lightbox at that photo's index.
  *
+ * When `onDragEnd` is provided, the pin becomes draggable. Konva
+ * distinguishes a click from a drag by movement threshold — a tap
+ * fires `onClick`, a drag fires `onDragEnd`. Caller is responsible
+ * for persisting the new position via the manifest PUT.
+ *
  * Coordinates are plan-image pixels — identical units to what iOS
  * stores, so the same pin renders in the same place on both
  * platforms.
@@ -14,13 +20,14 @@ import type { Photo } from "@forensic/shared";
 interface Props {
   photo: Photo;
   onClick?: () => void;
+  onDragEnd?: (newPlanPixelX: number, newPlanPixelY: number) => void;
   highlighted?: boolean;
 }
 
 const HEADING_LENGTH = 22;
 const PIN_RADIUS = 10;
 
-export function PhotoPin({ photo, onClick, highlighted }: Props) {
+export function PhotoPin({ photo, onClick, onDragEnd, highlighted }: Props) {
   if (photo.planPixelX == null || photo.planPixelY == null) {
     return null;
   }
@@ -42,7 +49,15 @@ export function PhotoPin({ photo, onClick, highlighted }: Props) {
       y={photo.planPixelY}
       onClick={onClick}
       onTap={onClick}
-      listening={onClick != null}
+      // When draggable, Konva fires onClick on a simple tap and
+      // onDragEnd on a click-and-drag. Both handlers can coexist;
+      // Konva picks whichever the gesture matches based on its
+      // built-in drag-distance threshold.
+      draggable={onDragEnd != null}
+      onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+        onDragEnd?.(e.target.x(), e.target.y());
+      }}
+      listening={onClick != null || onDragEnd != null}
     >
       {arrowEndX != null && arrowEndY != null && (
         <Line

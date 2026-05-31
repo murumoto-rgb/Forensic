@@ -14,6 +14,7 @@ import type {
   Project,
   GetManifestResponse,
   PhotoUrlResponse,
+  PutManifestResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -106,4 +107,20 @@ export const api = {
     request<PhotoUrlResponse>(
       `/v1/projects/${projectId}/plans/${planId}/image`
     ),
+  /**
+   * Write a mutated project manifest. Server uses `expectedRevision`
+   * for optimistic concurrency — pass the revision from the last
+   * GET; server returns 409 if the row has moved (someone else
+   * wrote in the meantime). On success, the response carries the
+   * new revision; echo it on the next PUT.
+   */
+  putProject: (
+    projectId: string,
+    project: Project,
+    expectedRevision: string
+  ) =>
+    request<PutManifestResponse>(`/v1/projects/${projectId}`, {
+      method: "PUT",
+      body: JSON.stringify({ project, expectedRevision }),
+    }),
 };
