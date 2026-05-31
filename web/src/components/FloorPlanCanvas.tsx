@@ -36,6 +36,13 @@ interface Props {
   plan: FloorPlan;
   photos: Photo[];
   onSelectPhoto?: (photoIndex: number) => void;
+  /**
+   * If provided, photo pins become draggable; this fires when the
+   * drag completes with the new plan-pixel coordinates. Caller is
+   * responsible for mutating the manifest + persisting via the
+   * server PUT.
+   */
+  onPinDrag?: (photoIndex: number, newPlanPixelX: number, newPlanPixelY: number) => void;
   highlightedPhotoId?: string | null;
 }
 
@@ -65,6 +72,7 @@ export function FloorPlanCanvas({
   plan,
   photos,
   onSelectPhoto,
+  onPinDrag,
   highlightedPhotoId,
 }: Props) {
   const [imageState, setImageState] = useState<ImageState>({ kind: "loading" });
@@ -292,6 +300,11 @@ export function FloorPlanCanvas({
                 highlighted={highlightedPhotoId === photo.id}
                 onClick={
                   onSelectPhoto ? () => onSelectPhoto(photoIndex) : undefined
+                }
+                onDragEnd={
+                  onPinDrag
+                    ? (x, y) => onPinDrag(photoIndex, x, y)
+                    : undefined
                 }
               />
             );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import type { Project, FloorPlan } from "@forensic/shared";
@@ -8,37 +8,66 @@ import { FloorPlanCanvas } from "../components/FloorPlanCanvas";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 
 /**
- * Project floor plan viewer page. Route: `/projects/:id/plan`
- * (optionally with `?planId=<id>` to deep-link a specific plan).
+ * Project floor plan viewer page. Route: `/projects/:id/plan`.
  *
  * Loads the project manifest, lets the user pick which floor plan
  * to view if there are multiple, and renders the canvas with all
- * pins + distress marks for the active plan. Clicking a pin opens
- * the lightbox at that photo's index.
+ * pins + distress marks for the active plan.
+ *
+ * Pin drag → reposition: when the user drags a pin to a new spot,
+ * we optimistically update the React state so the new position
+ * renders immediately, then PUT the mutated manifest with the
+ * current revision. The server returns the new revision; we echo
+ * it on the next PUT. On 409 (someone else wrote in between), we
+ * surface a conflict banner asking the user to reload. Only one
+ * PUT in flight at a time; rapid successive drags coalesce — the
+ * most-recent local state is saved when the current PUT finishes.
  */
 interface Props {
   session: Session;
 }
 
+type SaveStatus =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved" }
+  | { kind: "error"; message: string };
+
 export function ProjectPlanPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
+  const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
+
+  // Save-queue refs. We never have more than one PUT in flight; if
+  // a second drag arrives while a save is running, we stash the
+  // newest project state in `pendingRef` and the running save
+  // picks it up after the current PUT returns.
+  const savingRef = useRef<boolean>(false);
+  const pendingRef = useRef<Project | null>(null);
+  // Mirror of the latest revision so the save loop reads the
+  // up-to-date value without depending on React's render cycle.
+  const revisionRef = useRef<string | null>(null);
+  useEffect(() => {
+    revisionRef.current = revision;
+  }, [revision]);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     setProject(null);
+    setRevision(null);
     setError(null);
     api
       .getProject(id)
       .then((res) => {
         if (cancelled) return;
         setProject(res.project);
-        // Default to the project's active plan, falling back to the
-        // first plan if `activeFloorPlanID` doesn't resolve.
+        setRevision(res.revision);
+        revisionRef.current = res.revision;
         const candidate =
           res.project.activeFloorPlanID ?? res.project.floorPlans[0]?.id ?? null;
         setActivePlanId(candidate);
@@ -52,6 +81,80 @@ export function ProjectPlanPage({ session }: Props) {
       cancelled = true;
     };
   }, [id]);
+
+  // Background save loop. Caller pre-populates `pendingRef` with
+  // the latest project state, then calls this. If already running,
+  // returns immediately — the running loop will see the new
+  // pendingRef after its current PUT completes.
+  async function runSaveLoop() {
+    if (savingRef.current) return;
+    if (!id) return;
+    savingRef.current = true;
+    setSaveStatus({ kind: "saving" });
+
+    while (pendingRef.current && revisionRef.current) {
+      const toSave = pendingRef.current;
+      pendingRef.current = null;
+      try {
+        const resp = await api.putProject(
+          id,
+          toSave,
+          revisionRef.current
+        );
+        revisionRef.current = resp.revision;
+        setRevision(resp.revision);
+      } catch (e: unknown) {
+        if (e instanceof ApiError && e.status === 409) {
+          setSaveStatus({
+            kind: "error",
+            message: "Project was modified elsewhere — reload to sync.",
+          });
+        } else if (e instanceof ApiError) {
+          setSaveStatus({
+            kind: "error",
+            message: `${e.status} ${e.errorCode}: ${e.message}`,
+          });
+        } else {
+          setSaveStatus({
+            kind: "error",
+            message:
+              e instanceof Error ? e.message : "Save failed",
+          });
+        }
+        savingRef.current = false;
+        return; // bail; user must reload to recover
+      }
+    }
+
+    savingRef.current = false;
+    setSaveStatus({ kind: "saved" });
+    // Auto-clear the "Saved" pill after a couple of seconds.
+    setTimeout(() => {
+      // Don't clobber a status that changed in the meantime
+      // (e.g. another save started).
+      setSaveStatus((s) => (s.kind === "saved" ? { kind: "idle" } : s));
+    }, 2000);
+  }
+
+  function handlePinDrag(
+    photoIndex: number,
+    newPlanPixelX: number,
+    newPlanPixelY: number
+  ) {
+    if (!project || !revisionRef.current) return;
+    const existing = project.photos[photoIndex];
+    if (!existing) return; // bounds guard — caller passes index from photos array, so this is a sanity check
+    const updatedPhotos = [...project.photos];
+    updatedPhotos[photoIndex] = {
+      ...existing,
+      planPixelX: newPlanPixelX,
+      planPixelY: newPlanPixelY,
+    };
+    const updated: Project = { ...project, photos: updatedPhotos };
+    setProject(updated);
+    pendingRef.current = updated;
+    void runSaveLoop();
+  }
 
   const activePlan: FloorPlan | null =
     project?.floorPlans.find((p) => p.id === activePlanId) ?? null;
@@ -89,6 +192,12 @@ export function ProjectPlanPage({ session }: Props) {
         </div>
       )}
 
+      {saveStatus.kind === "error" && (
+        <div className="mb-4 rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
+          Save failed: {saveStatus.message}
+        </div>
+      )}
+
       {project === null && !error && (
         <div className="text-sm text-neutral-500">Loading…</div>
       )}
@@ -102,24 +211,39 @@ export function ProjectPlanPage({ session }: Props) {
 
       {project && project.floorPlans.length > 0 && (
         <>
-          {project.floorPlans.length > 1 && (
-            <div className="mb-4 flex flex-wrap gap-2">
-              {project.floorPlans.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setActivePlanId(p.id)}
-                  className={
-                    p.id === activePlanId
-                      ? "rounded border border-blue-500 bg-blue-950/40 px-3 py-1 text-sm text-blue-200"
-                      : "rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-                  }
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="mb-4 flex items-center justify-between gap-4">
+            {project.floorPlans.length > 1 ? (
+              <div className="flex flex-wrap gap-2">
+                {project.floorPlans.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setActivePlanId(p.id)}
+                    className={
+                      p.id === activePlanId
+                        ? "rounded border border-blue-500 bg-blue-950/40 px-3 py-1 text-sm text-blue-200"
+                        : "rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+                    }
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div />
+            )}
+            {saveStatus.kind !== "idle" && saveStatus.kind !== "error" && (
+              <span
+                className={
+                  saveStatus.kind === "saving"
+                    ? "text-xs text-neutral-400"
+                    : "text-xs text-green-400"
+                }
+              >
+                {saveStatus.kind === "saving" ? "Saving…" : "Saved ✓"}
+              </span>
+            )}
+          </div>
 
           {activePlan && id && (
             <FloorPlanCanvas
@@ -127,6 +251,7 @@ export function ProjectPlanPage({ session }: Props) {
               plan={activePlan}
               photos={project.photos}
               onSelectPhoto={(idx) => setLightboxIndex(idx)}
+              onPinDrag={handlePinDrag}
             />
           )}
         </>
