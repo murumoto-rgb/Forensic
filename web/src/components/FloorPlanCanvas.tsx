@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Image as KonvaImage, Rect } from "react-konva";
+import type Konva from "konva";
+import type { KonvaEventObject } from "konva/lib/Node";
 import type { FloorPlan, Photo } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 import { PhotoPin } from "./PhotoPin";
@@ -10,7 +12,15 @@ import { DistressGlyph } from "./DistressGlyph";
  * photo pins + distress marks overlaid in plan-pixel coordinates.
  *
  * Auto-fits the image to the container width on mount and on window
- * resize; pan/zoom comes in Phase 3 PR-B alongside drag editing.
+ * resize. User pan + zoom on top of that auto-fit baseline:
+ *   - Mouse wheel: focal-point zoom (zooms toward / away from the
+ *     cursor). Clamped to 0.25× — 8× of the auto-fit scale.
+ *   - Click-and-drag on empty canvas area: pans.
+ *   - Click on a pin: opens the lightbox (existing handler).
+ *   - "Reset view" button: returns to auto-fit + center.
+ *
+ * Pin/distress mark drag-to-reposition + add/delete distress lands in
+ * the next Phase 3 PRs (C-2 + C-3).
  *
  * Plan image load states:
  *   - loading: fetching presigned URL
@@ -41,6 +51,15 @@ type ImageState =
 const FALLBACK_PLAN_WIDTH = 2000;
 const FALLBACK_PLAN_HEIGHT = 2000;
 
+// User-zoom clamp. The base scale is "auto-fit to container width"
+// per the existing calculation; user wheel zoom multiplies on top of
+// that. 0.25× shows the plan smaller than the auto-fit (useful for
+// orientation on a large display); 8× lets you zoom into a single
+// distress mark at sub-millimetre detail.
+const MIN_USER_ZOOM = 0.25;
+const MAX_USER_ZOOM = 8;
+const WHEEL_ZOOM_FACTOR = 1.1;
+
 export function FloorPlanCanvas({
   projectId,
   plan,
@@ -50,7 +69,22 @@ export function FloorPlanCanvas({
 }: Props) {
   const [imageState, setImageState] = useState<ImageState>({ kind: "loading" });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<Konva.Stage | null>(null);
   const [containerWidth, setContainerWidth] = useState(800);
+
+  // User-driven zoom + pan offsets on top of the auto-fit baseline.
+  // userZoom = 1.0 means "fit to container"; >1 zooms in.
+  // stagePos is the Stage's x/y translation in screen pixels (post-
+  // scale), set both by drag and by focal-point wheel zoom.
+  const [userZoom, setUserZoom] = useState(1);
+  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+
+  // Reset view when switching plans so the new plan starts auto-fit
+  // + centered, regardless of where the previous one was zoomed to.
+  useEffect(() => {
+    setUserZoom(1);
+    setStagePos({ x: 0, y: 0 });
+  }, [plan.id]);
 
   // Fetch presigned URL + decode the image.
   useEffect(() => {
@@ -85,10 +119,6 @@ export function FloorPlanCanvas({
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        // 404 = plan binary not in R2 yet (Phase 2 iOS only uploads
-        // photos; plan upload lands in Phase 3 PR-B). Show the
-        // amber "pending upload" banner; pins/distress still render
-        // over the blank canvas.
         if (e instanceof ApiError && e.status === 404) {
           setImageState({ kind: "pending" });
         } else if (e instanceof ApiError) {
@@ -97,10 +127,6 @@ export function FloorPlanCanvas({
             message: `${e.status} ${e.errorCode}: ${e.message}`,
           });
         } else {
-          // Non-ApiError = pre-response failure (network, CORS,
-          // throw inside the fetch wrapper). Surface the underlying
-          // message instead of swallowing it so the user can see
-          // the actual cause.
           const detail =
             e instanceof Error
               ? `${e.name}: ${e.message}`
@@ -139,9 +165,50 @@ export function FloorPlanCanvas({
     imageState.kind === "ready" ? imageState.width : FALLBACK_PLAN_WIDTH;
   const planHeight =
     imageState.kind === "ready" ? imageState.height : FALLBACK_PLAN_HEIGHT;
-  const scale = containerWidth / planWidth;
+  const baseFitScale = containerWidth / planWidth;
+  const effectiveScale = baseFitScale * userZoom;
   const stageWidth = containerWidth;
-  const stageHeight = planHeight * scale;
+  // Stage height fits the auto-fit baseline; when the user zooms
+  // beyond 1× the image overflows but the Stage shows what fits in
+  // this rectangle. We don't grow the Stage on zoom to keep the
+  // surrounding page layout stable.
+  const stageHeight = planHeight * baseFitScale;
+
+  // Focal-point wheel zoom: scale toward/away from the cursor so
+  // the pixel under the cursor stays put. Matches the gesture in
+  // Google Maps / Figma / most map UIs.
+  function handleWheel(e: KonvaEventObject<WheelEvent>) {
+    e.evt.preventDefault();
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const oldScale = stage.scaleX();
+    const pointer = stage.getPointerPosition();
+    if (!pointer) return;
+
+    const planX = (pointer.x - stage.x()) / oldScale;
+    const planY = (pointer.y - stage.y()) / oldScale;
+
+    const direction = e.evt.deltaY > 0 ? -1 : 1;
+    const candidate =
+      direction > 0
+        ? userZoom * WHEEL_ZOOM_FACTOR
+        : userZoom / WHEEL_ZOOM_FACTOR;
+    const newUserZoom = Math.max(MIN_USER_ZOOM, Math.min(MAX_USER_ZOOM, candidate));
+    const newEffectiveScale = baseFitScale * newUserZoom;
+
+    setUserZoom(newUserZoom);
+    setStagePos({
+      x: pointer.x - planX * newEffectiveScale,
+      y: pointer.y - planY * newEffectiveScale,
+    });
+  }
+
+  function resetView() {
+    setUserZoom(1);
+    setStagePos({ x: 0, y: 0 });
+  }
+
+  const isPanned = userZoom !== 1 || stagePos.x !== 0 || stagePos.y !== 0;
 
   return (
     <div ref={containerRef} className="w-full">
@@ -157,12 +224,45 @@ export function FloorPlanCanvas({
           {imageState.message}
         </div>
       )}
+
+      {/* Toolbar: zoom percentage + reset button. Sits above the
+          canvas so it stays visible regardless of pan position. */}
+      <div className="mb-2 flex items-center justify-between text-xs text-neutral-400">
+        <div>
+          Zoom: <span className="font-mono">{Math.round(userZoom * 100)}%</span>
+          <span className="ml-3 text-neutral-600">
+            (scroll to zoom · drag to pan)
+          </span>
+        </div>
+        {isPanned && (
+          <button
+            type="button"
+            onClick={resetView}
+            className="rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+          >
+            Reset view
+          </button>
+        )}
+      </div>
+
       <Stage
+        ref={stageRef}
         width={stageWidth}
         height={stageHeight}
-        scaleX={scale}
-        scaleY={scale}
-        style={{ background: "#0a0a0a" }}
+        scaleX={effectiveScale}
+        scaleY={effectiveScale}
+        x={stagePos.x}
+        y={stagePos.y}
+        draggable
+        onDragEnd={(e) => {
+          setStagePos({ x: e.target.x(), y: e.target.y() });
+        }}
+        onWheel={handleWheel}
+        style={{
+          background: "#0a0a0a",
+          cursor: "grab",
+          overflow: "hidden",
+        }}
       >
         <Layer>
           {imageState.kind === "ready" ? (
