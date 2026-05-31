@@ -78,20 +78,77 @@ final class PhotoSyncer {
     // MARK: - Internals
 
     private func syncProject(_ project: Project) async {
+        // Plans first — small N (1-5 per project), so they complete
+        // in seconds even on a fresh install where the per-device
+        // UploadedFileTracker is empty. The web canvas backgrounds
+        // can render before the photo sweep starts.
+        for plan in project.floorPlans {
+            await uploadPlanIfNeeded(plan: plan, in: project)
+        }
+        // Photos: bulk-pre-check what R2 already has and mark those
+        // in the tracker so the per-photo loop short-circuits.
+        // Critical on a fresh install where the user has 1000s of
+        // photos already uploaded from a previous install — without
+        // the pre-check we'd do 1000s of redundant getUploadUrl →
+        // R2 PUT → commitUpload round-trips.
+        await preCheckUploadedPhotos(in: project)
         for photo in project.photos {
             await uploadIfNeeded(photo: photo, in: project, kind: .photo)
             if photo.thumbnailFilename != nil {
                 await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
             }
         }
-        // Phase 3 PR-B: also upload floor plan images so the web
-        // viewer's plan canvas can fetch them. Same iOS → R2 direct
-        // upload pattern as photos; the server records the file row
-        // and the existing `GET /v1/projects/:id/plans/:planId/image`
-        // route serves them.
-        for plan in project.floorPlans {
-            await uploadPlanIfNeeded(plan: plan, in: project)
+    }
+
+    /// Ask the server which of this project's photo + thumb object
+    /// keys are already in R2, and mark those as uploaded in the
+    /// local tracker. Reduces the per-photo loop from N network
+    /// round-trips to (N / 500) + photo-actual-uploads.
+    ///
+    /// Skips keys the tracker already considers uploaded (no point
+    /// re-checking the steady-state case). Chunks at 500 to respect
+    /// the server's `SyncFilesCheckBodySchema.objectKeys.max(500)`
+    /// cap. On any chunk failure, falls back silently — the per-
+    /// photo loop will run normally, which is the old (correct but
+    /// slow) behaviour.
+    private func preCheckUploadedPhotos(in project: Project) async {
+        var unknownKeys: [String] = []
+        for photo in project.photos {
+            let photoKey = Self.objectKey(
+                projectId: project.id, photoId: photo.id, kind: .photo)
+            if !tracker.isUploaded(photoKey) {
+                unknownKeys.append(photoKey)
+            }
+            if photo.thumbnailFilename != nil {
+                let thumbKey = Self.objectKey(
+                    projectId: project.id, photoId: photo.id, kind: .thumb)
+                if !tracker.isUploaded(thumbKey) {
+                    unknownKeys.append(thumbKey)
+                }
+            }
         }
+        if unknownKeys.isEmpty { return }
+
+        print("[PhotoSyncer] pre-checking \(unknownKeys.count) photo keys against R2 for project \(project.name)")
+
+        let chunkSize = 500
+        var existingCount = 0
+        for chunkStart in stride(from: 0, to: unknownKeys.count, by: chunkSize) {
+            let chunkEnd = min(chunkStart + chunkSize, unknownKeys.count)
+            let chunk = Array(unknownKeys[chunkStart..<chunkEnd])
+            do {
+                let resp = try await api.syncFilesCheck(objectKeys: chunk)
+                tracker.markUploaded(resp.existing)
+                existingCount += resp.existing.count
+            } catch {
+                // Per-photo loop is the fallback; idempotent on the
+                // server. This is purely an optimisation; correctness
+                // unaffected.
+                print("[PhotoSyncer] sync-files-check chunk failed at offset \(chunkStart): \(error)")
+                return
+            }
+        }
+        print("[PhotoSyncer] pre-check done — \(existingCount)/\(unknownKeys.count) already in R2; per-photo loop will skip those")
     }
 
     private func uploadIfNeeded(photo: Photo, in project: Project, kind: FileKind) async {
