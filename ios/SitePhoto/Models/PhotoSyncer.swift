@@ -78,19 +78,24 @@ final class PhotoSyncer {
     // MARK: - Internals
 
     private func syncProject(_ project: Project) async {
+        // Plans first, photos second. Plans are few (1-5 per project)
+        // so they complete in seconds even on a fresh install where
+        // the per-device UploadedFileTracker is empty. Photos can run
+        // to hundreds per project and easily occupy 15-40 minutes on
+        // a re-upload sweep (each is a getUploadUrl → R2 PUT →
+        // commitUpload round-trip even when the file already exists
+        // in R2 from a previous install). Running plans first means
+        // the web floor-plan canvas backgrounds appear within
+        // seconds of a launch / Sync-Now tap, before the photo
+        // backfill keeps the connection busy.
+        for plan in project.floorPlans {
+            await uploadPlanIfNeeded(plan: plan, in: project)
+        }
         for photo in project.photos {
             await uploadIfNeeded(photo: photo, in: project, kind: .photo)
             if photo.thumbnailFilename != nil {
                 await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
             }
-        }
-        // Phase 3 PR-B: also upload floor plan images so the web
-        // viewer's plan canvas can fetch them. Same iOS → R2 direct
-        // upload pattern as photos; the server records the file row
-        // and the existing `GET /v1/projects/:id/plans/:planId/image`
-        // route serves them.
-        for plan in project.floorPlans {
-            await uploadPlanIfNeeded(plan: plan, in: project)
         }
     }
 
