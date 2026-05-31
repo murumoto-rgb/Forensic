@@ -74,6 +74,27 @@ struct SettingsSheet: View {
                     }
                 }
 
+                // Manual sync trigger — useful for poking at uploads
+                // without restarting the app, and for verifying that
+                // floor-plan binaries reach R2 (the per-plan toasts
+                // PhotoSyncer emits land here).
+                Section {
+                    Button {
+                        Task {
+                            toastCenter.post("Sync started…", kind: .info)
+                            await syncer.pushAllToServer()
+                            await photoSyncer.syncAll()
+                            toastCenter.post("Sync sweep done.", kind: .info)
+                        }
+                    } label: {
+                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                } header: {
+                    Text("Sync")
+                } footer: {
+                    Text("Pushes any pending manifest changes and uploads any photo / plan binaries that haven't reached R2 yet. Errors surface as toasts.")
+                }
+
                 Section {
                     SecureField("sk-ant-…", text: $apiKey, prompt: Text("Anthropic API key"))
                         .textContentType(.password)

@@ -197,17 +197,31 @@ final class PhotoSyncer {
                                         photoId: plan.id,
                                         kind: .plan)
 
-        if tracker.isUploaded(objectKey) { return }
-        if inFlight.contains(objectKey) { return }
+        if tracker.isUploaded(objectKey) {
+            print("[PhotoSyncer] plan skip — tracker says already uploaded: \(objectKey)")
+            return
+        }
+        if inFlight.contains(objectKey) {
+            print("[PhotoSyncer] plan skip — already in flight: \(objectKey)")
+            return
+        }
         inFlight.insert(objectKey)
         defer { inFlight.remove(objectKey) }
 
-        guard let fileURL = store.floorPlanURL(for: project, planID: plan.id),
-              fileManager.fileExists(atPath: fileURL.path) else {
-            // Plan referenced in the manifest but the rasterised image
-            // file isn't on disk. Could be a manifest sync that
-            // arrived before the plan-image file did (iCloud), or a
-            // half-finished import. Skip; next sweep retries.
+        guard let fileURL = store.floorPlanURL(for: project, planID: plan.id) else {
+            toast.post(
+                "Plan \"\(plan.label)\": no URL on disk (manifest references it, but the rasterised image hasn't been generated yet).",
+                kind: .warning
+            )
+            print("[PhotoSyncer] plan URL is nil for \(plan.label) (\(plan.id))")
+            return
+        }
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            toast.post(
+                "Plan \"\(plan.label)\": image file missing at \(fileURL.lastPathComponent). iOS hasn't rasterised the PDF yet.",
+                kind: .warning
+            )
+            print("[PhotoSyncer] plan file missing at \(fileURL.path)")
             return
         }
 
@@ -215,13 +229,19 @@ final class PhotoSyncer {
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
+            toast.post("Plan \"\(plan.label)\": failed to read bytes: \(error.localizedDescription)", kind: .warning)
+            print("[PhotoSyncer] plan read failed: \(error)")
             return
         }
 
-        guard data.count <= FILE_MAX_BYTES else { return }
+        guard data.count <= FILE_MAX_BYTES else {
+            toast.post("Plan \"\(plan.label)\": \(data.count / 1024 / 1024)MB exceeds the upload cap.", kind: .warning)
+            return
+        }
 
         let sha256 = Self.sha256Hex(data: data)
         let contentType = Self.contentType(forExtension: fileURL.pathExtension)
+        print("[PhotoSyncer] plan upload starting: \(objectKey) — \(data.count) bytes, \(contentType)")
 
         do {
             let urlResp = try await api.getUploadUrl(
@@ -233,6 +253,7 @@ final class PhotoSyncer {
                 contentType: contentType
             )
             guard let uploadURL = URL(string: urlResp.uploadUrl) else {
+                toast.post("Plan \"\(plan.label)\": server returned invalid upload URL.", kind: .warning)
                 return
             }
             try await api.uploadBytesToPresignedURL(
@@ -246,16 +267,22 @@ final class PhotoSyncer {
                 sha256: sha256
             )
             tracker.markUploaded(urlResp.objectKey)
+            print("[PhotoSyncer] plan upload OK: \(urlResp.objectKey)")
         } catch APIClient.APIError.notAuthenticated {
             return
         } catch APIClient.APIError.http(status: 404, _, _) {
             // Project hasn't been pushed to the server yet — same
             // race as photos. Next sweep picks it up.
+            print("[PhotoSyncer] plan upload deferred (project not on server yet): \(objectKey)")
             return
         } catch {
-            #if DEBUG
-            print("PhotoSyncer: plan upload failed for \(objectKey): \(error)")
-            #endif
+            // Plans are few-per-project (vs hundreds of photos), so
+            // an error toast per failure is appropriate noise level.
+            toast.post(
+                "Plan \"\(plan.label)\" upload failed: \(error.localizedDescription)",
+                kind: .warning
+            )
+            print("[PhotoSyncer] plan upload failed for \(objectKey): \(error)")
             return
         }
     }
