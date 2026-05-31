@@ -61,7 +61,13 @@ export function FloorPlanCanvas({
       .then((res) => {
         if (cancelled) return;
         const img = new window.Image();
-        img.crossOrigin = "anonymous";
+        // No crossOrigin attribute: lets the browser fetch the R2
+        // presigned URL without enforcing CORS on the response.
+        // (R2 buckets don't have CORS rules configured by default,
+        // and we don't need canvas-pixel access for display — only
+        // for hypothetical future PDF export, which would need R2
+        // bucket CORS configured first anyway.) Without this, the
+        // image silently fails to decode + onerror fires.
         img.onload = () => {
           if (cancelled) return;
           setImageState({
