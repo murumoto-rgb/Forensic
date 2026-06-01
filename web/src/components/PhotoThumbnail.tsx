@@ -2,59 +2,102 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../lib/api";
 
 /**
- * Single photo thumbnail. Fetches its presigned URL on mount; renders
- * the image with native lazy-loading so the browser handles "don't
- * fetch what isn't on screen yet" automatically. Skeleton box while
- * the URL is in flight; error placeholder if the fetch fails.
+ * Single photo thumbnail. Two modes of operation:
+ *
+ *  1. **Batch mode (preferred, from PhotoGrid).** Parent does ONE
+ *     `getPhotoUrlsBatch` call and passes the resolved URL in via
+ *     the `url` prop. While the batch is in flight `batchLoading`
+ *     is true and we render a skeleton; when it resolves, `url`
+ *     is either a string (render the `<img>`) or `null` (no file
+ *     in storage — render the "pending upload" placeholder).
+ *
+ *  2. **Standalone mode (legacy fallback).** If the parent doesn't
+ *     pass `url` or `batchLoading`, we fetch our own URL via the
+ *     per-photo endpoint. This keeps any future single-thumbnail
+ *     usage working without refactoring; the photo grid does NOT
+ *     use this path anymore (would re-introduce the N+1 storm).
  *
  * Server's thumb endpoint falls back to the full image when no
- * separate `thumb` object exists in R2 (which is the current state
- * for everything iOS has uploaded — thumb generation lands later).
- * Large originals load slowly but at least display; we trade some
- * bandwidth for a working UI.
+ * separate `thumb` object exists in R2; this component is agnostic
+ * to which kind of object the URL points at.
  */
 interface Props {
   projectId: string;
   photoId: string;
+  /** Pre-fetched presigned URL from a batch call. `null` = batch
+   *  finished and this photo has no file (treat as "pending upload").
+   *  `undefined` = no batch happening; component fetches on its own. */
+  url?: string | null;
+  /** True while the parent's batch is in flight. */
+  batchLoading?: boolean;
   alt: string;
   onClick?: () => void;
 }
 
 type LoadState = "loading" | "ready" | "pending" | "error";
 
-export function PhotoThumbnail({ projectId, photoId, alt, onClick }: Props) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [state, setState] = useState<LoadState>("loading");
+export function PhotoThumbnail({
+  projectId,
+  photoId,
+  url: urlProp,
+  batchLoading,
+  alt,
+  onClick,
+}: Props) {
+  // Internal state for standalone-mode fetch. Unused when the
+  // parent passes `url` / `batchLoading`.
+  const [internalUrl, setInternalUrl] = useState<string | null>(null);
+  const [internalState, setInternalState] = useState<LoadState>("loading");
+
+  // Standalone mode only: fire a per-photo fetch if the parent
+  // didn't pre-fetch for us.
+  const parentManagedUrl =
+    urlProp !== undefined || batchLoading !== undefined;
 
   useEffect(() => {
+    if (parentManagedUrl) return; // skip — parent will tell us what URL to use
     let cancelled = false;
-    setState("loading");
-    setUrl(null);
+    setInternalState("loading");
+    setInternalUrl(null);
     api
       .getPhotoThumbUrl(projectId, photoId)
       .then((res) => {
         if (cancelled) return;
-        setUrl(res.url);
-        setState("ready");
+        setInternalUrl(res.url);
+        setInternalState("ready");
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        // A 404 means the photo's binary hasn't been uploaded to R2
-        // yet — the iPhone has the manifest synced but the file is
-        // still pending (often because it lives in iCloud and hasn't
-        // been pulled to the device + uploaded). This is a normal,
-        // transient state, not an error: show a friendly "pending"
-        // placeholder. Everything else is a real error.
         if (e instanceof ApiError && e.status === 404) {
-          setState("pending");
+          setInternalState("pending");
         } else {
-          setState("error");
+          setInternalState("error");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [projectId, photoId]);
+  }, [projectId, photoId, parentManagedUrl]);
+
+  // Resolve effective state + URL from whichever mode is active.
+  let state: LoadState;
+  let url: string | null;
+  if (parentManagedUrl) {
+    if (batchLoading) {
+      state = "loading";
+      url = null;
+    } else if (urlProp == null) {
+      // Batch done; this photo had no file → pending upload.
+      state = "pending";
+      url = null;
+    } else {
+      state = "ready";
+      url = urlProp;
+    }
+  } else {
+    state = internalState;
+    url = internalUrl;
+  }
 
   const baseClasses =
     "aspect-square w-full overflow-hidden rounded border border-neutral-800 bg-neutral-900";

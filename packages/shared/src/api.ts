@@ -95,3 +95,31 @@ export interface PhotoUrlResponse {
   /** ISO date when the presigned URL stops working. */
   expiresAt: string;
 }
+
+/**
+ * Batch counterpart of the single-photo URL endpoint. A photo grid
+ * with N thumbnails would otherwise fire N parallel requests through
+ * the server — on a free-tier Render instance with hundreds of
+ * photos in a project that's a 502-storm waiting to happen
+ * (Build #5.19.1 fix). This endpoint takes the photo IDs in one
+ * round trip and returns a `{photoId: presignedUrl}` map.
+ *
+ * Up to 1000 photos per request. Server hard-caps any more.
+ */
+export interface PhotoUrlsBatchRequest {
+  photoIds: string[];
+  /** "thumb" returns thumbnails (falls back to the full photo if no
+   *  separate thumb exists), "image" returns full-res originals. */
+  kind: "thumb" | "image";
+}
+
+export interface PhotoUrlsBatchResponse {
+  /** photoId → presigned URL. Missing IDs are simply absent from the
+   *  map (no entry) — the client renders the same "pending" placeholder
+   *  it would for an individual 404. */
+  urls: Record<string, string>;
+  /** ISO date when the presigned URLs in this response stop working.
+   *  All URLs in one batch share the same expiry — the server uses
+   *  the same TTL for every entry. */
+  expiresAt: string;
+}

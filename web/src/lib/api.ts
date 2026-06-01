@@ -23,6 +23,7 @@ import type {
   Project,
   GetManifestResponse,
   PhotoUrlResponse,
+  PhotoUrlsBatchResponse,
   PutManifestResponse,
 } from "@forensic/shared";
 
@@ -127,6 +128,10 @@ export interface ProjectListResponse {
 
 export type { Project, GetManifestResponse, PhotoUrlResponse };
 
+// Match the server's MAX_BATCH_PHOTO_IDS in routes/photos.ts. Anything
+// over this is chunked transparently below.
+const MAX_BATCH_PHOTO_IDS = 1000;
+
 export const api = {
   healthz: () =>
     request<{ status: string; serverManifestSchemaVersion: number }>(
@@ -147,6 +152,40 @@ export const api = {
     request<PhotoUrlResponse>(
       `/v1/projects/${projectId}/plans/${planId}/image`
     ),
+  /**
+   * Batch-fetch presigned URLs for a set of photos in one project.
+   * Returns a `photoId → url` map; photos with no file in storage
+   * are absent from the map (caller renders the same "pending"
+   * placeholder it would for an individual 404).
+   *
+   * Chunks at 1000 (matches server's hard cap) so a project of any
+   * size goes through transparently. Each chunk is one server
+   * round-trip; results are merged client-side.
+   */
+  getPhotoUrlsBatch: async (
+    projectId: string,
+    photoIds: string[],
+    kind: "thumb" | "image"
+  ): Promise<{ urls: Record<string, string>; expiresAt: string }> => {
+    if (photoIds.length === 0) {
+      return { urls: {}, expiresAt: new Date().toISOString() };
+    }
+    const merged: Record<string, string> = {};
+    let expiresAt = new Date().toISOString();
+    for (let i = 0; i < photoIds.length; i += MAX_BATCH_PHOTO_IDS) {
+      const chunk = photoIds.slice(i, i + MAX_BATCH_PHOTO_IDS);
+      const resp = await request<PhotoUrlsBatchResponse>(
+        `/v1/projects/${projectId}/photo-urls`,
+        {
+          method: "POST",
+          body: JSON.stringify({ photoIds: chunk, kind }),
+        }
+      );
+      Object.assign(merged, resp.urls);
+      expiresAt = resp.expiresAt;
+    }
+    return { urls: merged, expiresAt };
+  },
   /**
    * Write a mutated project manifest. Server uses `expectedRevision`
    * for optimistic concurrency — pass the revision from the last
