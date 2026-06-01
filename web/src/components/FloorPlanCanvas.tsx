@@ -295,7 +295,18 @@ export function FloorPlanCanvas({
         y={stagePos.y}
         draggable
         onDragEnd={(e) => {
-          setStagePos({ x: e.target.x(), y: e.target.y() });
+          // Konva's dragend event bubbles up from inner draggable
+          // Nodes. A PhotoPin drag fires its own onDragEnd AND
+          // re-fires here with `e.target` being the pin's Group,
+          // not the Stage. `e.target.x()/y()` would then be the
+          // pin's plan-pixel coordinates — applying those as the
+          // Stage's pan translation jumps the view across the
+          // canvas (especially noticeable at high zoom). Guard so
+          // we only treat as a Stage pan when the Stage itself is
+          // the drag source.
+          if (e.target === e.target.getStage()) {
+            setStagePos({ x: e.target.x(), y: e.target.y() });
+          }
         }}
         onWheel={handleWheel}
         style={{
