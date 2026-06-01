@@ -263,12 +263,31 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
+    // Map the DB's photo_id back to the EXACT id string the client
+    // requested, preserving case. `files.photo_id` is a Postgres
+    // `uuid` column, which returns its value in lowercase canonical
+    // form (`a5f6e276-…`). But iOS manifests store photo IDs in
+    // uppercase (`A5F6E276-…`), so the web sends uppercase IDs and
+    // looks the response map up with `urls[photo.id]`. If we keyed
+    // the response by the DB's lowercase id, every client lookup
+    // would miss and the whole grid would show "pending" — which is
+    // exactly the bug this fixes (Build #5.21.1). The DB match itself
+    // is case-insensitive (uuid comparison), so the rows come back
+    // fine; only the response key needs the requester's case.
+    const requestedByLower = new Map<string, string>();
+    for (const pid of photoIds) requestedByLower.set(pid.toLowerCase(), pid);
+
     // Pick the best key per photo: prefer "thumb" when present,
     // fall back to "photo" if not. For kind="image" this just picks
     // the "photo" row (the only one in `wantedKinds`).
-    const preferred = new Map<string, string>(); // photoId → object_key
+    const preferred = new Map<string, string>(); // requestedPhotoId → object_key
     for (const row of files ?? []) {
-      const photoId = row.photo_id as string;
+      const rowPhotoId = row.photo_id as string;
+      // Resolve back to the client's original-case id; fall back to
+      // the DB value if somehow not in the request set (shouldn't
+      // happen — we only queried ids the client sent).
+      const photoId =
+        requestedByLower.get(rowPhotoId.toLowerCase()) ?? rowPhotoId;
       const rowKind = row.kind as string;
       const objectKey = row.object_key as string;
       if (kind === "thumb") {
