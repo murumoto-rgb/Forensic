@@ -10,6 +10,15 @@ import type { Project } from "./manifest.ts";
 export interface HealthzResponse {
   status: "ok";
   serverManifestSchemaVersion: number;
+  /** Git commit SHA the running server was built from, if known
+   *  (Render sets `RENDER_GIT_COMMIT`). Lets anyone confirm which
+   *  build is live by hitting `/healthz` — e.g. after a deploy,
+   *  check this matches the merge commit before testing. `null`
+   *  when the env var isn't set (local dev). */
+  gitSha: string | null;
+  /** Short form of `gitSha` (first 7 chars) for quick eyeballing
+   *  against GitHub's short SHAs. `null` when `gitSha` is. */
+  gitShaShort: string | null;
 }
 
 export interface GetManifestResponse {
