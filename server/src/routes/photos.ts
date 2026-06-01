@@ -21,12 +21,28 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
-import type { ApiError, PhotoUrlResponse } from "@forensic/shared";
+import { z } from "zod";
+import type {
+  ApiError,
+  PhotoUrlResponse,
+  PhotoUrlsBatchResponse,
+} from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { presignedGet } from "../r2.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 5 * 60;
+
+// Hard cap on batch size. Picked to comfortably hold real-world
+// inspection projects (Manandhar's ~1000) in one request while still
+// bounding signing CPU per call. Clients with more photos should
+// chunk; the web app does this automatically.
+const MAX_BATCH_PHOTO_IDS = 1000;
+
+const PhotoUrlsBatchBodySchema = z.object({
+  photoIds: z.array(z.string().uuid()).min(1).max(MAX_BATCH_PHOTO_IDS),
+  kind: z.enum(["thumb", "image"]),
+});
 
 interface PhotoParams {
   projectId: string;
@@ -150,4 +166,113 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
       return await presignedUrlEnvelope(resolved.key);
     }
   );
+
+  // -----------------------------------------------------------------
+  // POST /v1/projects/:projectId/photo-urls
+  //
+  // Batch URL minting. Body: `{ photoIds: string[], kind: "thumb" | "image" }`.
+  // Returns `{ urls: {photoId: url}, expiresAt }`. Up to 1000 IDs per
+  // call. The single-photo GET endpoints above still exist for the
+  // lightbox / single-photo paths; this is the high-throughput
+  // sibling for grid renders.
+  //
+  // Replaces what was previously N parallel GETs from the web photo
+  // grid (each one a separate auth + DB-lookup + R2-sign round trip)
+  // with a single auth + single DB lookup + N local crypto sigs.
+  // Crucial on Render's free tier where N=1000 concurrent requests
+  // OOM'd the server and surfaced as 502s with stripped CORS headers
+  // (Build #5.19.1 diagnosis).
+  // -----------------------------------------------------------------
+  app.post<{
+    Params: { projectId: string };
+    Body: unknown;
+    Reply: PhotoUrlsBatchResponse | ApiError;
+  }>("/v1/projects/:projectId/photo-urls", async (request, reply) => {
+    const { projectId } = request.params;
+    const parsed = PhotoUrlsBatchBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({
+        error: "bad_request",
+        message: "Request body failed validation",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+    const { photoIds, kind } = parsed.data;
+
+    // Project-ownership gate. One round trip regardless of N.
+    const { data: project, error: projectErr } = await supabaseAdmin
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("owner_id", request.user.id)
+      .maybeSingle();
+    if (projectErr) {
+      request.log.error({ err: projectErr, projectId }, "Project ownership check failed");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+    if (!project) {
+      reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
+      return;
+    }
+
+    // For `thumb` kind we want thumb-or-fallback-to-photo, same as
+    // the single-photo endpoint. We fetch both kinds in one query
+    // and pick per-photo below. For `image` we only need `photo`.
+    const wantedKinds = kind === "thumb" ? ["thumb", "photo"] : ["photo"];
+
+    const { data: files, error: filesErr } = await supabaseAdmin
+      .from("files")
+      .select("object_key, photo_id, kind")
+      .eq("project_id", projectId)
+      .in("photo_id", photoIds)
+      .in("kind", wantedKinds);
+    if (filesErr) {
+      request.log.error({ err: filesErr, projectId }, "Files lookup failed");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+
+    // Pick the best key per photo: prefer "thumb" when present,
+    // fall back to "photo" if not. For kind="image" this just picks
+    // the "photo" row (the only one in `wantedKinds`).
+    const preferred = new Map<string, string>(); // photoId → object_key
+    for (const row of files ?? []) {
+      const photoId = row.photo_id as string;
+      const rowKind = row.kind as string;
+      const objectKey = row.object_key as string;
+      if (kind === "thumb") {
+        const existing = preferred.get(photoId);
+        // Promote thumb over photo; keep photo only if no thumb seen.
+        if (rowKind === "thumb" || existing == null) {
+          preferred.set(photoId, objectKey);
+        }
+      } else {
+        if (rowKind === "photo") preferred.set(photoId, objectKey);
+      }
+    }
+
+    // Sign URLs in parallel. `presignedGet` is local crypto — no
+    // network — so Promise.all is fine; it just lets the SDK's
+    // internal async hops interleave with each other. Microseconds
+    // per call; even 1000 fits well inside Render's request budget.
+    const entries = await Promise.all(
+      Array.from(preferred.entries()).map(async ([photoId, key]) => {
+        const url = await presignedGet({
+          objectKey: key,
+          expiresInSeconds: DOWNLOAD_URL_TTL_SECONDS,
+        });
+        return [photoId, url] as const;
+      })
+    );
+
+    const urls: Record<string, string> = {};
+    for (const [photoId, url] of entries) urls[photoId] = url;
+
+    return {
+      urls,
+      expiresAt: new Date(Date.now() + DOWNLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+    };
+  });
 };
