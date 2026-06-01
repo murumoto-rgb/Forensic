@@ -56,6 +56,23 @@ export function PhotoPin({ photo, onClick, onDragEnd, highlighted }: Props) {
       draggable={onDragEnd != null}
       onDragEnd={(e: KonvaEventObject<DragEvent>) => {
         onDragEnd?.(e.target.x(), e.target.y());
+        // After dropping, the pointer is still over the pin — restore
+        // the "move" affordance (drag end can reset it to default).
+        const container = e.target.getStage()?.container();
+        if (container) container.style.cursor = "move";
+      }}
+      // Cursor affordance: show the move cursor over a draggable pin,
+      // and the zoom-in cursor over a click-only pin (opens lightbox).
+      // On leave, hand the cursor back to the stage's "grab" (pan).
+      onMouseEnter={(e: KonvaEventObject<MouseEvent>) => {
+        const container = e.target.getStage()?.container();
+        if (!container) return;
+        container.style.cursor =
+          onDragEnd != null ? "move" : onClick != null ? "zoom-in" : "default";
+      }}
+      onMouseLeave={(e: KonvaEventObject<MouseEvent>) => {
+        const container = e.target.getStage()?.container();
+        if (container) container.style.cursor = "grab";
       }}
       listening={onClick != null || onDragEnd != null}
     >

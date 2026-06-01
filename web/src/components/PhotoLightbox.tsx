@@ -1,6 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Photo } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+
+// How many photos on each side of the current one to pre-fetch
+// (presigned URL + decode the image bytes into the browser cache) so
+// paging left/right shows the next image instantly instead of after
+// a round-trip.
+const PRELOAD_RADIUS = 2;
 
 /**
  * Modal full-size photo viewer. Click thumbnail in PhotoGrid → this
@@ -30,38 +36,99 @@ export function PhotoLightbox({ projectId, photos, startIndex, onClose }: Props)
 
   const photo = photos[index];
 
-  // Fetch presigned URL whenever the active photo changes. Cancel the
-  // previous request via the captured `cancelled` flag so an in-flight
-  // older fetch can't overwrite the newer one if the user is paging
-  // quickly.
+  // Session cache of presigned image URLs keyed by photo id, so
+  // re-visiting a photo (or paging back to it) doesn't re-fetch.
+  // Presigned URLs have a 5-min TTL; if one expires mid-session the
+  // <img> onerror path would surface it, which is acceptable for a
+  // lightbox session. Also tracks which ids we've kicked an image
+  // preload for, so we don't decode the same bytes twice.
+  const urlCacheRef = useRef<Map<string, string>>(new Map());
+  const preloadedRef = useRef<Set<string>>(new Set());
+
+  // Fetch (or read cached) presigned URL for the active photo. Cancel
+  // the previous request via the captured `cancelled` flag so an
+  // in-flight older fetch can't overwrite the newer one if the user
+  // pages quickly.
   useEffect(() => {
     if (!photo) return;
     let cancelled = false;
-    setUrl(null);
     setLoadError(null);
     setPending(false);
-    api
-      .getPhotoImageUrl(projectId, photo.id)
-      .then((res) => {
-        if (!cancelled) setUrl(res.url);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        // 404 = binary not uploaded from the iPhone yet (often still
-        // in iCloud). Transient; show a "pending upload" message
-        // rather than an error code.
-        if (e instanceof ApiError && e.status === 404) {
-          setPending(true);
-        } else if (e instanceof ApiError) {
-          setLoadError(`${e.status} ${e.message}`);
-        } else {
-          setLoadError("Failed to load image");
-        }
-      });
+
+    const cached = urlCacheRef.current.get(photo.id);
+    if (cached) {
+      setUrl(cached);
+    } else {
+      setUrl(null);
+      api
+        .getPhotoImageUrl(projectId, photo.id)
+        .then((res) => {
+          if (cancelled) return;
+          urlCacheRef.current.set(photo.id, res.url);
+          setUrl(res.url);
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return;
+          // 404 = binary not uploaded from the iPhone yet (often still
+          // in iCloud). Transient; show a "pending upload" message
+          // rather than an error code.
+          if (e instanceof ApiError && e.status === 404) {
+            setPending(true);
+          } else if (e instanceof ApiError) {
+            setLoadError(`${e.status} ${e.message}`);
+          } else {
+            setLoadError("Failed to load image");
+          }
+        });
+    }
     return () => {
       cancelled = true;
     };
   }, [projectId, photo]);
+
+  // Preload the neighbours (presigned URL + decode the bytes into the
+  // browser HTTP cache via a throwaway Image) so paging shows the
+  // next photo instantly. Fire-and-forget; failures here are silent —
+  // the real fetch path above handles the photo if the user actually
+  // navigates to it.
+  useEffect(() => {
+    if (photos.length <= 1) return;
+    let cancelled = false;
+    for (let delta = -PRELOAD_RADIUS; delta <= PRELOAD_RADIUS; delta++) {
+      if (delta === 0) continue;
+      const i = (index + delta + photos.length) % photos.length;
+      const neighbour = photos[i];
+      if (!neighbour) continue;
+
+      const warm = (imageUrl: string) => {
+        if (cancelled || preloadedRef.current.has(neighbour.id)) return;
+        preloadedRef.current.add(neighbour.id);
+        const pre = new window.Image();
+        pre.src = imageUrl;
+      };
+
+      const cached = urlCacheRef.current.get(neighbour.id);
+      if (cached) {
+        warm(cached);
+      } else {
+        api
+          .getPhotoImageUrl(projectId, neighbour.id)
+          .then((res) => {
+            if (cancelled) return;
+            urlCacheRef.current.set(neighbour.id, res.url);
+            warm(res.url);
+          })
+          .catch(() => {
+            // Silent — neighbour might be a pending-upload 404 or a
+            // transient failure. The on-navigate fetch will surface
+            // it properly if the user goes there.
+          });
+      }
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, photos, index]);
 
   // Esc / ← / → key handling.
   useEffect(() => {
