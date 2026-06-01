@@ -222,14 +222,43 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
     // and pick per-photo below. For `image` we only need `photo`.
     const wantedKinds = kind === "thumb" ? ["thumb", "photo"] : ["photo"];
 
-    const { data: files, error: filesErr } = await supabaseAdmin
-      .from("files")
-      .select("object_key, photo_id, kind")
-      .eq("project_id", projectId)
-      .in("photo_id", photoIds)
-      .in("kind", wantedKinds);
-    if (filesErr) {
-      request.log.error({ err: filesErr, projectId }, "Files lookup failed");
+    // Fetch the file rows in chunks of photo IDs rather than one giant
+    // `.in("photo_id", [all 944 ids])`. Two reasons (Build #5.20.1 hotfix
+    // for the 500 "Database error" the single `.in()` produced on
+    // Manandhar):
+    //   1. supabase-js encodes `.in()` as a PostgREST query-string filter
+    //      (`photo_id=in.(uuid,uuid,…)`). ~944 UUIDs is a ~35 KB URL,
+    //      which blows past PostgREST/Kong's request-URI length limit and
+    //      fails the request outright.
+    //   2. PostgREST defaults to a 1000-row response cap. thumb+photo for
+    //      ~1000 photos is up to ~2000 rows, so even if the URL fit, the
+    //      tail would be silently truncated. Chunking at 100 photo IDs
+    //      keeps each result set at ≤200 rows — comfortably under the cap.
+    // Chunks run concurrently (server→Supabase, same region, fast).
+    const DB_IN_CHUNK = 100;
+    const idChunks: string[][] = [];
+    for (let i = 0; i < photoIds.length; i += DB_IN_CHUNK) {
+      idChunks.push(photoIds.slice(i, i + DB_IN_CHUNK));
+    }
+
+    type FileRow = { object_key: string; photo_id: string; kind: string };
+    let files: FileRow[];
+    try {
+      const chunkResults = await Promise.all(
+        idChunks.map(async (idChunk) => {
+          const { data, error } = await supabaseAdmin
+            .from("files")
+            .select("object_key, photo_id, kind")
+            .eq("project_id", projectId)
+            .in("photo_id", idChunk)
+            .in("kind", wantedKinds);
+          if (error) throw error;
+          return (data ?? []) as FileRow[];
+        })
+      );
+      files = chunkResults.flat();
+    } catch (err) {
+      request.log.error({ err, projectId }, "Files lookup failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
