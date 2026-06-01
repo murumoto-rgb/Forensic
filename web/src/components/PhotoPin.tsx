@@ -19,6 +19,14 @@ import type { Photo } from "@forensic/shared";
  */
 interface Props {
   photo: Photo;
+  /**
+   * Total number of photos in the same group (including this primary).
+   * When > 1, a small "+N" badge renders on the upper-right of the
+   * pin so the user can see at a glance that this position has
+   * additional reshoots stacked underneath. Defaults to 1 (single
+   * photo).
+   */
+  groupSize?: number;
   onClick?: () => void;
   onDragEnd?: (newPlanPixelX: number, newPlanPixelY: number) => void;
   highlighted?: boolean;
@@ -26,8 +34,17 @@ interface Props {
 
 const HEADING_LENGTH = 22;
 const PIN_RADIUS = 10;
+const BADGE_RADIUS = 7;
+const BADGE_OFFSET_X = PIN_RADIUS - 1;
+const BADGE_OFFSET_Y = -PIN_RADIUS + 1;
 
-export function PhotoPin({ photo, onClick, onDragEnd, highlighted }: Props) {
+export function PhotoPin({
+  photo,
+  groupSize = 1,
+  onClick,
+  onDragEnd,
+  highlighted,
+}: Props) {
   if (photo.planPixelX == null || photo.planPixelY == null) {
     return null;
   }
@@ -102,6 +119,28 @@ export function PhotoPin({ photo, onClick, onDragEnd, highlighted }: Props) {
         width={PIN_RADIUS * 2}
         align="center"
       />
+      {groupSize > 1 && (
+        <>
+          <Circle
+            x={BADGE_OFFSET_X}
+            y={BADGE_OFFSET_Y}
+            radius={BADGE_RADIUS}
+            fill="#f59e0b"
+            stroke="white"
+            strokeWidth={1.5}
+          />
+          <Text
+            text={`+${groupSize - 1}`}
+            fontSize={9}
+            fontStyle="bold"
+            fill="white"
+            x={BADGE_OFFSET_X - BADGE_RADIUS}
+            y={BADGE_OFFSET_Y - 4.5}
+            width={BADGE_RADIUS * 2}
+            align="center"
+          />
+        </>
+      )}
     </Group>
   );
 }

@@ -95,27 +95,36 @@ export function ProjectPlanPage({ session }: Props) {
     };
   }, [id]);
 
-  // PUT with one automatic retry on a network-level failure (no
-  // HTTP response). Render's free tier spins the server down after
-  // ~15 min idle; the first request after that hits a cold-start
-  // window where the connection can drop. A single retry after a
-  // short backoff converts most of those transient blips into a
-  // successful save without the user noticing. HTTP errors (4xx/5xx,
-  // including 409) are NOT retried — they're deterministic and the
-  // caller handles them.
+  // PUT with up to 3 retries on a network-level failure. Render's
+  // free tier spins the server down after ~15 min idle; the first
+  // request after that can take 20-30 sec to wake up. Backoff
+  // schedule: 2s → 5s → 10s (up to ~17 sec of wait spread across 3
+  // tries) which covers nearly every cold-start window without
+  // making a normal save feel slow. HTTP errors (4xx/5xx, including
+  // 409) are NOT retried — they're deterministic and the caller
+  // handles them.
   async function putWithRetry(
     projectId: string,
     project: Project,
     expectedRevision: string
   ) {
-    try {
-      return await api.putProject(projectId, project, expectedRevision);
-    } catch (e: unknown) {
-      if (e instanceof ApiError) throw e; // deterministic — don't retry
-      // Network-level failure: wait for a possible cold-start, retry once.
-      await new Promise((r) => setTimeout(r, 2000));
-      return await api.putProject(projectId, project, expectedRevision);
+    const backoffsMs = [0, 2000, 5000, 10000];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < backoffsMs.length; attempt++) {
+      const delay = backoffsMs[attempt] ?? 0;
+      if (delay > 0) {
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      try {
+        return await api.putProject(projectId, project, expectedRevision);
+      } catch (e: unknown) {
+        if (e instanceof ApiError) throw e; // deterministic — don't retry
+        lastErr = e;
+        // Else: network-level. Try again after the next backoff
+        // unless we've exhausted attempts.
+      }
     }
+    throw lastErr;
   }
 
   // Background save loop. Caller pre-populates `pendingRef` with

@@ -164,8 +164,31 @@ export function FloorPlanCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // Photos that belong to this plan.
-  const planPhotos = photos.filter((p) => p.floorPlanID === plan.id);
+  // Photos to render as pins for this plan. Filter rules:
+  //   * Belongs to this plan (floorPlanID matches).
+  //   * Either ungrouped (no groupID) OR the primary photo of its
+  //     group — non-primary group members would stack on top of the
+  //     primary so we suppress them at the canvas layer. The pin
+  //     gets a "+N" badge to show how many other photos sit at the
+  //     same point.
+  // We also compute the per-pin group count once here so the pin
+  // component doesn't have to re-scan the photos array.
+  const groupCounts = new Map<string, number>();
+  for (const p of photos) {
+    if (p.groupID) {
+      groupCounts.set(p.groupID, (groupCounts.get(p.groupID) ?? 0) + 1);
+    }
+  }
+  const planPins = photos.filter(
+    (p) =>
+      p.floorPlanID === plan.id &&
+      (p.groupID == null || p.isPrimary)
+  );
+  // Suppressed count = photos that belong to this plan but are non-
+  // primary group members. Surfaced in the footer so the user knows
+  // the discrepancy between "pins on canvas" and "photos on this plan".
+  const planPhotoCount = photos.filter((p) => p.floorPlanID === plan.id).length;
+  const suppressedCount = planPhotoCount - planPins.length;
 
   // Compute scale + stage size based on container width vs plan
   // dimensions.
@@ -242,11 +265,20 @@ export function FloorPlanCanvas({
             (scroll to zoom · drag to pan)
           </span>
         </div>
-        {isPanned && (
+        {isPanned ? (
           <button
             type="button"
             onClick={resetView}
-            className="rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+            className="rounded border border-amber-700 bg-amber-950/40 px-2 py-1 text-amber-200 hover:bg-amber-900/40"
+          >
+            Reset view
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={resetView}
+            className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800"
+            title="Restore the auto-fit view (also useful if you've panned/zoomed to an empty area)"
           >
             Reset view
           </button>
@@ -291,12 +323,16 @@ export function FloorPlanCanvas({
           {plan.distress.map((mark) => (
             <DistressGlyph key={mark.id} mark={mark} />
           ))}
-          {planPhotos.map((photo) => {
+          {planPins.map((photo) => {
             const photoIndex = photos.indexOf(photo);
+            const groupSize = photo.groupID
+              ? groupCounts.get(photo.groupID) ?? 1
+              : 1;
             return (
               <PhotoPin
                 key={photo.id}
                 photo={photo}
+                groupSize={groupSize}
                 highlighted={highlightedPhotoId === photo.id}
                 onClick={
                   onSelectPhoto ? () => onSelectPhoto(photoIndex) : undefined
@@ -312,8 +348,16 @@ export function FloorPlanCanvas({
         </Layer>
       </Stage>
       <div className="mt-2 text-xs text-neutral-500">
-        {planPhotos.length} photo{planPhotos.length === 1 ? "" : "s"} on this
-        plan · {plan.distress.length} distress mark
+        {planPhotoCount} photo{planPhotoCount === 1 ? "" : "s"} on this plan
+        {suppressedCount > 0 && (
+          <>
+            {" "}({planPins.length} pin{planPins.length === 1 ? "" : "s"};{" "}
+            {suppressedCount} reshoot{suppressedCount === 1 ? "" : "s"}{" "}
+            shown as +N badges)
+          </>
+        )}
+        {" · "}
+        {plan.distress.length} distress mark
         {plan.distress.length === 1 ? "" : "s"}
         {imageState.kind === "ready" && (
           <>
