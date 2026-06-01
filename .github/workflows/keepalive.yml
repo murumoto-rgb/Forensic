@@ -1,0 +1,55 @@
+name: Keepalive — ping Render server
+
+# Render free-tier web services spin down after ~15 min of idle and
+# take 20-60 sec to spin back up on the next request. That cold-
+# start window manifests as "Failed to load project" toasts on the
+# web and "Save failed: Couldn't reach the server" banners on
+# pin-drag. This workflow keeps the server warm by hitting /healthz
+# every 14 min, which is well under the 15-min idle threshold.
+#
+# Cost: ~5 seconds of free-tier GitHub Actions minutes per ping × 4
+# pings/hour × 24 hours = ~8 minutes/day, ~240 minutes/month. The
+# free tier allows 2000 minutes/month for public repos (unlimited
+# for private repos owned by personal accounts), so this is in the
+# noise.
+#
+# The endpoint is set via the `RENDER_HEALTHZ_URL` repository secret
+# (set in Settings → Secrets and variables → Actions). Falls back
+# to a no-op log line if the secret isn't set so this workflow
+# doesn't fail loudly on a forked / not-yet-configured repo.
+
+on:
+  schedule:
+    # Every 14 minutes. GitHub cron syntax: minute hour dom month dow.
+    # Note: GitHub Actions schedules can run a few minutes late under
+    # heavy load; running every 14 min (vs every 15) gives margin.
+    - cron: "*/14 * * * *"
+  # Allow manual triggering from the Actions tab for quick wake-ups
+  # before a known-imminent test session.
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the server
+        env:
+          HEALTHZ_URL: ${{ secrets.RENDER_HEALTHZ_URL }}
+        run: |
+          if [ -z "$HEALTHZ_URL" ]; then
+            echo "RENDER_HEALTHZ_URL secret not set — skipping ping."
+            echo "To enable: Settings → Secrets and variables → Actions → New repository secret"
+            echo "  Name: RENDER_HEALTHZ_URL"
+            echo "  Value: https://<your-render-service>.onrender.com/healthz"
+            exit 0
+          fi
+          echo "Pinging $HEALTHZ_URL"
+          # -f: fail on HTTP errors; -s: silent (no progress);
+          # -S: still show errors; --max-time 60: cap wall-clock at
+          # 60 sec to cover a full cold-start without blocking GHA.
+          # Retry 3 times with backoff in case the server is still
+          # warming on the first attempt.
+          curl -fsS --max-time 60 --retry 3 --retry-delay 5 "$HEALTHZ_URL"
+          echo ""
+          echo "Server is awake."

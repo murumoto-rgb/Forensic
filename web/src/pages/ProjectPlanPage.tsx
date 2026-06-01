@@ -95,38 +95,6 @@ export function ProjectPlanPage({ session }: Props) {
     };
   }, [id]);
 
-  // PUT with up to 3 retries on a network-level failure. Render's
-  // free tier spins the server down after ~15 min idle; the first
-  // request after that can take 20-30 sec to wake up. Backoff
-  // schedule: 2s → 5s → 10s (up to ~17 sec of wait spread across 3
-  // tries) which covers nearly every cold-start window without
-  // making a normal save feel slow. HTTP errors (4xx/5xx, including
-  // 409) are NOT retried — they're deterministic and the caller
-  // handles them.
-  async function putWithRetry(
-    projectId: string,
-    project: Project,
-    expectedRevision: string
-  ) {
-    const backoffsMs = [0, 2000, 5000, 10000];
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < backoffsMs.length; attempt++) {
-      const delay = backoffsMs[attempt] ?? 0;
-      if (delay > 0) {
-        await new Promise((r) => setTimeout(r, delay));
-      }
-      try {
-        return await api.putProject(projectId, project, expectedRevision);
-      } catch (e: unknown) {
-        if (e instanceof ApiError) throw e; // deterministic — don't retry
-        lastErr = e;
-        // Else: network-level. Try again after the next backoff
-        // unless we've exhausted attempts.
-      }
-    }
-    throw lastErr;
-  }
-
   // Background save loop. Caller pre-populates `pendingRef` with
   // the latest project state, then calls this. If already running,
   // returns immediately — the running loop will see the new
@@ -141,7 +109,11 @@ export function ProjectPlanPage({ session }: Props) {
       const toSave = pendingRef.current;
       pendingRef.current = null;
       try {
-        const resp = await putWithRetry(id, toSave, revisionRef.current);
+        const resp = await api.putProject(
+          id,
+          toSave,
+          revisionRef.current
+        );
         revisionRef.current = resp.revision;
         setRevision(resp.revision);
       } catch (e: unknown) {
@@ -157,11 +129,12 @@ export function ProjectPlanPage({ session }: Props) {
           });
         } else {
           // Network-level failure (no HTTP response) — e.g. a Render
-          // free-tier cold-start window or a dropped connection.
-          // Safari reports this as "Load failed", Chrome as "Failed
-          // to fetch". putWithRetry already retried; surface a
-          // human message and re-stash so the user can retry by
-          // dragging again (or it'll flush on the next drag).
+          // free-tier cold-start window beyond the central retry
+          // schedule, or a dropped connection. Safari reports this
+          // as "Load failed", Chrome as "Failed to fetch". The
+          // central retry in api.ts already burned through 5
+          // attempts (~57 sec total); surface a human message and
+          // re-stash so the user can retry by dragging again.
           pendingRef.current = toSave;
           setSaveStatus({
             kind: "error",
