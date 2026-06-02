@@ -77,13 +77,14 @@ export function ProjectPlanPage({ session }: Props) {
   const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
-  // Preview panel state. `index` is the currently-selected photo;
-  // `scopedPhotoIds` is the set of photos for the "Group" nav scope
-  // (an iOS photo-group's members, or a spatial cluster's members,
-  // or undefined for a singleton — in which case "Group" is hidden
-  // and nav defaults to "All on plan").
+  // Preview panel state. `selectedPhotoId` is the currently-selected
+  // photo (controlled state — passed down to the panel so the canvas
+  // can observe the same value and recenter on it). `scopedPhotoIds`
+  // is the "Group" nav scope (iOS group members, or a cluster's
+  // expanded membership; undefined for a singleton with no group, in
+  // which case the toggle hides and nav defaults to "All on plan").
   const [previewState, setPreviewState] = useState<{
-    index: number;
+    selectedPhotoId: string;
     scopedPhotoIds?: string[];
   } | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
@@ -120,10 +121,7 @@ export function ProjectPlanPage({ session }: Props) {
   // cluster scope). Called by singleton pin clicks.
   function openPreviewForPhoto(idx: number) {
     const photo = project?.photos[idx];
-    if (!photo) {
-      setPreviewState({ index: idx });
-      return;
-    }
+    if (!photo) return;
     // If the clicked photo is part of an iOS group, scope the
     // panel's "Group" tab to that group's members.
     let scopedPhotoIds: string[] | undefined;
@@ -133,7 +131,7 @@ export function ProjectPlanPage({ session }: Props) {
         .map((p) => p.id);
       if (ids && ids.length > 1) scopedPhotoIds = ids;
     }
-    setPreviewState({ index: idx, scopedPhotoIds });
+    setPreviewState({ selectedPhotoId: photo.id, scopedPhotoIds });
   }
 
   // Helper: open the preview for a SPATIAL CLUSTER. The first photo
@@ -147,6 +145,8 @@ export function ProjectPlanPage({ session }: Props) {
     const memberPhotos = memberIndices
       .map((i) => project.photos[i])
       .filter((p): p is Photo => p != null);
+    const lead = memberPhotos[0];
+    if (!lead) return;
     // Expand each cluster member to include its iOS-group siblings,
     // de-duplicate. Lets the engineer cycle through every photo at
     // the cluster centroid in one swipe scope.
@@ -160,9 +160,8 @@ export function ProjectPlanPage({ session }: Props) {
         expanded.add(m.id);
       }
     }
-    const initialIdx = memberIndices[0] ?? 0;
     setPreviewState({
-      index: initialIdx,
+      selectedPhotoId: lead.id,
       scopedPhotoIds: Array.from(expanded),
     });
   }
@@ -722,6 +721,11 @@ export function ProjectPlanPage({ session }: Props) {
                 // not at the click point.
                 openPreviewForCluster(photoIndices);
               }}
+              // Highlight the previewed photo's pin (amber instead
+              // of blue) AND drive the canvas's auto-recenter so the
+              // pin lands at the center of the visible canvas area.
+              highlightedPhotoId={previewState?.selectedPhotoId ?? null}
+              recenterPhotoId={previewState?.selectedPhotoId ?? null}
             />
           )}
         </>
@@ -902,8 +906,13 @@ export function ProjectPlanPage({ session }: Props) {
         <PhotoPreviewPanel
           projectId={id}
           photos={project.photos}
-          startIndex={previewState.index}
+          selectedPhotoId={previewState.selectedPhotoId}
           scopedPhotoIds={previewState.scopedPhotoIds}
+          onSelectPhoto={(photoId) =>
+            setPreviewState((s) =>
+              s ? { ...s, selectedPhotoId: photoId } : null
+            )
+          }
           onClose={() => setPreviewState(null)}
         />
       )}

@@ -88,6 +88,17 @@ interface Props {
     screenX: number,
     screenY: number
   ) => void;
+  /**
+   * When set, the canvas pans (without changing zoom) so that this
+   * photo's pin lands at the centroid of the visible canvas portion
+   * — the portion not covered by the docked preview panel (Build
+   * #5.28.1). Discovered at recenter time via DOM query for
+   * `[data-preview-panel]`. When `null`, no recenter happens. The
+   * effect re-fires whenever this value changes, so the parent
+   * passes the currently-previewed photo id and we recenter on
+   * every preview navigation.
+   */
+  recenterPhotoId?: string | null;
 }
 
 type ImageState =
@@ -131,6 +142,7 @@ export function FloorPlanCanvas({
   onClickDistress,
   bubbleScale = 1,
   onClickCluster,
+  recenterPhotoId,
 }: Props) {
   const [imageState, setImageState] = useState<ImageState>({ kind: "loading" });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -272,6 +284,77 @@ export function FloorPlanCanvas({
   // this rectangle. We don't grow the Stage on zoom to keep the
   // surrounding page layout stable.
   const stageHeight = planHeight * baseFitScale;
+
+  // Recenter on the currently-previewed photo whenever it changes
+  // (Build #5.28.1). The target screen position is the centroid of
+  // the visible portion of the canvas — the portion NOT covered by
+  // the docked preview panel. Panel size is discovered at recenter
+  // time via DOM query so we don't have to thread it as a prop.
+  // Wheel zoom is preserved; only `stagePos` (the Stage's pan
+  // translation) is updated.
+  useEffect(() => {
+    if (!recenterPhotoId) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const photo = photos.find((p) => p.id === recenterPhotoId);
+    if (!photo || photo.planPixelX == null || photo.planPixelY == null) {
+      return;
+    }
+    const canvasRect = stage.container().getBoundingClientRect();
+    let reserveRight = 0;
+    let reserveBottom = 0;
+    const panelEl = document.querySelector<HTMLElement>("[data-preview-panel]");
+    if (panelEl) {
+      const panelRect = panelEl.getBoundingClientRect();
+      // Right-side overlap: how far INTO the canvas (from its right
+      // edge) the panel extends. 0 if the panel is below us or to
+      // the left of our right edge.
+      const overlapV =
+        Math.min(panelRect.bottom, canvasRect.bottom) -
+        Math.max(panelRect.top, canvasRect.top);
+      if (overlapV > 0) {
+        reserveRight = Math.max(
+          0,
+          canvasRect.right - Math.max(panelRect.left, canvasRect.left)
+        );
+        // Clamp: don't reserve more than the canvas is wide.
+        reserveRight = Math.min(reserveRight, canvasRect.width);
+      }
+      // Bottom-side overlap: same idea on the other axis.
+      const overlapH =
+        Math.min(panelRect.right, canvasRect.right) -
+        Math.max(panelRect.left, canvasRect.left);
+      if (overlapH > 0) {
+        reserveBottom = Math.max(
+          0,
+          canvasRect.bottom - Math.max(panelRect.top, canvasRect.top)
+        );
+        reserveBottom = Math.min(reserveBottom, canvasRect.height);
+      }
+      // If the panel covers BOTH axes (right-dock that's taller than
+      // the canvas, etc.) prefer the smaller reserve — otherwise we
+      // double-shift and the photo ends up outside the visible
+      // region. In practice only one of the two is non-zero per
+      // dock direction, but the guard is cheap.
+      if (reserveRight > 0 && reserveBottom > 0) {
+        // Heuristic: the larger reserve is the dock side.
+        if (reserveRight > reserveBottom) reserveBottom = 0;
+        else reserveRight = 0;
+      }
+    }
+    // Center of the visible portion in the canvas's own coordinate
+    // system. (Stage children are positioned in canvas-local space;
+    // we set Stage's translation so a plan-pixel point maps to this
+    // screen position.)
+    const targetScreenX = (stageWidth - reserveRight) / 2;
+    const targetScreenY = (stageHeight - reserveBottom) / 2;
+    // x_screen = x_plan * effectiveScale + stagePos.x → solve for x.
+    setStagePos({
+      x: targetScreenX - photo.planPixelX * effectiveScale,
+      y: targetScreenY - photo.planPixelY * effectiveScale,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recenterPhotoId]);
 
   const distressMode = distressKind != null;
   const distressIsStroke = distressKind === "crackFloor";
