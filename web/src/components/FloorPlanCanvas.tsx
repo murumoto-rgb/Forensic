@@ -291,9 +291,13 @@ export function FloorPlanCanvas({
   }
 
   // Click on the Stage when in distress mode for a POINT kind — place
-  // a single-point mark. `e.target === stage` ensures we don't fire
-  // when the click bubbled up from a PhotoPin or DistressGlyph (those
-  // have their own handlers that already stopped at their level).
+  // a single-point mark. We DON'T check `e.target === stage` here
+  // because clicks on the plan land on the KonvaImage (the plan
+  // background), not the Stage itself, so that check would block
+  // every legitimate placement (Build #5.24.1 fix). Instead, PhotoPin
+  // and DistressGlyph each stop their click bubble at the source, so
+  // any click that reaches the Stage's handler is by definition a
+  // click on the empty plan canvas.
   // Accepts the union of MouseEvent and TouchEvent so the same body
   // can back both Stage `onClick` (mouse) and `onTap` (touch) — the
   // handler only touches `e.target`, not the evt-specific fields.
@@ -303,17 +307,21 @@ export function FloorPlanCanvas({
     if (!distressMode || distressIsStroke) return;
     if (!onAddDistress || distressKind == null) return;
     const stage = e.target.getStage();
-    if (!stage || e.target !== stage) return;
+    if (!stage) return;
     const coords = pointerPlanCoords(stage);
     if (!coords) return;
     onAddDistress(distressKind, [[coords.x, coords.y]]);
   }
 
-  // Stroke drawing — only active for kind === "crackFloor".
+  // Stroke drawing — only active for kind === "crackFloor". Same
+  // bubble-rather-than-target reasoning as handleStageClick above:
+  // PhotoPin / DistressGlyph stop mousedown at the source so we
+  // don't start a stroke at the pin's coordinates if the user
+  // mousedowns on top of one.
   function handleStrokeStart(e: KonvaEventObject<MouseEvent>) {
     if (!distressMode || !distressIsStroke) return;
     const stage = e.target.getStage();
-    if (!stage || e.target !== stage) return;
+    if (!stage) return;
     const coords = pointerPlanCoords(stage);
     if (!coords) return;
     setCurrentStroke([[coords.x, coords.y]]);

@@ -76,6 +76,17 @@ export function DistressGlyph({ mark, editable, onClick }: Props) {
     if (container) container.style.cursor = "crosshair";
   }
 
+  // Stop mousedown / touchstart bubbling so a mousedown on this glyph
+  // (in distress mode) doesn't ALSO trigger the Stage's stroke-start
+  // handler (which would start drawing a `crackFloor` line that
+  // happens to begin on top of the glyph). Click bubble is handled
+  // separately in handleClick above.
+  function handlePointerDown(
+    e: KonvaEventObject<MouseEvent> | KonvaEventObject<TouchEvent>
+  ) {
+    e.cancelBubble = true;
+  }
+
   // crackFloor renders as a connected stroke; everything else is a
   // single dot at the first point.
   if (mark.kind === "crackFloor" && parsed.length >= 2) {
@@ -90,6 +101,8 @@ export function DistressGlyph({ mark, editable, onClick }: Props) {
       <Group
         onClick={editable ? (e) => handleClick(e) : undefined}
         onTap={editable ? (e) => handleClick(e) : undefined}
+        onMouseDown={editable ? (e) => handlePointerDown(e) : undefined}
+        onTouchStart={editable ? (e) => handlePointerDown(e) : undefined}
         onMouseEnter={editable ? handleMouseEnter : undefined}
         onMouseLeave={editable ? handleMouseLeave : undefined}
         listening={editable === true}
@@ -114,8 +127,10 @@ export function DistressGlyph({ mark, editable, onClick }: Props) {
     <Group
       x={first.x}
       y={first.y}
-      onClick={editable ? handleClick : undefined}
-      onTap={editable ? handleClick : undefined}
+      onClick={editable ? (e) => handleClick(e) : undefined}
+      onTap={editable ? (e) => handleClick(e) : undefined}
+      onMouseDown={editable ? (e) => handlePointerDown(e) : undefined}
+      onTouchStart={editable ? (e) => handlePointerDown(e) : undefined}
       onMouseEnter={editable ? handleMouseEnter : undefined}
       onMouseLeave={editable ? handleMouseLeave : undefined}
       listening={editable === true}
