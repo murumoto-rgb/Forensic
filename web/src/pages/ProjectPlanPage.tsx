@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import type { DistressKind, DistressMark, FloorPlan, Project } from "@forensic/shared";
+import type { DistressKind, DistressMark, FloorPlan, Photo, Project } from "@forensic/shared";
 import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { FloorPlanCanvas } from "../components/FloorPlanCanvas";
@@ -98,6 +98,24 @@ export function ProjectPlanPage({ session }: Props) {
   // enum so the first click after toggling on has something to do.
   const [distressUnlocked, setDistressUnlocked] = useState(false);
   const [distressKind, setDistressKind] = useState<DistressKind>("outOfPlumbDoor");
+
+  // Bubble size — uniform scale factor for the photo pins on the
+  // floor plan canvas. Adjustable via toolbar +/- buttons; session
+  // only (no persistence per user choice). Range + step here mirror
+  // the iOS PlanViewer's manual bubble-scale slider for consistency.
+  const [bubbleScale, setBubbleScale] = useState(1);
+  const BUBBLE_SCALE_MIN = 0.5;
+  const BUBBLE_SCALE_MAX = 2.5;
+  const BUBBLE_SCALE_STEP = 0.1;
+
+  // Spatial cluster popover — when the user clicks a clustered
+  // representative pin, list the underlying photos in a small
+  // floating panel and let them pick which one to open.
+  const [clusterPopover, setClusterPopover] = useState<{
+    photoIndices: number[];
+    screenX: number;
+    screenY: number;
+  } | null>(null);
 
   // Staged add (canvas → confirm dialog → save). `points` carries
   // the proposed geometry in plan-pixel coordinates.
@@ -518,6 +536,43 @@ export function ProjectPlanPage({ session }: Props) {
                   {saveStatus.kind === "saving" ? "Saving…" : "Saved ✓"}
                 </span>
               )}
+              {/* Bubble size +/- control. Session-only — resets on
+                  reload. Mirrors the inline display style used by
+                  Zoom on the canvas toolbar (Build #5.26.1). */}
+              <div className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300">
+                <span className="text-neutral-500">Pin size:</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setBubbleScale((s) =>
+                      Math.max(BUBBLE_SCALE_MIN, +(s - BUBBLE_SCALE_STEP).toFixed(2))
+                    )
+                  }
+                  disabled={bubbleScale <= BUBBLE_SCALE_MIN + 1e-6}
+                  className="rounded px-1 text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:text-neutral-600"
+                  title="Smaller pins"
+                  aria-label="Decrease pin size"
+                >
+                  −
+                </button>
+                <span className="w-10 text-center font-mono">
+                  {Math.round(bubbleScale * 100)}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setBubbleScale((s) =>
+                      Math.min(BUBBLE_SCALE_MAX, +(s + BUBBLE_SCALE_STEP).toFixed(2))
+                    )
+                  }
+                  disabled={bubbleScale >= BUBBLE_SCALE_MAX - 1e-6}
+                  className="rounded px-1 text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:text-neutral-600"
+                  title="Larger pins"
+                  aria-label="Increase pin size"
+                >
+                  +
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={togglePinsUnlocked}
@@ -610,6 +665,10 @@ export function ProjectPlanPage({ session }: Props) {
               onClickDistress={
                 distressUnlocked ? handleClickDistress : undefined
               }
+              bubbleScale={bubbleScale}
+              onClickCluster={(photoIndices, screenX, screenY) => {
+                setClusterPopover({ photoIndices, screenX, screenY });
+              }}
             />
           )}
         </>
@@ -784,6 +843,75 @@ export function ProjectPlanPage({ session }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Spatial cluster popover (Build #5.26.1). When the user
+          clicks a cluster representative pin, this floating panel
+          opens at the pin's screen position and lists the
+          underlying photo sequence numbers as chips. Click a chip
+          → opens the lightbox at that photo. Click outside →
+          dismisses. Position is `fixed` against the viewport;
+          coordinates already include the page's bounding-rect
+          offset (the canvas computes that). */}
+      {project && clusterPopover && (
+        <>
+          {/* Invisible scrim catches outside-clicks to dismiss the
+              popover. Z-index sits BELOW the popover itself but
+              ABOVE the canvas so canvas clicks under it don't
+              accidentally place new distress / drag pins. */}
+          <div
+            role="presentation"
+            onClick={() => setClusterPopover(null)}
+            className="fixed inset-0 z-40"
+          />
+          <div
+            role="dialog"
+            aria-label="Photos at this location"
+            className="fixed z-50 flex max-w-xs flex-col gap-2 rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-2xl"
+            style={{
+              left: clusterPopover.screenX,
+              top: clusterPopover.screenY + 18,
+              transform: "translateX(-50%)",
+            }}
+          >
+            <div className="text-xs text-neutral-400">
+              {clusterPopover.photoIndices.length} photos at this
+              location — pick one:
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {clusterPopover.photoIndices
+                .map((idx) => {
+                  const photo = project.photos[idx];
+                  return photo ? { idx, photo } : null;
+                })
+                .filter((x): x is { idx: number; photo: Photo } => x !== null)
+                .sort(
+                  (a, b) => a.photo.sequenceNumber - b.photo.sequenceNumber
+                )
+                .map(({ idx, photo }) => (
+                  <button
+                    key={photo.id}
+                    type="button"
+                    onClick={() => {
+                      setClusterPopover(null);
+                      setLightboxIndex(idx);
+                    }}
+                    title={photo.userCaption ?? `Photo #${photo.sequenceNumber}`}
+                    className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs font-mono text-neutral-100 hover:border-blue-500 hover:bg-blue-950/40"
+                  >
+                    #{photo.sequenceNumber}
+                  </button>
+                ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setClusterPopover(null)}
+              className="self-end text-[10px] text-neutral-500 hover:text-neutral-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
       )}
 
       {project && id && lightboxIndex !== null && (
