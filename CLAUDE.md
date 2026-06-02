@@ -282,18 +282,33 @@ else needs the explicit nudge so the user notices.
 PRs do not auto-merge on green CI. The default is **branches
 stay open** while the user iterates with
 `scripts/sync-ios.sh <branch>` for tight-loop testing. Merge to
-`main` happens only when one of these is true:
+`main` happens when one of these is true:
 
 1. A big task or phase is complete (multiple PRs' worth of work
    that belong together).
-2. The user explicitly asks for a TestFlight deploy, or asks to
-   ship the change.
+2. The user explicitly asks to ship the change.
 
-Both cases imply the user wants the change on their iPhone via
-TestFlight (since merging to `main` auto-triggers the Xcode
-Cloud workflow per its "Branch Changes (main)" start condition).
-Treat a merge as an intentional release event, not a routine
-end-of-PR step.
+**Merging is just promote-to-main, NOT a TestFlight delivery.**
+As of Build #5.24.1 the Xcode Cloud workflow's start condition is
+"Tag Changes matching `ios-release*`" — there is no automatic
+trigger on push to main any more. A merge gets the change onto
+Vercel (web) and into Render's next deploy (server), but the
+iPhone keeps running whatever TestFlight build it was already on
+until the user explicitly fires a new one.
+
+TestFlight is triggered by the user in one of two ways:
+
+- App Store Connect → Apps → Forensic → Xcode Cloud → that
+  workflow → **Start Build** → pick a branch.
+- `git tag ios-release-<n> && git push origin ios-release-<n>`
+  (the canonical way to make the shipped build identifiable in
+  the repo history; preferred for actual release milestones).
+
+So a typical iOS change cycle is now: open PR → iterate on
+branch via `scripts/sync-ios.sh <branch>` for laptop builds →
+merge when correct → **separately decide** whether/when to push
+a new TestFlight build. Web/server-only changes need no
+TestFlight step at all.
 
 Practical implications:
 
@@ -308,3 +323,8 @@ Practical implications:
   `scripts/sync-ios.sh <branch>` or `--pr <N>`, not Xcode Cloud
   (Xcode Cloud is the laptop-free TestFlight path; burning its
   25 free hrs/mo on unmerged branches is the wrong trade).
+- When the user merges a web-only or server-only PR, do NOT
+  prompt them to start a TestFlight build — there's nothing iOS
+  to ship. Only suggest a TestFlight build when an iOS-touching
+  change has just merged AND the user hasn't already indicated
+  they'll ship later.
