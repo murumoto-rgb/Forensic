@@ -45,6 +45,15 @@ async function main() {
     // safer).
     origin: corsOrigins.length === 0 ? false : corsOrigins,
     credentials: true,
+    // @fastify/cors v11 defaults `methods` to "GET,HEAD,POST" —
+    // it leaves PUT, PATCH, DELETE out, so the OPTIONS preflight
+    // for our manifest PUT returns "Access-Control-Allow-Methods:
+    // GET,HEAD,POST" and the browser blocks the actual PUT
+    // ("Method PUT is not allowed by Access-Control-Allow-Methods"
+    // — Build #5.22.1 fix). Web pin-drag save is the only PUT we
+    // do today; DELETE/PATCH are listed pre-emptively for Phase 3
+    // distress add/edit/delete in the near future.
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   await app.register(healthzRoute);
