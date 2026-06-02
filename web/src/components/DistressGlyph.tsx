@@ -1,4 +1,5 @@
 import { Circle, Line, Group } from "react-konva";
+import type { KonvaEventObject } from "konva/lib/Node";
 import type { DistressMark } from "@forensic/shared";
 
 /**
@@ -10,11 +11,19 @@ import type { DistressMark } from "@forensic/shared";
  * `points` is typed as `unknown[]` in the shared schema because
  * Apple's CGPoint encodes as `[x, y]` arrays (see Build #1.1.5).
  * We accept both shapes here defensively: `[x, y]` array or
- * `{ x, y }` object. Phase 3 PR-B will tighten this to a
- * structured `{ x, y }` object in the manifest.
+ * `{ x, y }` object. New marks written from web use `[x, y]` to
+ * match iOS's encoder exactly so round-trips are lossless.
+ *
+ * Click handler: when `editable` is true, the glyph listens for
+ * clicks and forwards them to `onClick`. The parent uses this to
+ * open an editor (change kind / note / delete). When `editable` is
+ * false (the default), the glyph is non-interactive so it can't
+ * swallow clicks intended for pin placement / pan.
  */
 interface Props {
   mark: DistressMark;
+  editable?: boolean;
+  onClick?: () => void;
 }
 
 const COLORS: Record<string, string> = {
@@ -37,11 +46,35 @@ function parsePoint(p: unknown): { x: number; y: number } | null {
   return null;
 }
 
-export function DistressGlyph({ mark }: Props) {
+export function DistressGlyph({ mark, editable, onClick }: Props) {
   const color = COLORS[mark.kind] ?? "#ef4444";
   const parsed = mark.points
     .map(parsePoint)
     .filter((p): p is { x: number; y: number } => p !== null);
+
+  // Konva propagates clicks up the tree; stop the bubble at the
+  // glyph so the Stage's click handler (which would try to place a
+  // new distress mark) doesn't also fire from the same click.
+  // Accepts the MouseEvent | TouchEvent union so the same body backs
+  // both `onClick` (mouse) and `onTap` (touch).
+  function handleClick(
+    e: KonvaEventObject<MouseEvent> | KonvaEventObject<TouchEvent>
+  ) {
+    if (!onClick) return;
+    e.cancelBubble = true;
+    onClick();
+  }
+
+  function handleMouseEnter(e: KonvaEventObject<MouseEvent>) {
+    if (!editable) return;
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = "pointer";
+  }
+  function handleMouseLeave(e: KonvaEventObject<MouseEvent>) {
+    if (!editable) return;
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = "crosshair";
+  }
 
   // crackFloor renders as a connected stroke; everything else is a
   // single dot at the first point.
@@ -50,15 +83,27 @@ export function DistressGlyph({ mark }: Props) {
     for (const p of parsed) {
       flat.push(p.x, p.y);
     }
+    // Wrap the Line in a Group so the click target has consistent
+    // hit-testing across kinds. `hitStrokeWidth` widens the
+    // clickable area beyond the visible stroke for usability.
     return (
-      <Line
-        points={flat}
-        stroke={color}
-        strokeWidth={4}
-        lineCap="round"
-        lineJoin="round"
-        opacity={0.9}
-      />
+      <Group
+        onClick={editable ? (e) => handleClick(e) : undefined}
+        onTap={editable ? (e) => handleClick(e) : undefined}
+        onMouseEnter={editable ? handleMouseEnter : undefined}
+        onMouseLeave={editable ? handleMouseLeave : undefined}
+        listening={editable === true}
+      >
+        <Line
+          points={flat}
+          stroke={color}
+          strokeWidth={4}
+          lineCap="round"
+          lineJoin="round"
+          opacity={0.9}
+          hitStrokeWidth={editable ? 16 : undefined}
+        />
+      </Group>
     );
   }
 
@@ -66,7 +111,15 @@ export function DistressGlyph({ mark }: Props) {
   if (!first) return null;
 
   return (
-    <Group x={first.x} y={first.y}>
+    <Group
+      x={first.x}
+      y={first.y}
+      onClick={editable ? handleClick : undefined}
+      onTap={editable ? handleClick : undefined}
+      onMouseEnter={editable ? handleMouseEnter : undefined}
+      onMouseLeave={editable ? handleMouseLeave : undefined}
+      listening={editable === true}
+    >
       <Circle radius={10} fill={color} opacity={0.85} />
       <Circle radius={10} stroke="white" strokeWidth={2} opacity={0.9} />
     </Group>

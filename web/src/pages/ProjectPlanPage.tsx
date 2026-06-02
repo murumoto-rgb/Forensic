@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import type { Project, FloorPlan } from "@forensic/shared";
+import type { DistressKind, DistressMark, FloorPlan, Project } from "@forensic/shared";
 import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { FloorPlanCanvas } from "../components/FloorPlanCanvas";
@@ -22,6 +22,14 @@ import { PhotoLightbox } from "../components/PhotoLightbox";
  * surface a conflict banner asking the user to reload. Only one
  * PUT in flight at a time; rapid successive drags coalesce — the
  * most-recent local state is saved when the current PUT finishes.
+ *
+ * Distress add / edit / delete: Phase 3 PR-C-3. Pins-unlock and
+ * distress-add are mutually exclusive modes. When distress mode is
+ * on, a kind picker selects the placement target; click (point
+ * kinds) or drag (crackFloor stroke) on the canvas stages a new
+ * mark in a confirm dialog. Clicking an existing distress glyph
+ * opens an editor (change kind / edit note / delete). All
+ * mutations flow through the same save loop as pin moves.
  */
 interface Props {
   session: Session;
@@ -32,6 +40,36 @@ type SaveStatus =
   | { kind: "saving" }
   | { kind: "saved" }
   | { kind: "error"; message: string };
+
+// Pretty labels for the kind picker + editor dropdown. Order
+// mirrors `DistressKind` declaration order in shared/manifest.ts.
+const DISTRESS_KIND_LABELS: Record<DistressKind, string> = {
+  outOfPlumbDoor: "Out of plumb door",
+  doorNotLatching: "Door not latching",
+  crackGradeBeam: "Crack in grade beam",
+  crackFloor: "Crack in floor",
+};
+const DISTRESS_KIND_COLORS: Record<DistressKind, string> = {
+  outOfPlumbDoor: "#ef4444",
+  doorNotLatching: "#f97316",
+  crackGradeBeam: "#a855f7",
+  crackFloor: "#fb923c",
+};
+const DISTRESS_KIND_ORDER: DistressKind[] = [
+  "outOfPlumbDoor",
+  "doorNotLatching",
+  "crackGradeBeam",
+  "crackFloor",
+];
+
+function newUuid(): string {
+  // crypto.randomUUID is available in modern browsers (and the
+  // browsers Vercel's bundle targets). Returns lowercase canonical
+  // form, which matches Postgres's `uuid` storage; iOS handles
+  // either case on decode (`UUID(uuidString:)` is case-insensitive),
+  // so a lowercase id round-trips cleanly to either platform.
+  return crypto.randomUUID();
+}
 
 export function ProjectPlanPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
@@ -53,6 +91,29 @@ export function ProjectPlanPage({ session }: Props) {
     oldX: number;
     oldY: number;
     project: Project;
+  } | null>(null);
+
+  // Distress add mode. Mutually exclusive with `pinsUnlocked`
+  // (toggling one off-the-other). Default kind is the first in the
+  // enum so the first click after toggling on has something to do.
+  const [distressUnlocked, setDistressUnlocked] = useState(false);
+  const [distressKind, setDistressKind] = useState<DistressKind>("outOfPlumbDoor");
+
+  // Staged add (canvas → confirm dialog → save). `points` carries
+  // the proposed geometry in plan-pixel coordinates.
+  const [pendingAddDistress, setPendingAddDistress] = useState<{
+    kind: DistressKind;
+    points: Array<[number, number]>;
+    note: string;
+    planId: string;
+  } | null>(null);
+
+  // Open editor for an existing mark.
+  const [editingDistress, setEditingDistress] = useState<{
+    mark: DistressMark;
+    draftKind: DistressKind;
+    draftNote: string;
+    planId: string;
   } | null>(null);
 
   // Save-queue refs. We never have more than one PUT in flight; if
@@ -158,6 +219,10 @@ export function ProjectPlanPage({ session }: Props) {
     }, 2000);
   }
 
+  // -----------------------------------------------------------------
+  // Pin drag → confirm → save (Build #5.15.1)
+  // -----------------------------------------------------------------
+
   // Drag end → stage the move + show a confirm dialog. We
   // optimistically render the pin at the new spot (so the user sees
   // where it'll land) but DON'T save until they confirm. The pre-
@@ -212,8 +277,161 @@ export function ProjectPlanPage({ session }: Props) {
     setPendingMove(null);
   }
 
+  // -----------------------------------------------------------------
+  // Distress add / edit / delete (Build #5.23.1, Phase 3 PR-C-3)
+  //
+  // All three mutation paths share the same shape:
+  //   1. Compute the new project state with the updated `floorPlans[i].distress`.
+  //   2. Stash it in `pendingRef`.
+  //   3. Kick `runSaveLoop`.
+  // The optimistic React state update happens BEFORE the dialog
+  // closes for delete (so the mark disappears immediately), and
+  // AFTER confirmation for add/edit.
+  // -----------------------------------------------------------------
+
+  // Toggle helpers — pins / distress modes are mutually exclusive so
+  // a single canvas gesture isn't ambiguous (a click would otherwise
+  // either move a pin or place a mark; making them exclusive removes
+  // the ambiguity at the UI level).
+  function togglePinsUnlocked() {
+    setPinsUnlocked((v) => {
+      if (!v) setDistressUnlocked(false);
+      return !v;
+    });
+  }
+  function toggleDistressUnlocked() {
+    setDistressUnlocked((v) => {
+      if (!v) setPinsUnlocked(false);
+      return !v;
+    });
+  }
+
+  // Canvas → "user just placed a new mark". Stage in pendingAddDistress
+  // and the confirm dialog opens. Cancel discards, Add commits +
+  // saves.
+  function handleAddDistressFromCanvas(
+    kind: DistressKind,
+    points: Array<[number, number]>
+  ) {
+    if (!project || !activePlanId) return;
+    setPendingAddDistress({
+      kind,
+      points,
+      note: "",
+      planId: activePlanId,
+    });
+  }
+
+  function confirmAddDistress() {
+    if (!project || !pendingAddDistress) return;
+    const { kind, points, note, planId } = pendingAddDistress;
+    const planIdx = project.floorPlans.findIndex((p) => p.id === planId);
+    const plan = planIdx === -1 ? undefined : project.floorPlans[planIdx];
+    if (!plan) {
+      setPendingAddDistress(null);
+      return;
+    }
+    const newMark: DistressMark = {
+      id: newUuid(),
+      kind,
+      // [[x, y], ...] matches iOS's CGPoint default Codable encoding,
+      // so the mark round-trips through the manifest without iOS
+      // having to handle a second shape on decode.
+      points: points as unknown as unknown[],
+      note: note.trim() === "" ? null : note.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    const updatedPlans = [...project.floorPlans];
+    updatedPlans[planIdx] = {
+      ...plan,
+      distress: [...plan.distress, newMark],
+    };
+    const updated: Project = { ...project, floorPlans: updatedPlans };
+    setProject(updated);
+    setPendingAddDistress(null);
+    pendingRef.current = updated;
+    void runSaveLoop();
+  }
+
+  function cancelAddDistress() {
+    setPendingAddDistress(null);
+  }
+
+  // Canvas → "user clicked an existing mark". Open the editor.
+  function handleClickDistress(markId: string) {
+    if (!project || !activePlanId) return;
+    const plan = project.floorPlans.find((p) => p.id === activePlanId);
+    if (!plan) return;
+    const mark = plan.distress.find((m) => m.id === markId);
+    if (!mark) return;
+    setEditingDistress({
+      mark,
+      draftKind: mark.kind,
+      draftNote: mark.note ?? "",
+      planId: activePlanId,
+    });
+  }
+
+  function saveEditDistress() {
+    if (!project || !editingDistress) return;
+    const { mark, draftKind, draftNote, planId } = editingDistress;
+    const planIdx = project.floorPlans.findIndex((p) => p.id === planId);
+    const plan = planIdx === -1 ? undefined : project.floorPlans[planIdx];
+    if (!plan) {
+      setEditingDistress(null);
+      return;
+    }
+    const markIdx = plan.distress.findIndex((m) => m.id === mark.id);
+    if (markIdx === -1) {
+      setEditingDistress(null);
+      return;
+    }
+    const updatedMark: DistressMark = {
+      ...mark,
+      kind: draftKind,
+      note: draftNote.trim() === "" ? null : draftNote.trim(),
+    };
+    const updatedDistress = [...plan.distress];
+    updatedDistress[markIdx] = updatedMark;
+    const updatedPlans = [...project.floorPlans];
+    updatedPlans[planIdx] = { ...plan, distress: updatedDistress };
+    const updated: Project = { ...project, floorPlans: updatedPlans };
+    setProject(updated);
+    setEditingDistress(null);
+    pendingRef.current = updated;
+    void runSaveLoop();
+  }
+
+  function deleteEditDistress() {
+    if (!project || !editingDistress) return;
+    const { mark, planId } = editingDistress;
+    const planIdx = project.floorPlans.findIndex((p) => p.id === planId);
+    const plan = planIdx === -1 ? undefined : project.floorPlans[planIdx];
+    if (!plan) {
+      setEditingDistress(null);
+      return;
+    }
+    const updatedDistress = plan.distress.filter((m) => m.id !== mark.id);
+    const updatedPlans = [...project.floorPlans];
+    updatedPlans[planIdx] = { ...plan, distress: updatedDistress };
+    const updated: Project = { ...project, floorPlans: updatedPlans };
+    setProject(updated);
+    setEditingDistress(null);
+    pendingRef.current = updated;
+    void runSaveLoop();
+  }
+
+  function cancelEditDistress() {
+    setEditingDistress(null);
+  }
+
   const activePlan: FloorPlan | null =
     project?.floorPlans.find((p) => p.id === activePlanId) ?? null;
+
+  // What the canvas should be in distress mode about (null = off).
+  // Only active when the unlock toggle is on AND we have a plan.
+  const canvasDistressKind: DistressKind | null =
+    distressUnlocked && activePlan ? distressKind : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -302,7 +520,7 @@ export function ProjectPlanPage({ session }: Props) {
               )}
               <button
                 type="button"
-                onClick={() => setPinsUnlocked((v) => !v)}
+                onClick={togglePinsUnlocked}
                 className={
                   pinsUnlocked
                     ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
@@ -316,6 +534,22 @@ export function ProjectPlanPage({ session }: Props) {
               >
                 {pinsUnlocked ? "🔓 Pins unlocked" : "🔒 Unlock pins"}
               </button>
+              <button
+                type="button"
+                onClick={toggleDistressUnlocked}
+                className={
+                  distressUnlocked
+                    ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
+                    : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                }
+                title={
+                  distressUnlocked
+                    ? "Distress mode is on — click or drag the canvas to add. Click to exit."
+                    : "Click to enter distress mode (add / edit / delete marks on this plan)."
+                }
+              >
+                {distressUnlocked ? "✚ Adding distress" : "✚ Add distress"}
+              </button>
             </div>
           </div>
 
@@ -326,6 +560,42 @@ export function ProjectPlanPage({ session }: Props) {
             </div>
           )}
 
+          {distressUnlocked && (
+            <div className="mb-3 flex flex-col gap-2 rounded border border-amber-800 bg-amber-950/30 p-2 text-xs text-amber-200">
+              <div>
+                Distress mode — pick a kind, then{" "}
+                {distressKind === "crackFloor"
+                  ? "drag on the canvas to draw a stroke"
+                  : "click on the canvas to place a point"}
+                . Click an existing mark to edit or delete it. Each
+                save is confirmed first.
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {DISTRESS_KIND_ORDER.map((kind) => {
+                  const selected = kind === distressKind;
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => setDistressKind(kind)}
+                      className={
+                        selected
+                          ? "flex items-center gap-1 rounded border border-amber-400 bg-amber-900/40 px-2 py-1 text-amber-100"
+                          : "flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+                      }
+                    >
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: DISTRESS_KIND_COLORS[kind] }}
+                      />
+                      {DISTRESS_KIND_LABELS[kind]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {activePlan && id && (
             <FloorPlanCanvas
               projectId={id}
@@ -333,11 +603,19 @@ export function ProjectPlanPage({ session }: Props) {
               photos={project.photos}
               onSelectPhoto={(idx) => setLightboxIndex(idx)}
               onPinDrag={pinsUnlocked ? handlePinDrag : undefined}
+              distressKind={canvasDistressKind}
+              onAddDistress={
+                distressUnlocked ? handleAddDistressFromCanvas : undefined
+              }
+              onClickDistress={
+                distressUnlocked ? handleClickDistress : undefined
+              }
             />
           )}
         </>
       )}
 
+      {/* Pin-move confirm */}
       {pendingMove && (
         <div
           role="dialog"
@@ -365,6 +643,144 @@ export function ProjectPlanPage({ session }: Props) {
               >
                 Move it
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Distress-add confirm */}
+      {pendingAddDistress && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+            <div className="text-sm text-neutral-200">
+              Add{" "}
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full align-middle"
+                style={{
+                  background: DISTRESS_KIND_COLORS[pendingAddDistress.kind],
+                }}
+              />{" "}
+              <span className="font-semibold">
+                {DISTRESS_KIND_LABELS[pendingAddDistress.kind]}
+              </span>{" "}
+              {pendingAddDistress.kind === "crackFloor"
+                ? `stroke (${pendingAddDistress.points.length} points)?`
+                : "at this location?"}
+            </div>
+            <label className="flex flex-col gap-1 text-xs text-neutral-400">
+              Note (optional)
+              <textarea
+                value={pendingAddDistress.note}
+                onChange={(e) =>
+                  setPendingAddDistress(
+                    pendingAddDistress
+                      ? { ...pendingAddDistress, note: e.target.value }
+                      : null
+                  )
+                }
+                rows={2}
+                className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100 placeholder:text-neutral-600"
+                placeholder="e.g. east-facing entry door, ¼″ gap top hinge"
+              />
+            </label>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelAddDistress}
+                className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmAddDistress}
+                className="rounded border border-blue-500 bg-blue-600/80 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Distress edit / delete */}
+      {editingDistress && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+            <div className="text-sm text-neutral-200">
+              Edit distress mark
+            </div>
+            <label className="flex flex-col gap-1 text-xs text-neutral-400">
+              Kind
+              <select
+                value={editingDistress.draftKind}
+                onChange={(e) =>
+                  setEditingDistress(
+                    editingDistress
+                      ? {
+                          ...editingDistress,
+                          draftKind: e.target.value as DistressKind,
+                        }
+                      : null
+                  )
+                }
+                className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
+              >
+                {DISTRESS_KIND_ORDER.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {DISTRESS_KIND_LABELS[kind]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-400">
+              Note
+              <textarea
+                value={editingDistress.draftNote}
+                onChange={(e) =>
+                  setEditingDistress(
+                    editingDistress
+                      ? { ...editingDistress, draftNote: e.target.value }
+                      : null
+                  )
+                }
+                rows={3}
+                className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100 placeholder:text-neutral-600"
+                placeholder="(no note)"
+              />
+            </label>
+            <div className="flex justify-between gap-3">
+              <button
+                type="button"
+                onClick={deleteEditDistress}
+                className="rounded border border-red-600 bg-red-950/40 px-4 py-1.5 text-sm text-red-200 hover:bg-red-900/40"
+              >
+                Delete
+              </button>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={cancelEditDistress}
+                  className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveEditDistress}
+                  className="rounded border border-blue-500 bg-blue-600/80 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         </div>
