@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Image as KonvaImage, Rect } from "react-konva";
+import { Stage, Layer, Image as KonvaImage, Rect, Line } from "react-konva";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
-import type { FloorPlan, Photo } from "@forensic/shared";
+import type { DistressKind, FloorPlan, Photo } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 import { PhotoPin } from "./PhotoPin";
 import { DistressGlyph } from "./DistressGlyph";
@@ -15,21 +15,23 @@ import { DistressGlyph } from "./DistressGlyph";
  * resize. User pan + zoom on top of that auto-fit baseline:
  *   - Mouse wheel: focal-point zoom (zooms toward / away from the
  *     cursor). Clamped to 0.25× — 8× of the auto-fit scale.
- *   - Click-and-drag on empty canvas area: pans.
+ *   - Click-and-drag on empty canvas area: pans (unless distress
+ *     mode is on — see below).
  *   - Click on a pin: opens the lightbox (existing handler).
+ *   - Click on a distress glyph: opens its editor (Phase 3 PR-C-3).
  *   - "Reset view" button: returns to auto-fit + center.
  *
- * Pin/distress mark drag-to-reposition + add/delete distress lands in
- * the next Phase 3 PRs (C-2 + C-3).
- *
- * Plan image load states:
- *   - loading: fetching presigned URL
- *   - pending: 404 — iOS hasn't uploaded the plan image yet. Render
- *     a placeholder grid + the pins/distress in their pixel
- *     coordinates so the rendering is still meaningful (you can see
- *     spatial relationships without the underlying plan).
- *   - ready:   image fetched + decoded
- *   - error:   fetch failed for a non-404 reason
+ * Distress add mode (`distressKind != null`): Stage panning is
+ * disabled so a click doesn't pan; instead:
+ *   - Point kinds (outOfPlumbDoor / doorNotLatching / crackGradeBeam):
+ *     a click on empty canvas places a single-point mark.
+ *   - Stroke kind (crackFloor): mousedown → drag → mouseup draws a
+ *     polyline, sampled every ~4 plan-pixels of cursor movement to
+ *     keep the points array reasonable.
+ * In both cases we call `onAddDistress` with the proposed geometry
+ * in plan-pixel coordinates; the parent stages it in a confirm
+ * dialog and only commits on user confirmation, mirroring the
+ * pin-drag UX from Build #5.15.1.
  */
 interface Props {
   projectId: string;
@@ -44,6 +46,23 @@ interface Props {
    */
   onPinDrag?: (photoIndex: number, newPlanPixelX: number, newPlanPixelY: number) => void;
   highlightedPhotoId?: string | null;
+  /**
+   * Non-null = distress add mode is on with this kind selected.
+   * Null/undefined = distress add mode is off (default behaviour:
+   * pan + zoom + pin-drag if `onPinDrag` is set).
+   */
+  distressKind?: DistressKind | null;
+  /**
+   * Fires when the user has finished placing a new distress mark.
+   * `points` are plan-pixel coordinates. Caller stages this in a
+   * confirm dialog before saving.
+   */
+  onAddDistress?: (kind: DistressKind, points: Array<[number, number]>) => void;
+  /**
+   * Fires when the user clicks an existing distress mark. Caller
+   * opens an editor (change kind / note / delete) for it.
+   */
+  onClickDistress?: (markId: string) => void;
 }
 
 type ImageState =
@@ -67,6 +86,14 @@ const MIN_USER_ZOOM = 0.25;
 const MAX_USER_ZOOM = 8;
 const WHEEL_ZOOM_FACTOR = 1.1;
 
+// Minimum spacing between consecutive stroke samples, in PLAN pixels.
+// Keeps a freehand crackFloor stroke at ~10-100 points instead of
+// hundreds, while still rendering smoothly because pixels are
+// converted to screen via `effectiveScale` on render. At 1× zoom on
+// a 3000-px-wide plan, 4 plan-pixels ≈ 2 screen-pixels on a
+// 1500-px-wide container — visually continuous.
+const STROKE_MIN_SAMPLE_DISTANCE = 4;
+
 export function FloorPlanCanvas({
   projectId,
   plan,
@@ -74,6 +101,9 @@ export function FloorPlanCanvas({
   onSelectPhoto,
   onPinDrag,
   highlightedPhotoId,
+  distressKind,
+  onAddDistress,
+  onClickDistress,
 }: Props) {
   const [imageState, setImageState] = useState<ImageState>({ kind: "loading" });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -87,12 +117,23 @@ export function FloorPlanCanvas({
   const [userZoom, setUserZoom] = useState(1);
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
 
+  // In-progress freehand stroke (only while distressKind === "crackFloor"
+  // and the user is mid-drag). Cleared on completion or abort.
+  const [currentStroke, setCurrentStroke] = useState<Array<[number, number]> | null>(null);
+
   // Reset view when switching plans so the new plan starts auto-fit
   // + centered, regardless of where the previous one was zoomed to.
   useEffect(() => {
     setUserZoom(1);
     setStagePos({ x: 0, y: 0 });
   }, [plan.id]);
+
+  // Cancel any in-progress stroke if distress mode turns off or the
+  // kind changes mid-draw. Prevents a half-drawn line lingering on
+  // the canvas after the toggle flips.
+  useEffect(() => {
+    setCurrentStroke(null);
+  }, [distressKind, plan.id]);
 
   // Fetch presigned URL + decode the image.
   useEffect(() => {
@@ -205,6 +246,9 @@ export function FloorPlanCanvas({
   // surrounding page layout stable.
   const stageHeight = planHeight * baseFitScale;
 
+  const distressMode = distressKind != null;
+  const distressIsStroke = distressKind === "crackFloor";
+
   // Focal-point wheel zoom: scale toward/away from the cursor so
   // the pixel under the cursor stays put. Matches the gesture in
   // Google Maps / Figma / most map UIs.
@@ -234,12 +278,93 @@ export function FloorPlanCanvas({
     });
   }
 
+  // Convert the current pointer position from screen-space to
+  // plan-pixel-space using the Stage's current scale + translation.
+  function pointerPlanCoords(stage: Konva.Stage): { x: number; y: number } | null {
+    const p = stage.getPointerPosition();
+    if (!p) return null;
+    const scale = stage.scaleX();
+    return {
+      x: (p.x - stage.x()) / scale,
+      y: (p.y - stage.y()) / scale,
+    };
+  }
+
+  // Click on the Stage when in distress mode for a POINT kind — place
+  // a single-point mark. `e.target === stage` ensures we don't fire
+  // when the click bubbled up from a PhotoPin or DistressGlyph (those
+  // have their own handlers that already stopped at their level).
+  // Accepts the union of MouseEvent and TouchEvent so the same body
+  // can back both Stage `onClick` (mouse) and `onTap` (touch) — the
+  // handler only touches `e.target`, not the evt-specific fields.
+  function handleStageClick(
+    e: KonvaEventObject<MouseEvent> | KonvaEventObject<TouchEvent>
+  ) {
+    if (!distressMode || distressIsStroke) return;
+    if (!onAddDistress || distressKind == null) return;
+    const stage = e.target.getStage();
+    if (!stage || e.target !== stage) return;
+    const coords = pointerPlanCoords(stage);
+    if (!coords) return;
+    onAddDistress(distressKind, [[coords.x, coords.y]]);
+  }
+
+  // Stroke drawing — only active for kind === "crackFloor".
+  function handleStrokeStart(e: KonvaEventObject<MouseEvent>) {
+    if (!distressMode || !distressIsStroke) return;
+    const stage = e.target.getStage();
+    if (!stage || e.target !== stage) return;
+    const coords = pointerPlanCoords(stage);
+    if (!coords) return;
+    setCurrentStroke([[coords.x, coords.y]]);
+  }
+
+  function handleStrokeMove(e: KonvaEventObject<MouseEvent>) {
+    if (!distressMode || !distressIsStroke) return;
+    if (currentStroke == null) return;
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const coords = pointerPlanCoords(stage);
+    if (!coords) return;
+    // Throttle by minimum spacing — both for performance and so the
+    // resulting `points` array isn't dominated by sub-pixel jitter.
+    const last = currentStroke[currentStroke.length - 1];
+    if (last) {
+      const dx = coords.x - last[0];
+      const dy = coords.y - last[1];
+      if (dx * dx + dy * dy < STROKE_MIN_SAMPLE_DISTANCE * STROKE_MIN_SAMPLE_DISTANCE) {
+        return;
+      }
+    }
+    setCurrentStroke([...currentStroke, [coords.x, coords.y]]);
+  }
+
+  function handleStrokeEnd() {
+    if (!distressMode || !distressIsStroke) return;
+    const stroke = currentStroke;
+    setCurrentStroke(null);
+    // Need at least 2 points to make a meaningful line; a single-point
+    // crackFloor would render as nothing (DistressGlyph requires
+    // >=2 for the stroke branch) and isn't useful as a measurement.
+    if (!stroke || stroke.length < 2) return;
+    if (!onAddDistress || distressKind == null) return;
+    onAddDistress(distressKind, stroke);
+  }
+
   function resetView() {
     setUserZoom(1);
     setStagePos({ x: 0, y: 0 });
   }
 
   const isPanned = userZoom !== 1 || stagePos.x !== 0 || stagePos.y !== 0;
+
+  // Flatten the in-progress stroke for the temporary Line preview.
+  const currentStrokeFlat: number[] = [];
+  if (currentStroke) {
+    for (const [x, y] of currentStroke) {
+      currentStrokeFlat.push(x, y);
+    }
+  }
 
   return (
     <div ref={containerRef} className="w-full">
@@ -262,7 +387,11 @@ export function FloorPlanCanvas({
         <div>
           Zoom: <span className="font-mono">{Math.round(userZoom * 100)}%</span>
           <span className="ml-3 text-neutral-600">
-            (scroll to zoom · drag to pan)
+            {distressMode
+              ? distressIsStroke
+                ? "(drag to draw a stroke · scroll to zoom)"
+                : "(click to place · scroll to zoom)"
+              : "(scroll to zoom · drag to pan)"}
           </span>
         </div>
         {isPanned ? (
@@ -293,7 +422,9 @@ export function FloorPlanCanvas({
         scaleY={effectiveScale}
         x={stagePos.x}
         y={stagePos.y}
-        draggable
+        // Disable Stage panning while in distress mode so a click /
+        // drag goes to placement instead of being interpreted as pan.
+        draggable={!distressMode}
         onDragEnd={(e) => {
           // Konva's dragend event bubbles up from inner draggable
           // Nodes. A PhotoPin drag fires its own onDragEnd AND
@@ -309,9 +440,18 @@ export function FloorPlanCanvas({
           }
         }}
         onWheel={handleWheel}
+        // Inline lambdas bridge the prop's specific event type
+        // (MouseEvent for onClick, TouchEvent for onTap) to
+        // handleStageClick's union signature without TS complaints.
+        onClick={(e) => handleStageClick(e)}
+        onTap={(e) => handleStageClick(e)}
+        onMouseDown={handleStrokeStart}
+        onMouseMove={handleStrokeMove}
+        onMouseUp={handleStrokeEnd}
+        onMouseLeave={handleStrokeEnd}
         style={{
           background: "#0a0a0a",
-          cursor: "grab",
+          cursor: distressMode ? "crosshair" : "grab",
           overflow: "hidden",
         }}
       >
@@ -332,8 +472,31 @@ export function FloorPlanCanvas({
             />
           )}
           {plan.distress.map((mark) => (
-            <DistressGlyph key={mark.id} mark={mark} />
+            <DistressGlyph
+              key={mark.id}
+              mark={mark}
+              editable={distressMode && onClickDistress != null}
+              onClick={
+                onClickDistress ? () => onClickDistress(mark.id) : undefined
+              }
+            />
           ))}
+          {/* In-progress freehand stroke (crackFloor) preview. Renders
+              with reduced opacity + dashed style so it's clearly
+              distinguishable from committed marks until the user
+              confirms in the save dialog. */}
+          {currentStroke && currentStroke.length >= 2 && (
+            <Line
+              points={currentStrokeFlat}
+              stroke="#fb923c"
+              strokeWidth={4}
+              lineCap="round"
+              lineJoin="round"
+              opacity={0.6}
+              dash={[8, 6]}
+              listening={false}
+            />
+          )}
           {planPins.map((photo) => {
             const photoIndex = photos.indexOf(photo);
             const groupSize = photo.groupID
