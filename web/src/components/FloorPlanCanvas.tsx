@@ -76,11 +76,18 @@ interface Props {
    * Fires when the user clicks a spatial-cluster representative pin
    * (a single bubble standing in for ≥2 pins that landed within a
    * bubble-radius of each other on the plan). `photoIndices` are
-   * indices into the `photos` array — the parent uses these to drive
-   * the cluster popover. When undefined, cluster reps render but
-   * aren't clickable (view-only).
+   * indices into the `photos` array; `totalPhotos` is the sum of
+   * each cluster member's iOS group size (so the popover can say
+   * "12 photos at this location" honestly even when the visible
+   * pin count is 3). When undefined, cluster reps render but aren't
+   * clickable (view-only).
    */
-  onClickCluster?: (photoIndices: number[], screenX: number, screenY: number) => void;
+  onClickCluster?: (
+    photoIndices: number[],
+    totalPhotos: number,
+    screenX: number,
+    screenY: number
+  ) => void;
 }
 
 type ImageState =
@@ -562,8 +569,10 @@ export function FloorPlanCanvas({
             const firstMember = cluster.members[0];
             if (!firstMember) return null;
 
-            // Singleton cluster: render the pin exactly as before
-            // this PR (own position, own groupSize badge, own click).
+            // Singleton cluster: render the pin at its own position.
+            // `hasMore` is true iff the pin is the lead of an iOS
+            // photo group with > 1 member — the black band signals
+            // that without needing a count.
             if (cluster.members.length === 1) {
               const photo = firstMember;
               const photoIndex = photos.indexOf(photo);
@@ -574,7 +583,7 @@ export function FloorPlanCanvas({
                 <PhotoPin
                   key={photo.id}
                   photo={photo}
-                  groupSize={groupSize}
+                  hasMore={groupSize > 1}
                   scale={bubbleScale}
                   highlighted={highlightedPhotoId === photo.id}
                   onClick={
@@ -591,9 +600,9 @@ export function FloorPlanCanvas({
 
             // Multi-member cluster: render ONE pin at the centroid
             // using the lowest-sequenceNumber member as the visual
-            // lead. Badge shows the count of other pins in the
-            // cluster. Click opens the parent's cluster popover so
-            // the engineer can pick which underlying photo to view.
+            // lead. Black band shows "more than one here"; click
+            // opens the parent's cluster popover so the engineer can
+            // pick which underlying photo to view.
             const lead = cluster.members.reduce(
               (best, p) =>
                 p.sequenceNumber < best.sequenceNumber ? p : best,
@@ -602,15 +611,23 @@ export function FloorPlanCanvas({
             const memberIndices = cluster.members.map((m) =>
               photos.indexOf(m)
             );
-            const otherCount = cluster.members.length - 1;
+            // Total underlying photos = sum of each cluster member's
+            // iOS group size (1 if no group). Surfaced in the
+            // popover's header so the engineer knows the true count
+            // even though no bubble shows a number.
+            const totalPhotos = cluster.members.reduce((sum, m) => {
+              const gs = m.groupID ? groupCounts.get(m.groupID) ?? 1 : 1;
+              return sum + gs;
+            }, 0);
             return (
               <PhotoPin
                 key={`cluster-${lead.id}`}
                 photo={lead}
+                hasMore={true}
+                suppressHeadingArrow={true}
                 scale={bubbleScale}
                 renderX={cluster.centroidX}
                 renderY={cluster.centroidY}
-                badgeOverride={{ count: otherCount }}
                 highlighted={
                   highlightedPhotoId != null &&
                   cluster.members.some((m) => m.id === highlightedPhotoId)
@@ -618,28 +635,21 @@ export function FloorPlanCanvas({
                 onClick={
                   onClickCluster
                     ? () => {
-                        // Convert centroid plan-pixel → screen-pixel
-                        // so the parent can position the popover.
-                        // The Stage's current scale + translation
-                        // already account for the user's wheel zoom
-                        // and pan.
                         const stage = stageRef.current;
                         if (!stage) {
-                          onClickCluster(memberIndices, 0, 0);
+                          onClickCluster(memberIndices, totalPhotos, 0, 0);
                           return;
                         }
                         const screenX =
                           cluster.centroidX * stage.scaleX() + stage.x();
                         const screenY =
                           cluster.centroidY * stage.scaleY() + stage.y();
-                        // Also offset by the Stage's bounding rect in
-                        // the page so the popover lands at the right
-                        // viewport coords, not relative to the Stage.
                         const containerRect = stage
                           .container()
                           .getBoundingClientRect();
                         onClickCluster(
                           memberIndices,
+                          totalPhotos,
                           containerRect.left + screenX,
                           containerRect.top + screenY
                         );

@@ -5,7 +5,7 @@ import type { DistressKind, DistressMark, FloorPlan, Photo, Project } from "@for
 import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { FloorPlanCanvas } from "../components/FloorPlanCanvas";
-import { PhotoLightbox } from "../components/PhotoLightbox";
+import { PhotoPreviewPanel } from "../components/PhotoPreviewPanel";
 
 /**
  * Project floor plan viewer page. Route: `/projects/:id/plan`.
@@ -77,7 +77,15 @@ export function ProjectPlanPage({ session }: Props) {
   const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // Preview panel state. `index` is the currently-selected photo;
+  // `scopedPhotoIds` is the set of photos for the "Group" nav scope
+  // (an iOS photo-group's members, or a spatial cluster's members,
+  // or undefined for a singleton — in which case "Group" is hidden
+  // and nav defaults to "All on plan").
+  const [previewState, setPreviewState] = useState<{
+    index: number;
+    scopedPhotoIds?: string[];
+  } | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
 
   // Pins are NOT draggable by default — the user must explicitly
@@ -108,14 +116,56 @@ export function ProjectPlanPage({ session }: Props) {
   const BUBBLE_SCALE_MAX = 2.5;
   const BUBBLE_SCALE_STEP = 0.1;
 
-  // Spatial cluster popover — when the user clicks a clustered
-  // representative pin, list the underlying photos in a small
-  // floating panel and let them pick which one to open.
-  const [clusterPopover, setClusterPopover] = useState<{
-    photoIndices: number[];
-    screenX: number;
-    screenY: number;
-  } | null>(null);
+  // Helper: open the preview panel for a single photo (no group/
+  // cluster scope). Called by singleton pin clicks.
+  function openPreviewForPhoto(idx: number) {
+    const photo = project?.photos[idx];
+    if (!photo) {
+      setPreviewState({ index: idx });
+      return;
+    }
+    // If the clicked photo is part of an iOS group, scope the
+    // panel's "Group" tab to that group's members.
+    let scopedPhotoIds: string[] | undefined;
+    if (photo.groupID) {
+      const ids = project?.photos
+        .filter((p) => p.groupID === photo.groupID)
+        .map((p) => p.id);
+      if (ids && ids.length > 1) scopedPhotoIds = ids;
+    }
+    setPreviewState({ index: idx, scopedPhotoIds });
+  }
+
+  // Helper: open the preview for a SPATIAL CLUSTER. The first photo
+  // in `memberIndices` (which the canvas sorts by sequence number)
+  // becomes the initial selection; "Group" scope spans all cluster
+  // members PLUS the members' iOS-group siblings (so an engineer
+  // browsing a cluster of group-leads can step through every photo
+  // standing behind any of those leads).
+  function openPreviewForCluster(memberIndices: number[]) {
+    if (memberIndices.length === 0 || !project) return;
+    const memberPhotos = memberIndices
+      .map((i) => project.photos[i])
+      .filter((p): p is Photo => p != null);
+    // Expand each cluster member to include its iOS-group siblings,
+    // de-duplicate. Lets the engineer cycle through every photo at
+    // the cluster centroid in one swipe scope.
+    const expanded = new Set<string>();
+    for (const m of memberPhotos) {
+      if (m.groupID) {
+        for (const sib of project.photos) {
+          if (sib.groupID === m.groupID) expanded.add(sib.id);
+        }
+      } else {
+        expanded.add(m.id);
+      }
+    }
+    const initialIdx = memberIndices[0] ?? 0;
+    setPreviewState({
+      index: initialIdx,
+      scopedPhotoIds: Array.from(expanded),
+    });
+  }
 
   // Staged add (canvas → confirm dialog → save). `points` carries
   // the proposed geometry in plan-pixel coordinates.
@@ -656,7 +706,7 @@ export function ProjectPlanPage({ session }: Props) {
               projectId={id}
               plan={activePlan}
               photos={project.photos}
-              onSelectPhoto={(idx) => setLightboxIndex(idx)}
+              onSelectPhoto={(idx) => openPreviewForPhoto(idx)}
               onPinDrag={pinsUnlocked ? handlePinDrag : undefined}
               distressKind={canvasDistressKind}
               onAddDistress={
@@ -666,8 +716,11 @@ export function ProjectPlanPage({ session }: Props) {
                 distressUnlocked ? handleClickDistress : undefined
               }
               bubbleScale={bubbleScale}
-              onClickCluster={(photoIndices, screenX, screenY) => {
-                setClusterPopover({ photoIndices, screenX, screenY });
+              onClickCluster={(photoIndices) => {
+                // screenX/Y/totalPhotos are unused now — the preview
+                // panel docks to the side / bottom of the viewport,
+                // not at the click point.
+                openPreviewForCluster(photoIndices);
               }}
             />
           )}
@@ -845,81 +898,13 @@ export function ProjectPlanPage({ session }: Props) {
         </div>
       )}
 
-      {/* Spatial cluster popover (Build #5.26.1). When the user
-          clicks a cluster representative pin, this floating panel
-          opens at the pin's screen position and lists the
-          underlying photo sequence numbers as chips. Click a chip
-          → opens the lightbox at that photo. Click outside →
-          dismisses. Position is `fixed` against the viewport;
-          coordinates already include the page's bounding-rect
-          offset (the canvas computes that). */}
-      {project && clusterPopover && (
-        <>
-          {/* Invisible scrim catches outside-clicks to dismiss the
-              popover. Z-index sits BELOW the popover itself but
-              ABOVE the canvas so canvas clicks under it don't
-              accidentally place new distress / drag pins. */}
-          <div
-            role="presentation"
-            onClick={() => setClusterPopover(null)}
-            className="fixed inset-0 z-40"
-          />
-          <div
-            role="dialog"
-            aria-label="Photos at this location"
-            className="fixed z-50 flex max-w-xs flex-col gap-2 rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-2xl"
-            style={{
-              left: clusterPopover.screenX,
-              top: clusterPopover.screenY + 18,
-              transform: "translateX(-50%)",
-            }}
-          >
-            <div className="text-xs text-neutral-400">
-              {clusterPopover.photoIndices.length} photos at this
-              location — pick one:
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {clusterPopover.photoIndices
-                .map((idx) => {
-                  const photo = project.photos[idx];
-                  return photo ? { idx, photo } : null;
-                })
-                .filter((x): x is { idx: number; photo: Photo } => x !== null)
-                .sort(
-                  (a, b) => a.photo.sequenceNumber - b.photo.sequenceNumber
-                )
-                .map(({ idx, photo }) => (
-                  <button
-                    key={photo.id}
-                    type="button"
-                    onClick={() => {
-                      setClusterPopover(null);
-                      setLightboxIndex(idx);
-                    }}
-                    title={photo.userCaption ?? `Photo #${photo.sequenceNumber}`}
-                    className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs font-mono text-neutral-100 hover:border-blue-500 hover:bg-blue-950/40"
-                  >
-                    #{photo.sequenceNumber}
-                  </button>
-                ))}
-            </div>
-            <button
-              type="button"
-              onClick={() => setClusterPopover(null)}
-              className="self-end text-[10px] text-neutral-500 hover:text-neutral-300"
-            >
-              Cancel
-            </button>
-          </div>
-        </>
-      )}
-
-      {project && id && lightboxIndex !== null && (
-        <PhotoLightbox
+      {project && id && previewState !== null && (
+        <PhotoPreviewPanel
           projectId={id}
           photos={project.photos}
-          startIndex={lightboxIndex}
-          onClose={() => setLightboxIndex(null)}
+          startIndex={previewState.index}
+          scopedPhotoIds={previewState.scopedPhotoIds}
+          onClose={() => setPreviewState(null)}
         />
       )}
     </div>
