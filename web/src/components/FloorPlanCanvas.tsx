@@ -6,6 +6,7 @@ import type { DistressKind, FloorPlan, Photo } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 import { PhotoPin } from "./PhotoPin";
 import { DistressGlyph } from "./DistressGlyph";
+import { detectPrimaryClusters } from "../lib/clusterFanning";
 
 /**
  * react-konva canvas hosting the floor plan image as background +
@@ -63,6 +64,23 @@ interface Props {
    * opens an editor (change kind / note / delete) for it.
    */
   onClickDistress?: (markId: string) => void;
+  /**
+   * Uniform scale factor for photo-pin visual size. 1.0 = default;
+   * controlled by the toolbar +/- buttons (Build #5.26.1). Also
+   * drives the spatial-cluster collision radius — bigger pins
+   * cluster at a larger plan-pixel threshold so two pins that
+   * visually overlap also cluster.
+   */
+  bubbleScale?: number;
+  /**
+   * Fires when the user clicks a spatial-cluster representative pin
+   * (a single bubble standing in for ≥2 pins that landed within a
+   * bubble-radius of each other on the plan). `photoIndices` are
+   * indices into the `photos` array — the parent uses these to drive
+   * the cluster popover. When undefined, cluster reps render but
+   * aren't clickable (view-only).
+   */
+  onClickCluster?: (photoIndices: number[], screenX: number, screenY: number) => void;
 }
 
 type ImageState =
@@ -104,6 +122,8 @@ export function FloorPlanCanvas({
   distressKind,
   onAddDistress,
   onClickDistress,
+  bubbleScale = 1,
+  onClickCluster,
 }: Props) {
   const [imageState, setImageState] = useState<ImageState>({ kind: "loading" });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -374,6 +394,35 @@ export function FloorPlanCanvas({
     }
   }
 
+  // Spatial cluster detection — mirror iOS PlanViewerView. Two pins
+  // whose centers fall within one bubble-radius of each other on the
+  // plan get collapsed to a single representative bubble at the
+  // cluster centroid with a "+N" badge showing how many other pins
+  // are stacked there. The collision radius is in PLAN pixels and
+  // scales with the rendered bubble size: at fit-to-screen, a pin's
+  // screen radius is `(BASE_PIN_RADIUS * bubbleScale)`; convert to
+  // plan-pixels via baseFitScale. Result: detection is independent of
+  // the user's wheel zoom (a cluster at zoom=1 stays a cluster at
+  // zoom=4) but responds to the bubble-size slider.
+  //
+  // Disabled when pin drag is active so each pin remains
+  // independently draggable. Otherwise dragging a "representative"
+  // would only move its lead while the cluster centroid stayed
+  // anchored to the unmoved others — confusing.
+  const BASE_PIN_RADIUS_SCREEN = 10;
+  const collisionRadiusPlanPx =
+    onPinDrag != null
+      ? 0 // singleton clusters only
+      : (BASE_PIN_RADIUS_SCREEN * bubbleScale) / Math.max(baseFitScale, 1e-6);
+  const pinClusters = detectPrimaryClusters(
+    planPins,
+    (p) => ({
+      x: p.planPixelX ?? 0,
+      y: p.planPixelY ?? 0,
+    }),
+    collisionRadiusPlanPx
+  );
+
   return (
     <div ref={containerRef} className="w-full">
       {imageState.kind === "pending" && (
@@ -505,23 +554,96 @@ export function FloorPlanCanvas({
               listening={false}
             />
           )}
-          {planPins.map((photo) => {
-            const photoIndex = photos.indexOf(photo);
-            const groupSize = photo.groupID
-              ? groupCounts.get(photo.groupID) ?? 1
-              : 1;
+          {pinClusters.map((cluster) => {
+            // `detectPrimaryClusters` always returns ≥1 member per
+            // cluster, but TS's noUncheckedIndexedAccess can't see
+            // that. Pull the first member with an explicit guard so
+            // the rest of the branch can rely on a defined Photo.
+            const firstMember = cluster.members[0];
+            if (!firstMember) return null;
+
+            // Singleton cluster: render the pin exactly as before
+            // this PR (own position, own groupSize badge, own click).
+            if (cluster.members.length === 1) {
+              const photo = firstMember;
+              const photoIndex = photos.indexOf(photo);
+              const groupSize = photo.groupID
+                ? groupCounts.get(photo.groupID) ?? 1
+                : 1;
+              return (
+                <PhotoPin
+                  key={photo.id}
+                  photo={photo}
+                  groupSize={groupSize}
+                  scale={bubbleScale}
+                  highlighted={highlightedPhotoId === photo.id}
+                  onClick={
+                    onSelectPhoto ? () => onSelectPhoto(photoIndex) : undefined
+                  }
+                  onDragEnd={
+                    onPinDrag
+                      ? (x, y) => onPinDrag(photoIndex, x, y)
+                      : undefined
+                  }
+                />
+              );
+            }
+
+            // Multi-member cluster: render ONE pin at the centroid
+            // using the lowest-sequenceNumber member as the visual
+            // lead. Badge shows the count of other pins in the
+            // cluster. Click opens the parent's cluster popover so
+            // the engineer can pick which underlying photo to view.
+            const lead = cluster.members.reduce(
+              (best, p) =>
+                p.sequenceNumber < best.sequenceNumber ? p : best,
+              firstMember
+            );
+            const memberIndices = cluster.members.map((m) =>
+              photos.indexOf(m)
+            );
+            const otherCount = cluster.members.length - 1;
             return (
               <PhotoPin
-                key={photo.id}
-                photo={photo}
-                groupSize={groupSize}
-                highlighted={highlightedPhotoId === photo.id}
-                onClick={
-                  onSelectPhoto ? () => onSelectPhoto(photoIndex) : undefined
+                key={`cluster-${lead.id}`}
+                photo={lead}
+                scale={bubbleScale}
+                renderX={cluster.centroidX}
+                renderY={cluster.centroidY}
+                badgeOverride={{ count: otherCount }}
+                highlighted={
+                  highlightedPhotoId != null &&
+                  cluster.members.some((m) => m.id === highlightedPhotoId)
                 }
-                onDragEnd={
-                  onPinDrag
-                    ? (x, y) => onPinDrag(photoIndex, x, y)
+                onClick={
+                  onClickCluster
+                    ? () => {
+                        // Convert centroid plan-pixel → screen-pixel
+                        // so the parent can position the popover.
+                        // The Stage's current scale + translation
+                        // already account for the user's wheel zoom
+                        // and pan.
+                        const stage = stageRef.current;
+                        if (!stage) {
+                          onClickCluster(memberIndices, 0, 0);
+                          return;
+                        }
+                        const screenX =
+                          cluster.centroidX * stage.scaleX() + stage.x();
+                        const screenY =
+                          cluster.centroidY * stage.scaleY() + stage.y();
+                        // Also offset by the Stage's bounding rect in
+                        // the page so the popover lands at the right
+                        // viewport coords, not relative to the Stage.
+                        const containerRect = stage
+                          .container()
+                          .getBoundingClientRect();
+                        onClickCluster(
+                          memberIndices,
+                          containerRect.left + screenX,
+                          containerRect.top + screenY
+                        );
+                      }
                     : undefined
                 }
               />
@@ -536,6 +658,13 @@ export function FloorPlanCanvas({
             {" "}({planPins.length} pin{planPins.length === 1 ? "" : "s"};{" "}
             {suppressedCount} reshoot{suppressedCount === 1 ? "" : "s"}{" "}
             shown as +N badges)
+          </>
+        )}
+        {pinClusters.length < planPins.length && (
+          <>
+            {" "}({pinClusters.length} marker
+            {pinClusters.length === 1 ? "" : "s"}{" "}
+            after spatial clustering)
           </>
         )}
         {" · "}
