@@ -64,8 +64,35 @@ export function PhotoPin({
     <Group
       x={photo.planPixelX}
       y={photo.planPixelY}
-      onClick={onClick}
-      onTap={onClick}
+      // Stop click/tap from bubbling up to the Stage. Without this,
+      // a click on a pin while distress mode is on would ALSO fire
+      // the Stage's onClick — which would then try to place a new
+      // distress mark at the pin's location (Build #5.24.1 fix).
+      onClick={
+        onClick
+          ? (e: KonvaEventObject<MouseEvent>) => {
+              e.cancelBubble = true;
+              onClick();
+            }
+          : undefined
+      }
+      onTap={
+        onClick
+          ? (e: KonvaEventObject<TouchEvent>) => {
+              e.cancelBubble = true;
+              onClick();
+            }
+          : undefined
+      }
+      // Stroke-drawing in distress mode listens to mousedown on the
+      // Stage; stop the bubble here so mousedown on a pin doesn't
+      // also start a stroke at the pin's location.
+      onMouseDown={(e: KonvaEventObject<MouseEvent>) => {
+        e.cancelBubble = true;
+      }}
+      onTouchStart={(e: KonvaEventObject<TouchEvent>) => {
+        e.cancelBubble = true;
+      }}
       // When draggable, Konva fires onClick on a simple tap and
       // onDragEnd on a click-and-drag. Both handlers can coexist;
       // Konva picks whichever the gesture matches based on its
