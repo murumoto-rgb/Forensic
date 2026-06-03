@@ -97,6 +97,78 @@ export interface SyncFilesCheckResponse {
   existing: string[];
 }
 
+// ===========================================================================
+// Phase 4 — AI tagging proxy (Build #5.32.1)
+// ===========================================================================
+
+/**
+ * Models the server's `/v1/ai/tag-photo` endpoint accepts. iOS picks
+ * from this list in the Settings sheet; the server validates against
+ * it so a client typo can't bill cents per request to an unintended
+ * model. Add new entries as Anthropic releases them — the underlying
+ * Anthropic SDK call accepts any string the API recognizes.
+ */
+export type AITagPhotoModel =
+  | "claude-sonnet-4-6"
+  | "claude-haiku-4-5";
+
+export interface AITagPhotoRequest {
+  /** Project the photo lives in — used for ownership check + audit. */
+  projectId: string;
+  /** Photo whose bytes the server will fetch from R2 and pass to Anthropic. */
+  photoId: string;
+  /** Which Anthropic model to call. iOS Settings drives this. */
+  model: AITagPhotoModel;
+  /**
+   * Full system prompt the client assembled (controlled vocabulary,
+   * rules, output schema instructions, etc.). Kept on the CLIENT
+   * side so iOS's prompt-template logic stays in one place and the
+   * server doesn't need to know what the prompt looks like — the
+   * server is a thin auth + R2-fetch + Anthropic-forwarding layer.
+   */
+  systemPrompt: string;
+  /**
+   * User-message text accompanying the photo. Usually project
+   * context + final per-photo instructions the client appends after
+   * the system blocks.
+   */
+  userText: string;
+  /**
+   * Anthropic `max_tokens`. Optional — server defaults to 4096
+   * (enough for a structured tag/analysis JSON; bump up for verbose
+   * models). Capped server-side at 16384 so a client typo can't
+   * force a 60-second response.
+   */
+  maxTokens?: number;
+}
+
+export interface AITagPhotoResponse {
+  /**
+   * Raw text the model emitted (concatenation of every `text`-type
+   * content block). Client parses this into its own AIPhotoAnalysis
+   * struct — server doesn't crack the schema open because iOS
+   * already has a mature parser and we don't want to duplicate it.
+   */
+  rawText: string;
+  /** Usage metrics straight from Anthropic, useful for cost tracking. */
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    /**
+     * Tokens that hit the Anthropic prompt cache (cheap, ~0.1×).
+     * Will be 0 until iOS/web opt into prompt caching by adding
+     * `cache_control` markers to the system prompt.
+     */
+    cacheReadTokens: number;
+    /** Tokens written to the prompt cache this call (~1.25×). */
+    cacheCreationTokens: number;
+  };
+  /** Wall-clock duration of the Anthropic call in milliseconds. */
+  durationMs: number;
+  /** Echoes back the model name for the client's audit log. */
+  model: string;
+}
+
 export interface PhotoUrlResponse {
   /** Short-lived presigned R2 GET URL. Place into `<img src>` or
    *  fetch with URLSession directly — no auth header needed. */
