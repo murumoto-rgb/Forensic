@@ -306,40 +306,32 @@ export function FloorPlanCanvas({
     const panelEl = document.querySelector<HTMLElement>("[data-preview-panel]");
     if (panelEl) {
       const panelRect = panelEl.getBoundingClientRect();
-      // Right-side overlap: how far INTO the canvas (from its right
-      // edge) the panel extends. 0 if the panel is below us or to
-      // the left of our right edge.
-      const overlapV =
-        Math.min(panelRect.bottom, canvasRect.bottom) -
-        Math.max(panelRect.top, canvasRect.top);
-      if (overlapV > 0) {
-        reserveRight = Math.max(
-          0,
-          canvasRect.right - Math.max(panelRect.left, canvasRect.left)
-        );
-        // Clamp: don't reserve more than the canvas is wide.
-        reserveRight = Math.min(reserveRight, canvasRect.width);
-      }
-      // Bottom-side overlap: same idea on the other axis.
-      const overlapH =
-        Math.min(panelRect.right, canvasRect.right) -
-        Math.max(panelRect.left, canvasRect.left);
-      if (overlapH > 0) {
-        reserveBottom = Math.max(
-          0,
-          canvasRect.bottom - Math.max(panelRect.top, canvasRect.top)
-        );
-        reserveBottom = Math.min(reserveBottom, canvasRect.height);
-      }
-      // If the panel covers BOTH axes (right-dock that's taller than
-      // the canvas, etc.) prefer the smaller reserve — otherwise we
-      // double-shift and the photo ends up outside the visible
-      // region. In practice only one of the two is non-zero per
-      // dock direction, but the guard is cheap.
-      if (reserveRight > 0 && reserveBottom > 0) {
-        // Heuristic: the larger reserve is the dock side.
-        if (reserveRight > reserveBottom) reserveBottom = 0;
-        else reserveRight = 0;
+      // Read the dock direction directly from the panel's data
+      // attribute — much more reliable than inferring it from the
+      // bounding rect (Build #5.29.1 fix; #5.28.1 inferred from
+      // overlap and a bottom-docked panel — which spans full
+      // viewport width — was mis-detected as a right-docked panel
+      // covering the entire canvas, so the recenter target landed
+      // at x=0 and the plan panned off-screen).
+      const dock = panelEl.getAttribute("data-preview-dock");
+      if (dock === "right") {
+        // Panel docks against the viewport's right edge. Reserve =
+        // how far the panel's left edge intrudes into the canvas's
+        // own horizontal extent.
+        if (panelRect.left < canvasRect.right) {
+          const intrusion =
+            canvasRect.right - Math.max(panelRect.left, canvasRect.left);
+          reserveRight = Math.min(canvasRect.width, Math.max(0, intrusion));
+        }
+      } else if (dock === "bottom") {
+        // Panel docks against the viewport's bottom edge. Reserve =
+        // how far the panel's top edge intrudes into the canvas's
+        // own vertical extent.
+        if (panelRect.top < canvasRect.bottom) {
+          const intrusion =
+            canvasRect.bottom - Math.max(panelRect.top, canvasRect.top);
+          reserveBottom = Math.min(canvasRect.height, Math.max(0, intrusion));
+        }
       }
     }
     // Center of the visible portion in the canvas's own coordinate
