@@ -305,6 +305,7 @@ export function PhotoPreviewPanel({
       aria-modal="false"
       aria-label="Photo preview"
       data-preview-panel="true"
+      data-preview-dock={isWide ? "right" : "bottom"}
       className={dockClass}
     >
       {/* Header — counter / scope toggle / close. */}
