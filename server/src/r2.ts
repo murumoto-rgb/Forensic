@@ -85,6 +85,28 @@ export async function presignedGet(args: {
 }
 
 /**
+ * Read an object's raw bytes from R2. Used by the AI-tagging proxy
+ * (Build #5.32.1) — the server fetches the photo bytes server-side
+ * so the client doesn't have to upload them, and so the Anthropic
+ * call originates from the server's outbound IP, not the user's
+ * browser. Throws on any error including 404; callers wrap with
+ * appropriate HTTP error mapping.
+ */
+export async function getObjectBytes(objectKey: string): Promise<Buffer> {
+  const resp = await r2.send(
+    new GetObjectCommand({
+      Bucket: r2Bucket,
+      Key: objectKey,
+    })
+  );
+  if (!resp.Body) {
+    throw new Error(`R2 GetObject returned no body for ${objectKey}`);
+  }
+  const bytes = await resp.Body.transformToByteArray();
+  return Buffer.from(bytes);
+}
+
+/**
  * Check whether an object already exists in R2. Used by
  * `POST /v1/sync/files/check` so iOS can skip re-uploads on
  * launch-time sync passes.

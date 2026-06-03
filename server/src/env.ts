@@ -32,6 +32,14 @@ const EnvSchema = z.object({
   // down for same-origin only — fine if web is hosted under the
   // same domain).
   CORS_ORIGINS: z.string().default(""),
+
+  // Anthropic API key for the AI-tagging proxy (Build #5.32.1).
+  // OPTIONAL at boot — the rest of the server starts fine without it;
+  // hitting `/v1/ai/tag-photo` without the key returns a clean 503
+  // "AI tagging not configured" rather than crashing the process.
+  // Lets us deploy the endpoint before the env var is set, then add
+  // it in Render's dashboard separately.
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
 });
 
 function loadEnv() {
