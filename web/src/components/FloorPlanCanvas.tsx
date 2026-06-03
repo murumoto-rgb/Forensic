@@ -286,12 +286,16 @@ export function FloorPlanCanvas({
   const stageHeight = planHeight * baseFitScale;
 
   // Recenter on the currently-previewed photo whenever it changes
-  // (Build #5.28.1). The target screen position is the centroid of
-  // the visible portion of the canvas — the portion NOT covered by
-  // the docked preview panel. Panel size is discovered at recenter
-  // time via DOM query so we don't have to thread it as a prop.
-  // Wheel zoom is preserved; only `stagePos` (the Stage's pan
-  // translation) is updated.
+  // (Build #5.28.1, updated #5.34.1). Target = the centroid of the
+  // canvas's CURRENTLY-VISIBLE region in the viewport, minus the
+  // docked preview panel. Earlier passes centered on the Stage's
+  // middle, which lands off-screen vertically whenever the Stage
+  // is taller than the viewport (typical landscape browser +
+  // portrait-ish plan): the pin ended up at Stage-y/2 which —
+  // because canvasRect.top is non-zero and canvasRect.bottom can
+  // exceed window.innerHeight — sat well below the visible centre.
+  // The fix computes the visible rect in viewport coords first,
+  // then converts to Stage-local coords for the pan calculation.
   useEffect(() => {
     if (!recenterPhotoId) return;
     const stage = stageRef.current;
@@ -319,46 +323,48 @@ export function FloorPlanCanvas({
       }
     }
     if (anchorX == null || anchorY == null) return;
+
     const canvasRect = stage.container().getBoundingClientRect();
-    let reserveRight = 0;
-    let reserveBottom = 0;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    // Visible region of the canvas in viewport coords: intersection
+    // of the canvas's bounding rect with the viewport itself. Then
+    // subtract the docked preview panel from whichever side it lives
+    // on. Reading the dock direction from the panel's data attribute
+    // (rather than inferring from overlap) is the Build #5.29.1
+    // discipline — a bottom-docked panel spans full viewport width
+    // and would otherwise look like a giant right-docked panel.
+    let visibleLeft = Math.max(canvasRect.left, 0);
+    let visibleRight = Math.min(canvasRect.right, viewportW);
+    let visibleTop = Math.max(canvasRect.top, 0);
+    let visibleBottom = Math.min(canvasRect.bottom, viewportH);
+
     const panelEl = document.querySelector<HTMLElement>("[data-preview-panel]");
     if (panelEl) {
       const panelRect = panelEl.getBoundingClientRect();
-      // Read the dock direction directly from the panel's data
-      // attribute — much more reliable than inferring it from the
-      // bounding rect (Build #5.29.1 fix; #5.28.1 inferred from
-      // overlap and a bottom-docked panel — which spans full
-      // viewport width — was mis-detected as a right-docked panel
-      // covering the entire canvas, so the recenter target landed
-      // at x=0 and the plan panned off-screen).
       const dock = panelEl.getAttribute("data-preview-dock");
       if (dock === "right") {
-        // Panel docks against the viewport's right edge. Reserve =
-        // how far the panel's left edge intrudes into the canvas's
-        // own horizontal extent.
-        if (panelRect.left < canvasRect.right) {
-          const intrusion =
-            canvasRect.right - Math.max(panelRect.left, canvasRect.left);
-          reserveRight = Math.min(canvasRect.width, Math.max(0, intrusion));
-        }
+        visibleRight = Math.min(visibleRight, panelRect.left);
       } else if (dock === "bottom") {
-        // Panel docks against the viewport's bottom edge. Reserve =
-        // how far the panel's top edge intrudes into the canvas's
-        // own vertical extent.
-        if (panelRect.top < canvasRect.bottom) {
-          const intrusion =
-            canvasRect.bottom - Math.max(panelRect.top, canvasRect.top);
-          reserveBottom = Math.min(canvasRect.height, Math.max(0, intrusion));
-        }
+        visibleBottom = Math.min(visibleBottom, panelRect.top);
       }
     }
-    // Center of the visible portion in the canvas's own coordinate
-    // system. (Stage children are positioned in canvas-local space;
-    // we set Stage's translation so a plan-pixel point maps to this
-    // screen position.)
-    const targetScreenX = (stageWidth - reserveRight) / 2;
-    const targetScreenY = (stageHeight - reserveBottom) / 2;
+
+    // Degenerate intersection (canvas entirely scrolled off, or
+    // panel covers everything). Bail rather than divide by zero or
+    // pan to a nonsense target.
+    if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return;
+
+    // Convert viewport-coord target to Stage-local coords. Stage
+    // children are positioned in canvas-local space (which equals
+    // Stage-local space — Stage fills its container DIV); the Stage
+    // translation we set below maps a plan-pixel point to this
+    // screen position.
+    const targetScreenX =
+      (visibleLeft + visibleRight) / 2 - canvasRect.left;
+    const targetScreenY =
+      (visibleTop + visibleBottom) / 2 - canvasRect.top;
     // x_screen = x_plan * effectiveScale + stagePos.x → solve for x.
     setStagePos({
       x: targetScreenX - anchorX * effectiveScale,
