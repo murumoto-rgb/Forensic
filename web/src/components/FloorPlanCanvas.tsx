@@ -297,9 +297,28 @@ export function FloorPlanCanvas({
     const stage = stageRef.current;
     if (!stage) return;
     const photo = photos.find((p) => p.id === recenterPhotoId);
-    if (!photo || photo.planPixelX == null || photo.planPixelY == null) {
-      return;
+    if (!photo) return;
+    // Resolve the anchor coords. Non-primary group members (the
+    // "reshoots" surfaced via Group nav in the preview panel) don't
+    // carry their own planPixelX/Y in the manifest — only the group's
+    // primary does, and every member of the group shares that
+    // primary's pin on the plan. If the previewed photo lacks its
+    // own coords, fall back to its group primary's. Build #5.30.1
+    // fix; #5.28.1 would silently bail in this case, leaving the
+    // view stuck on whatever the prior recenter target was (often
+    // a different photo entirely).
+    let anchorX: number | null = photo.planPixelX;
+    let anchorY: number | null = photo.planPixelY;
+    if ((anchorX == null || anchorY == null) && photo.groupID) {
+      const primary = photos.find(
+        (p) => p.groupID === photo.groupID && p.isPrimary
+      );
+      if (primary) {
+        anchorX = primary.planPixelX;
+        anchorY = primary.planPixelY;
+      }
     }
+    if (anchorX == null || anchorY == null) return;
     const canvasRect = stage.container().getBoundingClientRect();
     let reserveRight = 0;
     let reserveBottom = 0;
@@ -342,8 +361,8 @@ export function FloorPlanCanvas({
     const targetScreenY = (stageHeight - reserveBottom) / 2;
     // x_screen = x_plan * effectiveScale + stagePos.x → solve for x.
     setStagePos({
-      x: targetScreenX - photo.planPixelX * effectiveScale,
-      y: targetScreenY - photo.planPixelY * effectiveScale,
+      x: targetScreenX - anchorX * effectiveScale,
+      y: targetScreenY - anchorY * effectiveScale,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recenterPhotoId]);
