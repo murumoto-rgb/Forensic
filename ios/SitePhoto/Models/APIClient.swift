@@ -144,6 +144,31 @@ final class APIClient {
         )
     }
 
+    // MARK: Phase 4 — AI tagging proxy (Build #5.32.1)
+
+    /// Forward an AI-tagging call through the Forensic backend. The
+    /// server fetches the photo bytes from R2, calls Anthropic with the
+    /// team key, and returns the concatenated text response. Parsing of
+    /// that text into a `Result` happens client-side (in
+    /// `ClaudeTaggingService.parseResult(fromText:)`) so the server can
+    /// stay a thin pass-through.
+    func tagPhoto(projectId: UUID,
+                  photoId: UUID,
+                  model: String,
+                  systemPrompt: String,
+                  userText: String,
+                  maxTokens: Int? = nil) async throws -> AITagPhotoResponse {
+        let body = AITagPhotoRequest(
+            projectId: projectId.uuidString.lowercased(),
+            photoId: photoId.uuidString.lowercased(),
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxTokens: maxTokens
+        )
+        return try await request("POST", "/v1/ai/tag-photo", body: body)
+    }
+
     // MARK: Direct PUT to R2
 
     /// Upload bytes to an R2 presigned URL. No auth header — the
@@ -348,4 +373,33 @@ struct SyncFilesCheckResponse: Decodable {
 struct PhotoUrlResponse: Decodable {
     let url: String
     let expiresAt: String
+}
+
+// MARK: - Phase 4: AI tagging proxy
+
+/// Request body for `POST /v1/ai/tag-photo`. Mirrors
+/// `AITagPhotoRequest` in `packages/shared/src/api.ts`.
+struct AITagPhotoRequest: Encodable {
+    let projectId: String
+    let photoId: String
+    let model: String
+    let systemPrompt: String
+    let userText: String
+    let maxTokens: Int?
+}
+
+/// Response shape for `POST /v1/ai/tag-photo`. Mirrors
+/// `AITagPhotoResponse` in `packages/shared/src/api.ts`.
+struct AITagPhotoResponse: Decodable {
+    let rawText: String
+    let usage: Usage
+    let durationMs: Int
+    let model: String
+
+    struct Usage: Decodable {
+        let inputTokens: Int
+        let outputTokens: Int
+        let cacheReadTokens: Int
+        let cacheCreationTokens: Int
+    }
 }

@@ -60,6 +60,13 @@ final class ProjectStore {
     /// project to the Forensic server (`ManifestSyncer.sync`). Nil
     /// in tests/previews — safe.
     var onAfterSave: ((Project) -> Void)?
+    /// REST client wired in by `SitePhotoApp.init` after both the store
+    /// and `APIClient` exist. Read by the AI-tagging dispatch in
+    /// `batchAITag(...)` / `PhotoTagEditorSheet.runClaude` when the
+    /// "AI via team server" Settings toggle is on. Nil in tests /
+    /// previews, in which case callers fall back to the device-key
+    /// path automatically.
+    var apiClient: APIClient?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -3600,6 +3607,14 @@ extension ProjectStore {
             }
         }
 
+        // Resolve the AI-dispatch route once, up-front. `useBackend` is
+        // only meaningful when an `APIClient` has been wired in
+        // (`SitePhotoApp.init`); otherwise we silently fall back to the
+        // device-key path. The capture-by-value below keeps the task
+        // closure Sendable-clean.
+        let useBackend = UserDefaults.standard.bool(forKey: "sitephoto.aiTagging.useBackend")
+        let backendAPI: APIClient? = useBackend ? self.apiClient : nil
+
         try await withThrowingTaskGroup(of: PhotoTagResult.self) { group in
             var iterator = work.makeIterator()
 
@@ -3616,16 +3631,33 @@ extension ProjectStore {
                 let promptBlocks = compiled.blocks
                 let vocab = compiled.vocabulary
                 let modelID = AITaggingModel.current.modelIdentifier
+                let projID = projectID
+                let api = backendAPI
                 group.addTask {
-                    await Self.ensureDownloadedStatic(at: url)
                     do {
-                        let r = try await ClaudeTaggingService.tag(
-                            imageURL: url,
-                            photoID: fname,
-                            systemBlocks: promptBlocks,
-                            vocabulary: vocab,
-                            model: modelID
-                        )
+                        let r: ClaudeTaggingService.Result
+                        if let api {
+                            // Backend path: server fetches photo bytes
+                            // from R2, no local download needed.
+                            r = try await ClaudeTaggingService.tagViaBackend(
+                                projectID: projID,
+                                photoID: pid,
+                                promptPhotoID: fname,
+                                systemBlocks: promptBlocks,
+                                vocabulary: vocab,
+                                model: modelID,
+                                apiClient: api
+                            )
+                        } else {
+                            await Self.ensureDownloadedStatic(at: url)
+                            r = try await ClaudeTaggingService.tag(
+                                imageURL: url,
+                                photoID: fname,
+                                systemBlocks: promptBlocks,
+                                vocabulary: vocab,
+                                model: modelID
+                            )
+                        }
                         return PhotoTagResult(photoID: pid, sequenceNumber: seq,
                                               outcome: .success(r))
                     } catch ClaudeTaggingService.Error.missingAPIKey {

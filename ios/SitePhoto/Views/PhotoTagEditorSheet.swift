@@ -842,9 +842,20 @@ struct PhotoTagEditorSheet: View {
         aiRunning = true
         defer { aiRunning = false }
 
+        // Backend dispatch — same toggle the batch tagger reads, so
+        // single-photo and batch behave consistently. Falls back to the
+        // device-key path when the toggle is off or APIClient hasn't
+        // been wired in (tests / previews).
+        let useBackend = UserDefaults.standard.bool(forKey: "sitephoto.aiTagging.useBackend")
+        let backendAPI: APIClient? = useBackend ? store.apiClient : nil
+
         let url = store.imageURL(for: photo, in: project)
-        // Make sure iCloud has the file before we try to read it.
-        await store.ensureDownloaded(url)
+        // Make sure iCloud has the file before we try to read it. Only
+        // needed for the device-key path — backend path reads the photo
+        // straight from R2 on the server.
+        if backendAPI == nil {
+            await store.ensureDownloaded(url)
+        }
 
         do {
             let compiled: PromptCompiler.Result
@@ -858,13 +869,26 @@ struct PhotoTagEditorSheet: View {
                 aiError = e.errorDescription
                 return
             }
-            let r = try await ClaudeTaggingService.tag(
-                imageURL: url,
-                photoID: photo.imageFilename,
-                systemBlocks: compiled.blocks,
-                vocabulary: compiled.vocabulary,
-                model: AITaggingModel.current.modelIdentifier
-            )
+            let r: ClaudeTaggingService.Result
+            if let backendAPI {
+                r = try await ClaudeTaggingService.tagViaBackend(
+                    projectID: project.id,
+                    photoID: photo.id,
+                    promptPhotoID: photo.imageFilename,
+                    systemBlocks: compiled.blocks,
+                    vocabulary: compiled.vocabulary,
+                    model: AITaggingModel.current.modelIdentifier,
+                    apiClient: backendAPI
+                )
+            } else {
+                r = try await ClaudeTaggingService.tag(
+                    imageURL: url,
+                    photoID: photo.imageFilename,
+                    systemBlocks: compiled.blocks,
+                    vocabulary: compiled.vocabulary,
+                    model: AITaggingModel.current.modelIdentifier
+                )
+            }
             // Merge with existing pending suggestions rather than
             // overwriting. Also persist the full structured analysis so
             // the new metadata surface (recommended use, confidence,
