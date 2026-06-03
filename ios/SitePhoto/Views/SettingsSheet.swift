@@ -37,6 +37,20 @@ struct SettingsSheet: View {
     @AppStorage(AITaggingModel.userDefaultsKey)
     private var aiModelRaw: String = AITaggingModel.sonnet.rawValue
 
+    /// When on, AI tagging calls route through the Forensic backend
+    /// (`POST /v1/ai/tag-photo`) instead of being made from the device
+    /// against api.anthropic.com directly. Requires a signed-in Supabase
+    /// session — without one the dispatch falls back to a clear error.
+    /// Shared key with the batch runner + `PhotoTagEditorSheet` so the
+    /// toggle's read/write sides can't drift.
+    @AppStorage(Self.useBackendKey)
+    private var useBackendAI: Bool = false
+
+    /// Shared UserDefaults key for the backend-AI toggle. Same string
+    /// is read by `ProjectStore.batchAITag(...)` and
+    /// `PhotoTagEditorSheet.runClaude()`.
+    static let useBackendKey: String = "sitephoto.aiTagging.useBackend"
+
     /// Minimum confidence required for a tag to render on the photo row,
     /// in the filter bar, in the tag-filter screen, and in the PDF. Tags
     /// below this score stay attached to the photo (so the user can lower
@@ -137,6 +151,16 @@ struct SettingsSheet: View {
                     Text(currentModelSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Toggle(isOn: $useBackendAI) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Use team server for AI")
+                            Text(useBackendAI
+                                 ? "Calls route through the Forensic backend (no device key needed)."
+                                 : "Calls are made from this device using your Anthropic key.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Stepper(value: $aiConcurrency, in: 1...20) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Parallel AI requests")
@@ -148,7 +172,7 @@ struct SettingsSheet: View {
                 } header: {
                     Text("AI Tagging Speed")
                 } footer: {
-                    Text("Tagging model: Sonnet is the careful default; Haiku is roughly 2× faster and 3–4× cheaper but may produce shorter captions and miss subtle distress.\n\nParallel requests: photos processed in flight during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts on warm-cache batches, which run at ~10% of the uncached input cost). The app retries with backoff on rate-limit responses.")
+                    Text("Tagging model: Sonnet is the careful default; Haiku is roughly 2× faster and 3–4× cheaper but may produce shorter captions and miss subtle distress.\n\nTeam server: when on, the photo is tagged by the Forensic backend using a shared Anthropic key — your device key isn't used or required. Requires sign-in.\n\nParallel requests: photos processed in flight during \"Auto-tag all photos.\" Higher values are faster but more likely to hit Anthropic's rate limit. Default 5 (safe for Tier 1 accounts on warm-cache batches, which run at ~10% of the uncached input cost). The app retries with backoff on rate-limit responses.")
                 }
 
                 Section {

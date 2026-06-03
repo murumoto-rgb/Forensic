@@ -21,6 +21,9 @@ struct SitePhotoApp: App {
                                        store: store,
                                        toast: toast)
         store.toastCenter = toast
+        // Lets the AI-tagging dispatch reach the team-server proxy when
+        // the user has flipped the Settings toggle on (Build #5.33.1).
+        store.apiClient = api
         // Wire saves → manifest sync + photo upload. Fire-and-forget;
         // each runs its own retries / toast policy.
         store.onAfterSave = { [weak syncer, weak photoSyncer] project in

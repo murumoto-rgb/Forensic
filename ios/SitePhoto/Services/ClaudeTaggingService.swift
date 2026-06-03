@@ -170,6 +170,74 @@ enum ClaudeTaggingService {
         }
     }
 
+    /// Phase 4 sibling of `tag(...)` that routes through the Forensic
+    /// server (`POST /v1/ai/tag-photo`) instead of calling Anthropic
+    /// directly. The server holds the Anthropic key, fetches the photo
+    /// bytes from R2 (no upload from the device), and returns the
+    /// concatenated text response.
+    ///
+    /// The backend endpoint accepts only single-turn requests today
+    /// (`AITagPhotoRequest.userText` — no message history), so the
+    /// repair-retry loop the device-key path runs on vocabulary
+    /// rejections is intentionally skipped here. Phase 4 follow-up can
+    /// extend the endpoint to accept an assistant prefill + a follow-up
+    /// user message if backend-path repair is worth the complexity.
+    ///
+    /// `promptPhotoID` is what gets echoed back as `photo_id` in the
+    /// JSON (matches the device-key path's `photoID` semantics — iOS
+    /// passes `Photo.imageFilename`). `photoID` (UUID) identifies the
+    /// row the server uses to look the file up in R2.
+    static func tagViaBackend(projectID: UUID,
+                              photoID: UUID,
+                              promptPhotoID: String,
+                              systemBlocks: [PromptCompiler.Block],
+                              vocabulary: ValidationVocabulary = .fallback,
+                              model: String? = nil,
+                              apiClient: APIClient) async throws -> Result {
+        let modelID = model ?? defaultModel
+        // Flatten the compiler's cache-aware block list into one string
+        // — the server's request shape is single-turn and doesn't carry
+        // per-block cache_control markers. iOS's device-key path keeps
+        // the multi-block shape so Anthropic's prompt cache still kicks
+        // in there; the backend path trades that for a smaller, simpler
+        // wire shape.
+        let systemPrompt = systemBlocks
+            .map(\.text)
+            .joined(separator: "\n\n")
+        let userText = userPrompt(photoID: promptPhotoID)
+
+        let resp: AITagPhotoResponse
+        do {
+            resp = try await apiClient.tagPhoto(
+                projectId: projectID,
+                photoId: photoID,
+                model: modelID,
+                systemPrompt: systemPrompt,
+                userText: userText,
+                maxTokens: nil
+            )
+        } catch let apiErr as APIClient.APIError {
+            switch apiErr {
+            case .notAuthenticated:
+                // The toggle is on but the user isn't signed in. Surface
+                // a clear error rather than masquerading as
+                // `missingAPIKey` (which would tell them to add a key in
+                // Settings — wrong fix for this case).
+                throw Error.network("Sign in on this device to use the team AI server.")
+            case .http(let status, _, let message):
+                throw Error.http(status: status, body: message)
+            case .decoding(let e):
+                throw Error.malformedResponse("backend response: \(e.localizedDescription)")
+            case .transport(let e):
+                throw Error.network(e.localizedDescription)
+            }
+        }
+
+        return parseResult(fromText: resp.rawText,
+                           fallbackPhotoID: promptPhotoID,
+                           vocabulary: vocabulary)
+    }
+
     /// Build, send, and parse a single Anthropic Messages request.
     /// Shared by the initial call and the repair retry so the body
     /// shape, headers, and parse path can't drift between the two.
@@ -315,16 +383,11 @@ enum ClaudeTaggingService {
     /// below the "model is sure" band so the engineer can spot it.
     private static let fallbackTagConfidence: Double = 0.7
 
-    /// Decode the Anthropic envelope, extract the JSON object Claude
-    /// emitted, decode it, validate it, and convert it into a `Result`.
-    /// On a parse failure the function still returns a `Result` — the
-    /// analysis is empty, `parseFailed` is true, and `rawResponse` carries
-    /// the original text — so the batch loop can persist it and continue
-    /// rather than aborting on a single bad photo.
-    ///
+    /// Decode the Anthropic envelope and hand off to the shared
+    /// text-parse path. Used by the device-key path that talks straight
+    /// to api.anthropic.com and gets back the full Messages-API envelope.
     /// HTTP / network errors still throw (those are batch-control signals
-    /// that the retry loop above catches). Only schema/JSON failures
-    /// degrade to a soft `parseFailed` result.
+    /// that the retry loop above catches).
     private static func parseResult(from data: Data,
                                      fallbackPhotoID: String,
                                      vocabulary: ValidationVocabulary) throws -> Result {
@@ -337,6 +400,24 @@ enum ClaudeTaggingService {
         let text = envelope.content
             .compactMap { $0.type == "text" ? $0.text : nil }
             .joined()
+        return parseResult(fromText: text,
+                           fallbackPhotoID: fallbackPhotoID,
+                           vocabulary: vocabulary)
+    }
+
+    /// Take the already-extracted text the model emitted, slice the JSON
+    /// object out of it, decode, validate, and convert into a `Result`.
+    /// Shared between the device-key path (after envelope decode above)
+    /// and the backend path (which receives the concatenated text
+    /// directly from `POST /v1/ai/tag-photo`).
+    ///
+    /// On a parse failure the function still returns a `Result` — the
+    /// analysis is empty, `parseFailed` is true, and `rawResponse` carries
+    /// the original text — so the batch loop can persist it and continue
+    /// rather than aborting on a single bad photo.
+    private static func parseResult(fromText text: String,
+                                     fallbackPhotoID: String,
+                                     vocabulary: ValidationVocabulary) -> Result {
         guard !text.isEmpty else {
             return softFailure(rawResponse: "(empty content)",
                                photoID: fallbackPhotoID,
