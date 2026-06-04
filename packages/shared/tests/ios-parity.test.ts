@@ -263,6 +263,24 @@ describe("iOS ↔ shared TS parity contract", () => {
     tsStructNames.delete("ScalePresent");
     tsStructNames.delete("RecommendedUse");
 
+    // App-wide config schemas (Build #5.35.1). These mirror iOS
+    // structs that live OUTSIDE the manifest contract — the
+    // TagLibrary, the AI rules template, etc. — and are stored in
+    // the `app_config` SQL table, not the project manifest.
+    // They're scoped out of this struct-set comparison because the
+    // iOS-models fixture only carries manifest models today.
+    // Per-field parity for these structs lands when iOS sync ships
+    // (Build #5.36.1 follow-up), which adds them to the fixture's
+    // regen list and lets this exclusion shrink.
+    const APP_CONFIG_STRUCTS = new Set([
+      "SecondaryTagEntry",
+      "PrimaryTagEntry",
+      "InvestigationContext",
+      "TagLibrary",
+      "AIRulesTemplate",
+    ]);
+    for (const n of APP_CONFIG_STRUCTS) tsStructNames.delete(n);
+
     const missingOnTS = [...iosModelNames].filter((n) => !tsStructNames.has(n));
     const orphanOnTS = [...tsStructNames].filter((n) => !iosModelNames.has(n));
 

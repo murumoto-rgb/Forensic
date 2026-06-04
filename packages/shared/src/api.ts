@@ -204,3 +204,47 @@ export interface PhotoUrlsBatchResponse {
    *  the same TTL for every entry. */
   expiresAt: string;
 }
+
+// ===========================================================================
+// Phase 4 — App-wide config sync (Build #5.35.1)
+// ===========================================================================
+
+import type { AppConfigKey, AppConfigValueByKey } from "./appConfig.js";
+
+/**
+ * Response shape for `GET /v1/config/:key`. The server returns 404
+ * when no row exists yet (e.g. iOS hasn't pushed its tag library
+ * yet on a fresh team), which clients treat as "fall back to
+ * bundled defaults" rather than an error.
+ */
+export interface GetAppConfigResponse<K extends AppConfigKey = AppConfigKey> {
+  key: K;
+  value: AppConfigValueByKey[K];
+  /** Opaque revision token. Clients echo on PUT for optimistic concurrency. */
+  revision: string;
+  /** ISO timestamp of the last write — useful for "X edited the tag
+   *  library 2 minutes ago" UI affordances. */
+  updatedAt: string;
+}
+
+/**
+ * Bulk fetch — one round trip pulls every known key. Convenient on
+ * iOS launch and on web first-load. Missing keys are absent from the
+ * `entries` map (no 404 / null entry), letting clients merge with
+ * their local defaults straight away.
+ */
+export interface GetAppConfigBundleResponse {
+  entries: { [K in AppConfigKey]?: GetAppConfigResponse<K> };
+}
+
+export interface PutAppConfigRequest<K extends AppConfigKey = AppConfigKey> {
+  value: AppConfigValueByKey[K];
+  /** Last-known revision from a prior GET, or `null` for first push
+   *  of this key. Mismatch → 409 so the caller pulls + merges
+   *  rather than clobbering. */
+  expectedRevision: string | null;
+}
+
+export interface PutAppConfigResponse {
+  revision: string;
+}
