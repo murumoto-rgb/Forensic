@@ -71,6 +71,30 @@ function newUuid(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Resolve the ID of the pin to highlight on the canvas for a given
+ * `selectedPhotoId`. For a primary or ungrouped photo, the
+ * selection IS the pin. For a non-primary group member (a reshoot
+ * surfaced via Group nav in the preview), no pin renders for that
+ * id — `planPins` filters those out — so we point the highlight at
+ * the group's primary instead. Same fallback the recenter effect
+ * does in #5.30.1, so the amber-highlighted bubble stays in sync
+ * with where the canvas is centered.
+ */
+function resolveHighlightPinId(
+  selectedPhotoId: string | null,
+  photos: readonly Photo[]
+): string | null {
+  if (!selectedPhotoId) return null;
+  const selected = photos.find((p) => p.id === selectedPhotoId);
+  if (!selected) return null;
+  if (selected.isPrimary || !selected.groupID) return selected.id;
+  const primary = photos.find(
+    (p) => p.groupID === selected.groupID && p.isPrimary
+  );
+  return primary?.id ?? selected.id;
+}
+
 export function ProjectPlanPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -722,9 +746,15 @@ export function ProjectPlanPage({ session }: Props) {
                 openPreviewForCluster(photoIndices);
               }}
               // Highlight the previewed photo's pin (amber instead
-              // of blue) AND drive the canvas's auto-recenter so the
-              // pin lands at the center of the visible canvas area.
-              highlightedPhotoId={previewState?.selectedPhotoId ?? null}
+              // of blue). For a non-primary group member (a reshoot
+              // surfaced via Group nav) the pin we actually want to
+              // highlight is the group's primary — same fallback the
+              // recenter effect does in #5.30.1 — because non-
+              // primaries don't render their own pin (Build #5.31.1).
+              highlightedPhotoId={resolveHighlightPinId(
+                previewState?.selectedPhotoId ?? null,
+                project?.photos ?? []
+              )}
               recenterPhotoId={previewState?.selectedPhotoId ?? null}
             />
           )}
