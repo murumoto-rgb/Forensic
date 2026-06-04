@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Photo } from "@forensic/shared";
+import type { AITagPhotoModel, Photo, Project } from "@forensic/shared";
+import {
+  compilePrompt,
+  compileUserPrompt,
+  parseAIPhotoAnalysis,
+  PromptCompileError,
+} from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 
 /**
@@ -40,6 +46,14 @@ import { api, ApiError } from "../lib/api";
 
 interface Props {
   projectId: string;
+  /**
+   * Full project — needed by the "Re-tag with AI" button to compile
+   * the project-scoped vocabulary block (reads `tagSelection`,
+   * `aiInstructions`, `aiExtraVocabulary` from the manifest). Same
+   * project the parent renders the canvas from; passing the whole
+   * struct keeps the panel from needing four narrower props.
+   */
+  project: Project;
   /** All photos on the active plan. */
   photos: Photo[];
   /** Currently-selected photo id (controlled by parent). */
@@ -53,6 +67,14 @@ interface Props {
   scopedPhotoIds?: string[];
   /** Fires on every navigation (prev/next, arrow key, thumb click). */
   onSelectPhoto: (photoId: string) => void;
+  /**
+   * Fires when the panel mutates the currently-selected photo (e.g.
+   * the "Re-tag with AI" button writes a new `aiAnalysis`). Parent
+   * is responsible for splicing the photo into the project and
+   * persisting via the manifest PUT endpoint — the panel is
+   * controlled, so it doesn't own the project state.
+   */
+  onPhotoUpdated?: (updated: Photo) => void;
   onClose: () => void;
 }
 
@@ -64,10 +86,12 @@ type NavScope = "group" | "all";
 
 export function PhotoPreviewPanel({
   projectId,
+  project,
   photos,
   selectedPhotoId,
   scopedPhotoIds,
   onSelectPhoto,
+  onPhotoUpdated,
   onClose,
 }: Props) {
   // Default nav scope: if a real group/cluster was passed in, start
@@ -465,7 +489,153 @@ export function PhotoPreviewPanel({
           <div className="text-neutral-300">{observation}</div>
         )}
         <div className="font-mono text-xs text-neutral-500">{takenAt}</div>
+
+        {/* Re-tag with AI (Build #5.37.1). Only renders when the
+            parent wired up the update callback — keeps view-only
+            consumers (e.g. a future read-only embed) honest. */}
+        {onPhotoUpdated && (
+          <ReTagWithAIControl
+            projectId={projectId}
+            project={project}
+            photo={photo}
+            onPhotoUpdated={onPhotoUpdated}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * "Re-tag with AI" button + status banner. Fetches the team's
+ * `tagLibrary` + `aiRulesTemplate` from the server, compiles the
+ * project-scoped system prompt the same way iOS does (via the
+ * shared `compilePrompt`), forwards the photo through the
+ * `/v1/ai/tag-photo` proxy, parses the rawText into an
+ * `AIPhotoAnalysis`, and hands it back to the parent via
+ * `onPhotoUpdated`. The parent persists via the manifest PUT.
+ *
+ * Scoped as a sibling component (rather than inlined in the panel)
+ * so the panel's render path stays small and the local state
+ * machine here doesn't bleed into the rest of the file.
+ */
+function ReTagWithAIControl({
+  projectId,
+  project,
+  photo,
+  onPhotoUpdated,
+}: {
+  projectId: string;
+  project: Project;
+  photo: Photo;
+  onPhotoUpdated: (photo: Photo) => void;
+}) {
+  type Status =
+    | { kind: "idle" }
+    | { kind: "running" }
+    | { kind: "error"; message: string }
+    | { kind: "done"; parseFailed: boolean };
+  const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [model, setModel] = useState<AITagPhotoModel>("claude-sonnet-4-6");
+
+  async function runReTag() {
+    setStatus({ kind: "running" });
+    try {
+      // Fetch the two config keys we need to assemble the prompt.
+      // Parallel because they're independent.
+      const [tagLibResp, rulesResp] = await Promise.all([
+        api.getTagLibraryConfig(),
+        api.getAIRulesTemplateConfig(),
+      ]);
+      if (!tagLibResp) {
+        setStatus({
+          kind: "error",
+          message:
+            "No tag library on the server yet. Push one from iOS first (Settings → Tag Library → make any edit).",
+        });
+        return;
+      }
+      const rulesTemplate = rulesResp?.value.text ?? "";
+
+      const compiled = compilePrompt({
+        rulesTemplate,
+        tagLibrary: tagLibResp.value,
+        project,
+      });
+
+      const resp = await api.tagPhoto({
+        projectId,
+        photoId: photo.id,
+        model,
+        systemPrompt: compiled.joinedSystemPrompt,
+        userText: compileUserPrompt(photo.imageFilename),
+      });
+
+      const analysis = parseAIPhotoAnalysis({
+        rawText: resp.rawText,
+        fallbackPhotoID: photo.imageFilename,
+      });
+      onPhotoUpdated({ ...photo, aiAnalysis: analysis });
+      setStatus({ kind: "done", parseFailed: analysis.parseFailed });
+    } catch (e: unknown) {
+      if (e instanceof PromptCompileError) {
+        setStatus({
+          kind: "error",
+          message:
+            "This project has no AI tag selection yet. Pick contexts on iOS (project → AI Tags) first.",
+        });
+      } else if (e instanceof ApiError) {
+        setStatus({
+          kind: "error",
+          message: `${e.status} ${e.errorCode}: ${e.message}`,
+        });
+      } else {
+        setStatus({
+          kind: "error",
+          message:
+            e instanceof Error ? e.message : "Re-tag request failed.",
+        });
+      }
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-col gap-2 border-t border-neutral-800 pt-2">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={runReTag}
+          disabled={status.kind === "running"}
+          className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {status.kind === "running" ? "Tagging…" : "Re-tag with AI"}
+        </button>
+        <select
+          aria-label="AI model"
+          value={model}
+          onChange={(e) => setModel(e.target.value as AITagPhotoModel)}
+          disabled={status.kind === "running"}
+          className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 disabled:opacity-50"
+        >
+          <option value="claude-sonnet-4-6">Sonnet 4.6</option>
+          <option value="claude-haiku-4-5">Haiku 4.5</option>
+        </select>
+      </div>
+      {status.kind === "error" && (
+        <div className="rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-200">
+          {status.message}
+        </div>
+      )}
+      {status.kind === "done" && status.parseFailed && (
+        <div className="rounded border border-amber-700 bg-amber-950/40 px-2 py-1 text-xs text-amber-200">
+          Model output was unparseable — saved on the photo for review.
+        </div>
+      )}
+      {status.kind === "done" && !status.parseFailed && (
+        <div className="rounded border border-emerald-800 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200">
+          Tagged. Save status indicator confirms persistence.
+        </div>
+      )}
     </div>
   );
 }
