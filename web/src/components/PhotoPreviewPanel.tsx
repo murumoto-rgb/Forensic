@@ -7,6 +7,7 @@ import {
   PromptCompileError,
 } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { useTagConfidenceThreshold } from "../lib/useTagConfidenceThreshold";
 
 /**
  * Side / bottom docked photo preview panel.
@@ -663,12 +664,20 @@ function AnalysisRow({
  * its bullet of secondary chips. Per-secondary confidence is read
  * from `tagConfidences` (case-insensitive lookup on the chip's
  * label) and rendered as a small percentage when present.
+ *
+ * Secondaries below the app-wide confidence threshold (Build
+ * #5.40.1; same `sitephoto.tagConfidenceThreshold` key iOS uses)
+ * are hidden by default; a small inline slider in the tree header
+ * lets the user surface them again. Hidden-count chip shown beside
+ * the slider when any secondary was filtered out, mirroring iOS's
+ * "8 hidden" affordance.
  */
 function AITagTree({
   analysis,
 }: {
   analysis: import("@forensic/shared").AIPhotoAnalysis;
 }) {
+  const [threshold, setThreshold] = useTagConfidenceThreshold();
   // Build a lowercase-keyed confidence lookup once so we don't
   // walk the map per chip.
   const confByLower = new Map<string, number>();
@@ -676,59 +685,105 @@ function AITagTree({
     confByLower.set(k.trim().toLowerCase(), v);
   }
 
+  let hiddenCount = 0;
+  // Pre-compute the rendered tree so we can count hidden secondaries
+  // before laying out the header.
+  const renderedPrimaries = analysis.primaryTags.map((primary) => {
+    const trimmedPrimary = primary.trim();
+    const matchKey = Object.keys(analysis.secondaryTagsByPrimary).find(
+      (k) => k.trim().toLowerCase() === trimmedPrimary.toLowerCase()
+    );
+    const secondaries =
+      (matchKey && analysis.secondaryTagsByPrimary[matchKey]) || [];
+    const chips: { label: string; conf: number | undefined }[] = [];
+    for (const sec of secondaries) {
+      const trimmedSec = sec.trim();
+      if (trimmedSec.length === 0 || trimmedSec.toLowerCase() === "none") {
+        continue;
+      }
+      const conf = confByLower.get(trimmedSec.toLowerCase());
+      // Filter rule: hide a secondary when its confidence is BELOW
+      // the threshold. A secondary with no confidence entry is
+      // treated as "kept" — iOS's pipeline assigns the fallback
+      // confidence (0.7) when a secondary's tag_confidences entry
+      // is missing, which keeps it above the default 50% threshold
+      // and matches the visible-by-default behaviour.
+      if (conf != null && conf < threshold) {
+        hiddenCount += 1;
+        continue;
+      }
+      chips.push({ label: trimmedSec, conf });
+    }
+    return { trimmedPrimary, chips, key: primary };
+  });
+
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-        Tags
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+          Tags
+        </span>
+        <div className="flex items-center gap-2">
+          {hiddenCount > 0 && (
+            <span
+              className="text-[10px] text-neutral-500"
+              title={`${hiddenCount} secondary tag${
+                hiddenCount === 1 ? "" : "s"
+              } hidden below ${Math.round(threshold * 100)}% confidence`}
+            >
+              {hiddenCount} hidden
+            </span>
+          )}
+          <label
+            className="flex items-center gap-1.5 text-[10px] text-neutral-500"
+            title="Hide AI tags below this confidence. Stored in localStorage; mirrors iOS Settings → Tag Confidence Filter."
+          >
+            Min&nbsp;
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={threshold}
+              onChange={(e) =>
+                setThreshold(Number.parseFloat(e.currentTarget.value))
+              }
+              className="h-1 w-20 cursor-pointer accent-blue-500"
+              aria-label="Minimum tag confidence"
+            />
+            <span className="font-mono text-neutral-400">
+              {Math.round(threshold * 100)}%
+            </span>
+          </label>
+        </div>
+      </div>
       {analysis.primaryTags.length === 0 && (
         <div className="text-neutral-500 italic">
           No primaries — secondaries below carry no parent in the analysis.
         </div>
       )}
-      {analysis.primaryTags.map((primary) => {
-        const trimmedPrimary = primary.trim();
-        // Match secondaries by the same case-insensitive lookup the
-        // iOS suggestion pipeline uses.
-        const matchKey = Object.keys(analysis.secondaryTagsByPrimary).find(
-          (k) => k.trim().toLowerCase() === trimmedPrimary.toLowerCase()
-        );
-        const secondaries =
-          (matchKey && analysis.secondaryTagsByPrimary[matchKey]) || [];
-        return (
-          <div key={primary} className="flex flex-col gap-1">
-            <div className="font-medium text-neutral-200">
-              {trimmedPrimary}
-            </div>
-            {secondaries.length > 0 && (
-              <div className="ml-2 flex flex-wrap gap-1">
-                {secondaries.map((sec) => {
-                  const trimmedSec = sec.trim();
-                  if (
-                    trimmedSec.length === 0 ||
-                    trimmedSec.toLowerCase() === "none"
-                  )
-                    return null;
-                  const conf = confByLower.get(trimmedSec.toLowerCase());
-                  return (
-                    <span
-                      key={sec}
-                      className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-200"
-                    >
-                      {trimmedSec}
-                      {conf != null && (
-                        <span className="ml-1 text-neutral-500">
-                          {Math.round(Math.max(0, Math.min(1, conf)) * 100)}%
-                        </span>
-                      )}
+      {renderedPrimaries.map(({ trimmedPrimary, chips, key }) => (
+        <div key={key} className="flex flex-col gap-1">
+          <div className="font-medium text-neutral-200">{trimmedPrimary}</div>
+          {chips.length > 0 && (
+            <div className="ml-2 flex flex-wrap gap-1">
+              {chips.map(({ label, conf }) => (
+                <span
+                  key={label}
+                  className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-200"
+                >
+                  {label}
+                  {conf != null && (
+                    <span className="ml-1 text-neutral-500">
+                      {Math.round(Math.max(0, Math.min(1, conf)) * 100)}%
                     </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
