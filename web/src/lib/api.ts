@@ -25,6 +25,13 @@ import type {
   PhotoUrlResponse,
   PhotoUrlsBatchResponse,
   PutManifestResponse,
+  AITagPhotoModel,
+  AITagPhotoRequest,
+  AITagPhotoResponse,
+  GetAppConfigResponse,
+  GetAppConfigBundleResponse,
+  TagLibrary,
+  AIRulesTemplate,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -202,4 +209,56 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ project, expectedRevision }),
     }),
+  /**
+   * Forward an AI-tagging request through the team-server proxy
+   * (Build #5.37.1). Server fetches the photo bytes from R2 by
+   * `photoId`, calls Anthropic with the team key, and returns the
+   * concatenated text response. Caller parses via
+   * `parseAIPhotoAnalysis` from `@forensic/shared`.
+   */
+  tagPhoto: (req: {
+    projectId: string;
+    photoId: string;
+    model: AITagPhotoModel;
+    systemPrompt: string;
+    userText: string;
+    maxTokens?: number;
+  }) => {
+    const body: AITagPhotoRequest = req;
+    return request<AITagPhotoResponse>("/v1/ai/tag-photo", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  /**
+   * Bulk fetch every known app_config key. Used at app load so the
+   * Re-tag button can compile the same vocabulary-scoped prompt iOS
+   * produces — without round-tripping per key.
+   */
+  getAppConfigBundle: () =>
+    request<GetAppConfigBundleResponse>("/v1/config"),
+  /** Single-key fetch. Returns null on 404 (no value pushed yet). */
+  getTagLibraryConfig: async (): Promise<GetAppConfigResponse<"tagLibrary"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"tagLibrary">>(
+        "/v1/config/tagLibrary"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+  getAIRulesTemplateConfig: async (): Promise<GetAppConfigResponse<"aiRulesTemplate"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"aiRulesTemplate">>(
+        "/v1/config/aiRulesTemplate"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
 };
+
+// Re-export for callers that need the wire types.
+export type { TagLibrary, AIRulesTemplate };

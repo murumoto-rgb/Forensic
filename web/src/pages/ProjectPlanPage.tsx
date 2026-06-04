@@ -935,6 +935,7 @@ export function ProjectPlanPage({ session }: Props) {
       {project && id && previewState !== null && (
         <PhotoPreviewPanel
           projectId={id}
+          project={project}
           photos={project.photos}
           selectedPhotoId={previewState.selectedPhotoId}
           scopedPhotoIds={previewState.scopedPhotoIds}
@@ -943,6 +944,19 @@ export function ProjectPlanPage({ session }: Props) {
               s ? { ...s, selectedPhotoId: photoId } : null
             )
           }
+          onPhotoUpdated={(updated) => {
+            // Splice the mutated photo into the project, persist via
+            // the same optimistic-save loop pin-drag uses.
+            if (!project) return;
+            const idx = project.photos.findIndex((p) => p.id === updated.id);
+            if (idx < 0) return;
+            const nextPhotos = [...project.photos];
+            nextPhotos[idx] = updated;
+            const next: Project = { ...project, photos: nextPhotos };
+            setProject(next);
+            pendingRef.current = next;
+            void runSaveLoop();
+          }}
           onClose={() => setPreviewState(null)}
         />
       )}
