@@ -32,6 +32,15 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   ApiError,
   AITagPhotoResponse,
+  Project,
+  TagLibrary,
+} from "@forensic/shared";
+import {
+  compilePrompt,
+  compileUserPrompt,
+  PromptCompileError,
+  TagLibrarySchema,
+  AIRulesTemplateSchema,
 } from "@forensic/shared";
 import { env } from "../env.js";
 import { supabaseAdmin } from "../supabase.js";
@@ -50,8 +59,13 @@ const AITagPhotoBodySchema = z.object({
   projectId: z.string().uuid(),
   photoId: z.string().uuid(),
   model: z.enum(["claude-sonnet-4-6", "claude-haiku-4-5"]),
-  systemPrompt: z.string().min(1).max(200_000),
-  userText: z.string().min(1).max(50_000),
+  // Optional as of Build #5.46.1. When either is omitted, the
+  // server compiles its own prompt from the project's manifest +
+  // the team's tagLibrary + aiRulesTemplate in app_config. Either
+  // both are present (client-driven mode) or both are absent
+  // (server-driven mode); a mismatch lands as a 400 below.
+  systemPrompt: z.string().min(1).max(200_000).optional(),
+  userText: z.string().min(1).max(50_000).optional(),
   maxTokens: z
     .number()
     .int()
@@ -117,13 +131,38 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       });
       return;
     }
-    const { projectId, photoId, model, systemPrompt, userText } = parsed.data;
+    const { projectId, photoId, model } = parsed.data;
     const maxTokens = parsed.data.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const clientSuppliedSystemPrompt = parsed.data.systemPrompt;
+    const clientSuppliedUserText = parsed.data.userText;
+    // Two valid modes: BOTH client-supplied (legacy iOS path,
+    // current web path) OR NEITHER client-supplied (server compiles
+    // from manifest + config). A mismatched half-and-half is a
+    // 400 — it's almost certainly a client bug rather than a
+    // deliberate request shape.
+    if (
+      (clientSuppliedSystemPrompt == null) !==
+      (clientSuppliedUserText == null)
+    ) {
+      reply.code(400).send({
+        error: "bad_request",
+        message:
+          "Either both systemPrompt and userText must be supplied, or neither (server-side compilation).",
+      });
+      return;
+    }
+    const serverDrivenMode =
+      clientSuppliedSystemPrompt == null && clientSuppliedUserText == null;
 
-    // Ownership check — same shape the photo/plan routes use.
-    const { data: project, error: projectErr } = await supabaseAdmin
+    // Ownership check + (in server-driven mode) manifest fetch.
+    // Pull the manifest column unconditionally — it's needed for
+    // server-side compilation AND lets us look up the photo's
+    // imageFilename for the `photo_id` echo in the user prompt even
+    // in client-driven mode (currently unused there, but cheap to
+    // have available for future audit-row enrichment).
+    const { data: projectRow, error: projectErr } = await supabaseAdmin
       .from("projects")
-      .select("id")
+      .select("id, manifest")
       .eq("id", projectId)
       .eq("owner_id", request.user.id)
       .maybeSingle();
@@ -132,12 +171,89 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
-    if (!project) {
+    if (!projectRow) {
       reply.code(404).send({
         error: "not_found",
         message: `Project ${projectId} not found`,
       });
       return;
+    }
+    const projectManifest = projectRow.manifest as Project;
+
+    // ---------- Build the prompt ----------
+    let systemPrompt: string;
+    let userText: string;
+    if (serverDrivenMode) {
+      // Look up the photo on the manifest so the user prompt can
+      // echo `imageFilename` back as the model's photo_id (matches
+      // iOS's compileUserPrompt behaviour).
+      const photo = projectManifest.photos.find((p) => p.id === photoId);
+      if (!photo) {
+        reply.code(404).send({
+          error: "not_found",
+          message: `Photo ${photoId} not found on project ${projectId}`,
+        });
+        return;
+      }
+
+      // Fetch app_config tagLibrary + aiRulesTemplate. tagLibrary
+      // is required; rules template falls back to empty string
+      // when not pushed yet (rare, since iOS auto-pushes on first
+      // edit).
+      const { data: configRows, error: configErr } = await supabaseAdmin
+        .from("app_config")
+        .select("key, value")
+        .in("key", ["tagLibrary", "aiRulesTemplate"]);
+      if (configErr) {
+        request.log.error({ err: configErr }, "AI tag — app_config fetch failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+      let tagLibrary: TagLibrary | null = null;
+      let rulesText = "";
+      for (const row of (configRows ?? []) as { key: string; value: unknown }[]) {
+        if (row.key === "tagLibrary") {
+          const tlParse = TagLibrarySchema.safeParse(row.value);
+          if (tlParse.success) tagLibrary = tlParse.data;
+        } else if (row.key === "aiRulesTemplate") {
+          const arParse = AIRulesTemplateSchema.safeParse(row.value);
+          if (arParse.success) rulesText = arParse.data.text;
+        }
+      }
+      if (!tagLibrary) {
+        reply.code(422).send({
+          error: "config_missing",
+          message:
+            "No tagLibrary in app_config yet. Push one from iOS (Settings → Tag Library → edit) or via the web admin (/admin/tag-library) before requesting server-side prompt compilation.",
+        });
+        return;
+      }
+      try {
+        const compiled = compilePrompt({
+          rulesTemplate: rulesText,
+          tagLibrary,
+          project: projectManifest,
+        });
+        systemPrompt = compiled.joinedSystemPrompt;
+      } catch (e: unknown) {
+        if (e instanceof PromptCompileError) {
+          reply.code(422).send({
+            error: "no_tag_selection",
+            message:
+              "Project has no AI tag selection yet. Pick contexts in iOS (project → AI Tags) before requesting server-side prompt compilation.",
+          });
+          return;
+        }
+        request.log.error({ err: e, projectId }, "AI tag — compilePrompt threw");
+        reply.code(500).send({ error: "internal", message: "Prompt compile failed" });
+        return;
+      }
+      userText = compileUserPrompt(photo.imageFilename);
+    } else {
+      // Client-driven mode — both fields are guaranteed non-null
+      // by the half-and-half guard above.
+      systemPrompt = clientSuppliedSystemPrompt!;
+      userText = clientSuppliedUserText!;
     }
 
     // Resolve the photo's object key from the files table. We
@@ -301,6 +417,7 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
         durationMs,
         detail: {
           rawTextLength: rawText.length,
+          serverDrivenMode,
         },
       },
       request.log
