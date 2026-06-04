@@ -18,6 +18,7 @@ import { filesRoute } from "./routes/files.js";
 import { photosRoute } from "./routes/photos.js";
 import { plansRoute } from "./routes/plans.js";
 import { aiTagRoute } from "./routes/aiTag.js";
+import { appConfigRoute } from "./routes/appConfig.js";
 
 async function main() {
   const app = Fastify({
@@ -63,6 +64,7 @@ async function main() {
   await app.register(photosRoute);
   await app.register(plansRoute);
   await app.register(aiTagRoute);
+  await app.register(appConfigRoute);
 
   try {
     await app.listen({ port: env.PORT, host: "0.0.0.0" });

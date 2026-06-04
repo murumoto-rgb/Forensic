@@ -182,6 +182,54 @@ export const ProjectExtraVocabularySchema = z.object({
   primaries: z.array(z.record(z.string(), z.unknown())),
 });
 
+// ===========================================================================
+// App-wide config sync (Build #5.35.1)
+// ===========================================================================
+// Schemas for the `app_config` table values. Per-key dispatch in
+// `server/src/routes/appConfig.ts` picks the right schema for an
+// incoming PUT and rejects mismatched payloads with 400.
+
+export const SecondaryTagEntrySchema = z.object({
+  id: uuid,
+  name: z.string(),
+});
+
+export const PrimaryTagEntrySchema = z.object({
+  id: uuid,
+  name: z.string(),
+  secondaries: z.array(SecondaryTagEntrySchema),
+});
+
+export const InvestigationContextSchema = z.object({
+  id: uuid,
+  name: z.string(),
+  primaries: z.array(PrimaryTagEntrySchema),
+});
+
+export const TagLibrarySchema = z.object({
+  contexts: z.array(InvestigationContextSchema),
+  // Older iOS pushes (pre-seed-v3) may omit seedVersion. Default to 1
+  // at the boundary so the server can still record them.
+  seedVersion: z.number().int().min(1).default(1),
+});
+
+export const AIRulesTemplateSchema = z.object({
+  // Empty string is a legitimate state — the user can explicitly
+  // wipe the template — so we don't require non-empty here.
+  text: z.string(),
+});
+
+/**
+ * Dispatch map: each `AppConfigKey` paired with the zod schema for
+ * its value. Server's PUT route uses this to validate the incoming
+ * payload against the right shape. Keeps the route handler small
+ * and the per-key shape co-located with the schema declarations.
+ */
+export const AppConfigValueSchemaByKey = {
+  tagLibrary: TagLibrarySchema,
+  aiRulesTemplate: AIRulesTemplateSchema,
+} as const;
+
 export const ProjectSchema = z.object({
   id: uuid,
   name: z.string(),
