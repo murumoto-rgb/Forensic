@@ -37,6 +37,7 @@ import { env } from "../env.js";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { getObjectBytes } from "../r2.js";
+import { recordAITagAudit } from "../audit.js";
 
 // Cap on max_tokens so a client typo can't force a 60-second
 // response. 16384 is generous for a per-photo structured analysis
@@ -277,6 +278,32 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
         durationMs,
       },
       "AI tag — completed"
+    );
+
+    // Best-effort audit row (Build #5.45.1). Doesn't block the
+    // response — we await it inline only because Render's free
+    // tier sometimes drops connections on a request that returns
+    // before the background promise flushes. The insert itself
+    // is small and the supabase admin client pools connections,
+    // so the added latency is sub-100ms on a warm route.
+    await recordAITagAudit(
+      {
+        userId: request.user.id,
+        projectId,
+        photoId,
+        model,
+        inputTokens: anthropicResponse.usage.input_tokens,
+        outputTokens: anthropicResponse.usage.output_tokens,
+        cacheReadTokens:
+          anthropicResponse.usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens:
+          anthropicResponse.usage.cache_creation_input_tokens ?? 0,
+        durationMs,
+        detail: {
+          rawTextLength: rawText.length,
+        },
+      },
+      request.log
     );
 
     return {
