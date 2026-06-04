@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import type { Project } from "@forensic/shared";
@@ -6,6 +6,7 @@ import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { PhotoLightbox } from "../components/PhotoLightbox";
+import { BatchRetagControl } from "../components/BatchRetagControl";
 
 /**
  * Project detail page at `/projects/:id`. Loads the full manifest,
@@ -19,18 +20,35 @@ interface Props {
 export function ProjectDetailPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
+  const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Mirror refs so the batch runner reads the latest values at
+  // checkpoint time without needing to be wired through useEffect
+  // deps on every re-render.
+  const projectRef = useRef<Project | null>(null);
+  const revisionRef = useRef<string | null>(null);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+  useEffect(() => {
+    revisionRef.current = revision;
+  }, [revision]);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     setProject(null);
+    setRevision(null);
     setError(null);
     api
       .getProject(id)
       .then((res) => {
-        if (!cancelled) setProject(res.project);
+        if (!cancelled) {
+          setProject(res.project);
+          setRevision(res.revision);
+        }
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -80,15 +98,27 @@ export function ProjectDetailPage({ session }: Props) {
             </Link>
           )}
         </div>
-        <div className="flex flex-col items-end gap-1 text-right">
+        <div className="flex flex-col items-end gap-2 text-right">
           <span className="text-xs text-neutral-500">{session.user.email}</span>
-          <button
-            type="button"
-            onClick={() => signOutLocal()}
-            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-          >
-            Sign out
-          </button>
+          <div className="flex gap-2">
+            {project && id && revision !== null && (
+              <BatchRetagControl
+                projectId={id}
+                projectRef={projectRef}
+                revisionRef={revisionRef}
+                setProject={setProject}
+                setRevision={setRevision}
+                photoCount={project.photos.length}
+              />
+            )}
+            <button
+              type="button"
+              onClick={() => signOutLocal()}
+              className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
