@@ -8,6 +8,7 @@ struct SitePhotoApp: App {
     @State private var auth = AuthService()
     @State private var syncer: ManifestSyncer
     @State private var photoSyncer: PhotoSyncer
+    @State private var appConfigSyncer: AppConfigSyncer
 
     init() {
         let toast = ToastCenter()
@@ -20,6 +21,7 @@ struct SitePhotoApp: App {
                                        auth: auth,
                                        store: store,
                                        toast: toast)
+        let appConfigSyncer = AppConfigSyncer(api: api, auth: auth, toast: toast)
         store.toastCenter = toast
         // Lets the AI-tagging dispatch reach the team-server proxy when
         // the user has flipped the Settings toggle on (Build #5.33.1).
@@ -30,11 +32,17 @@ struct SitePhotoApp: App {
             syncer?.sync(project)
             photoSyncer?.sync(project)
         }
+        // Hook tagLibrary / aiRulesTemplate mutations to the app-
+        // config syncer (Build #5.36.1). Setting up via the syncer's
+        // own binder method keeps the closure capture inside the
+        // syncer rather than this constructor.
+        appConfigSyncer.bindToStore(store)
         _toastCenter = State(initialValue: toast)
         _store = State(initialValue: store)
         _auth = State(initialValue: auth)
         _syncer = State(initialValue: syncer)
         _photoSyncer = State(initialValue: photoSyncer)
+        _appConfigSyncer = State(initialValue: appConfigSyncer)
     }
 
     /// True once the white splash screen has faded out.
@@ -67,6 +75,7 @@ struct SitePhotoApp: App {
                 .environment(auth)
                 .environment(syncer)
                 .environment(photoSyncer)
+                .environment(appConfigSyncer)
                 .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
@@ -119,6 +128,12 @@ struct SitePhotoApp: App {
                     //    server cares about is in place.
                     if auth.session != nil {
                         Task {
+                            // App config first — the manifest pull may
+                            // surface projects that reference tag-
+                            // library IDs the local seed doesn't carry
+                            // yet, and pulling the library first means
+                            // those references resolve cleanly.
+                            await appConfigSyncer.pullAllFromServer()
                             await syncer.pullAllFromServer()
                             await syncer.pushAllToServer()
                             await photoSyncer.syncAll()
@@ -146,6 +161,7 @@ struct SitePhotoApp: App {
                 .onChange(of: auth.session?.user.id) { _, newUserId in
                     guard newUserId != nil else { return }
                     Task {
+                        await appConfigSyncer.pullAllFromServer()
                         await syncer.pullAllFromServer()
                         await syncer.pushAllToServer()
                         await photoSyncer.syncAll()

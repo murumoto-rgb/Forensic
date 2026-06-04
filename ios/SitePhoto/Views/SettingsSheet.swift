@@ -9,6 +9,7 @@ struct SettingsSheet: View {
     @Environment(AuthService.self) private var auth
     @Environment(ManifestSyncer.self) private var syncer
     @Environment(PhotoSyncer.self) private var photoSyncer
+    @Environment(AppConfigSyncer.self) private var appConfigSyncer
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -80,6 +81,7 @@ struct SettingsSheet: View {
                             // skip uploads to a different R2 bucket.
                             syncer.resetRevisions()
                             photoSyncer.resetUploadCache()
+                            appConfigSyncer.resetRevisions()
                             try? await auth.signOut()
                             dismiss()
                         }
@@ -96,6 +98,7 @@ struct SettingsSheet: View {
                     Button {
                         Task {
                             toastCenter.post("Sync started…", kind: .info)
+                            await appConfigSyncer.pullAllFromServer()
                             await syncer.pushAllToServer()
                             await photoSyncer.syncAll()
                             toastCenter.post("Sync sweep done.", kind: .info)
@@ -106,7 +109,7 @@ struct SettingsSheet: View {
                 } header: {
                     Text("Sync")
                 } footer: {
-                    Text("Pushes any pending manifest changes and uploads any photo / plan binaries that haven't reached R2 yet. Errors surface as toasts.")
+                    Text("Pulls the team's tag library and AI rules template, pushes any pending manifest changes, and uploads any photo / plan binaries that haven't reached R2 yet. Errors surface as toasts.")
                 }
 
                 Section {

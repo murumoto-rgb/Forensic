@@ -144,6 +144,46 @@ final class APIClient {
         )
     }
 
+    // MARK: Phase 4 — App-wide config sync (Build #5.36.1)
+
+    /// Bulk fetch of every known `app_config` key. Called at launch
+    /// so the device's local tag library + AI rules template can be
+    /// reconciled with whatever the team's other devices have pushed
+    /// while this device was offline. Missing keys are absent from
+    /// the returned `entries` map — the caller treats those as
+    /// "fall back to local" rather than empty.
+    func getAppConfigBundle() async throws -> AppConfigBundleResponse {
+        try await request("GET", "/v1/config", body: Optional<Empty>.none)
+    }
+
+    /// Push a tag library to the server. `expectedRevision` is `nil`
+    /// on first push for this team, otherwise the revision from the
+    /// most recent bundle fetch. Mismatch → 409 so the caller pulls
+    /// + merges rather than clobbering newer edits the other
+    /// platform may have made.
+    @discardableResult
+    func putTagLibrary(_ library: TagLibrary,
+                       expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutTagLibraryRequest(
+            value: library,
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/tagLibrary", body: body)
+    }
+
+    /// Push an AI rules template to the server. Wraps the bare string
+    /// in `{text: …}` to match the shared `AIRulesTemplate` wire
+    /// shape declared in `packages/shared/src/appConfig.ts`.
+    @discardableResult
+    func putAIRulesTemplate(_ text: String,
+                            expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutAIRulesTemplateRequest(
+            value: AIRulesTemplateWire(text: text),
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/aiRulesTemplate", body: body)
+    }
+
     // MARK: Phase 4 — AI tagging proxy (Build #5.32.1)
 
     /// Forward an AI-tagging call through the Forensic backend. The
@@ -401,5 +441,151 @@ struct AITagPhotoResponse: Decodable {
         let outputTokens: Int
         let cacheReadTokens: Int
         let cacheCreationTokens: Int
+    }
+}
+
+// MARK: - Phase 4: App-wide config sync (Build #5.36.1)
+
+/// Server-side wrapper for the AI rules template. iOS keeps the
+/// rules as a bare `String`; the wire shape wraps it in `{text: …}`
+/// to match `AIRulesTemplate` in `packages/shared/src/appConfig.ts`
+/// so the shared type can grow sibling fields without re-versioning
+/// the wire.
+struct AIRulesTemplateWire: Codable {
+    let text: String
+}
+
+/// One entry in the `GET /v1/config` bundle response. The `value`
+/// field shape depends on the key (TagLibrary for `tagLibrary`,
+/// `{text: …}` for `aiRulesTemplate`). We decode the value lazily
+/// via `decodeValue(as:)` so a future server-side key the iOS
+/// client doesn't know about doesn't fail the whole bundle decode.
+struct AppConfigBundleEntry: Decodable {
+    let key: String
+    let value: AnyDecodable
+    let revision: String
+    let updatedAt: String
+}
+
+/// Bulk response for `GET /v1/config`. Keys absent from the server
+/// (i.e. nothing pushed yet) are absent from `entries` — the caller
+/// treats those as "keep local."
+struct AppConfigBundleResponse: Decodable {
+    let entries: [String: AppConfigBundleEntry]
+}
+
+/// Common response shape for every successful `PUT /v1/config/:key`.
+struct AppConfigPutResponse: Decodable {
+    let revision: String
+}
+
+/// PUT body for `tagLibrary`. Custom Encodable so `expectedRevision:
+/// nil` emits an explicit `null` (the server's zod accepts
+/// string-or-null but NOT undefined), same discipline as
+/// `PutManifestRequest`.
+struct AppConfigPutTagLibraryRequest: Encodable {
+    let value: TagLibrary
+    let expectedRevision: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case value, expectedRevision
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(value, forKey: .value)
+        try c.encode(expectedRevision, forKey: .expectedRevision)
+    }
+}
+
+/// PUT body for `aiRulesTemplate`.
+struct AppConfigPutAIRulesTemplateRequest: Encodable {
+    let value: AIRulesTemplateWire
+    let expectedRevision: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case value, expectedRevision
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(value, forKey: .value)
+        try c.encode(expectedRevision, forKey: .expectedRevision)
+    }
+}
+
+/// Box around an arbitrary JSON value so we can postpone the
+/// per-key decode of `AppConfigBundleEntry.value` until the caller
+/// dispatches on the key. Stores the raw bytes so any Decodable
+/// shape can be re-decoded from them.
+struct AnyDecodable: Decodable {
+    /// JSON bytes for the value. Decoded into a concrete type by
+    /// the caller (`decode(as:)`).
+    let raw: Data
+
+    init(from decoder: Decoder) throws {
+        // The cleanest way to capture an unknown JSON sub-tree as
+        // bytes is to decode into the dynamic `Any`-ish JSON
+        // hierarchy (Dictionary / Array / scalar), then re-encode.
+        // Using `JSONDecoder().decode(JSONValue.self, …)` from the
+        // single-value container preserves the exact shape.
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(JSONValue.self)
+        self.raw = try JSONEncoder().encode(value)
+    }
+
+    func decode<T: Decodable>(as type: T.Type) throws -> T {
+        try JSONDecoder().decode(type, from: raw)
+    }
+}
+
+/// Recursive enum over the JSON type hierarchy. Used by
+/// `AnyDecodable` so an unknown jsonb value can be captured
+/// losslessly and re-decoded into a concrete Decodable later.
+private enum JSONValue: Codable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+            return
+        }
+        if let b = try? container.decode(Bool.self) {
+            self = .bool(b); return
+        }
+        if let n = try? container.decode(Double.self) {
+            self = .number(n); return
+        }
+        if let s = try? container.decode(String.self) {
+            self = .string(s); return
+        }
+        if let a = try? container.decode([JSONValue].self) {
+            self = .array(a); return
+        }
+        if let o = try? container.decode([String: JSONValue].self) {
+            self = .object(o); return
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Unrecognized JSON value"
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null:        try c.encodeNil()
+        case .bool(let b): try c.encode(b)
+        case .number(let n): try c.encode(n)
+        case .string(let s): try c.encode(s)
+        case .array(let a):  try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
     }
 }

@@ -67,6 +67,17 @@ final class ProjectStore {
     /// previews, in which case callers fall back to the device-key
     /// path automatically.
     var apiClient: APIClient?
+    /// Fired by `persistTagLibrary()` so an external syncer can push
+    /// the new value to the server. Set by `SitePhotoApp.init`
+    /// (`AppConfigSyncer.bindToStore`); nil in tests / previews —
+    /// safe. Receives the current full tag library at the moment of
+    /// the mutation; the syncer copies and queues so the caller isn't
+    /// blocked on the network.
+    var onTagLibraryChanged: ((TagLibrary) -> Void)?
+    /// Fired by `persistAIRulesTemplate()` so an external syncer can
+    /// push the new value to the server. Same wiring shape as
+    /// `onTagLibraryChanged`.
+    var onAIRulesTemplateChanged: ((String) -> Void)?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -878,6 +889,7 @@ final class ProjectStore {
         if let data = try? encoder().encode(tagLibrary) {
             try? data.write(to: tagLibraryURL, options: .atomic)
         }
+        onTagLibraryChanged?(tagLibrary)
     }
 
     /// Replace the persisted tag library with `TagLibrary.defaultSeeds`.
@@ -1078,6 +1090,7 @@ final class ProjectStore {
         if let data = aiRulesTemplate.data(using: .utf8) {
             try? data.write(to: aiRulesTemplateURL, options: .atomic)
         }
+        onAIRulesTemplateChanged?(aiRulesTemplate)
     }
 
     /// Replace the rules-template text and persist. Trimming + empty
@@ -1269,6 +1282,27 @@ final class ProjectStore {
     /// Called by `ManifestSyncer.pullAllFromServer()` for projects
     /// whose server revision differs from the locally-cached one
     /// AND that aren't dirty (have no unsynced local edits).
+    /// Replace the on-disk tag library + in-memory state with a value
+    /// pulled from the server. Skips the change hook so a pull
+    /// doesn't bounce back as a push (same discipline
+    /// `applyServerProject` follows for manifests).
+    func applyServerTagLibrary(_ library: TagLibrary) {
+        tagLibrary = library
+        if let data = try? encoder().encode(tagLibrary) {
+            try? data.write(to: tagLibraryURL, options: .atomic)
+        }
+    }
+
+    /// Replace the on-disk AI rules template + in-memory state with a
+    /// value pulled from the server. Same pull-doesn't-echo
+    /// discipline as `applyServerTagLibrary`.
+    func applyServerAIRulesTemplate(_ text: String) {
+        aiRulesTemplate = text
+        if let data = aiRulesTemplate.data(using: .utf8) {
+            try? data.write(to: aiRulesTemplateURL, options: .atomic)
+        }
+    }
+
     func applyServerProject(_ project: Project) {
         let dir = projectURL(project)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
