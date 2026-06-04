@@ -32,13 +32,29 @@ export function ProjectListPage({ session }: Props) {
           <h1 className="text-2xl font-semibold">Projects</h1>
           <p className="text-xs text-neutral-500">{session.user.email}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => signOutLocal()}
-          className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-        >
-          Sign out
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/admin/tag-library"
+            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+            title="Edit the team's app-wide AI tag library"
+          >
+            Tag library
+          </Link>
+          <Link
+            to="/admin/ai-rules"
+            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+            title="Edit the team's app-wide AI rules / schema template"
+          >
+            AI rules
+          </Link>
+          <button
+            type="button"
+            onClick={() => signOutLocal()}
+            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       {error && (
