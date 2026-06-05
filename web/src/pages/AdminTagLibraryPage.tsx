@@ -164,6 +164,49 @@ export function AdminTagLibraryPage({ session }: Props) {
     setDraft(load !== "loading" && "library" in load ? structuredClone(load.library ?? { contexts: [], seedVersion: 1 }) : null);
   }
 
+  /**
+   * Replace the editor draft with iOS's bundled default (Build
+   * #5.48.1). Fetched live from `/v1/config/tagLibraryDefault` so
+   * we always show whatever the latest iOS build pushed. Doesn't
+   * persist — user still has to click Save to overwrite the
+   * editable `tagLibrary` row.
+   *
+   * If iOS has never connected since #5.48.1 shipped (404 on
+   * fetch), surfaces a friendly hint asking the user to open the
+   * iOS app once.
+   */
+  async function restoreDefault() {
+    if (
+      !window.confirm(
+        "Replace your current draft with iOS's bundled default tag library?\n\nYou'll still need to click Save to persist the restore."
+      )
+    ) {
+      return;
+    }
+    setSaveError(null);
+    try {
+      const resp = await api.getTagLibraryDefaultConfig();
+      if (!resp) {
+        setSaveError(
+          "No bundled default on the server yet. Open the iOS app once (any signed-in session triggers a push) and try again."
+        );
+        return;
+      }
+      setDraft(structuredClone(resp.value));
+      setDirty(true);
+      setSavedAt(null);
+      setExpandedContexts(new Set(resp.value.contexts.map((c) => c.id)));
+    } catch (e: unknown) {
+      const message =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Failed to fetch bundled default.";
+      setSaveError(message);
+    }
+  }
+
   // ---------------------------------------------------------------
   // Editor helpers — all return a new TagLibrary value (immutable
   // updates) so React diffing sees a fresh reference each time.
@@ -424,6 +467,15 @@ export function AdminTagLibraryPage({ session }: Props) {
               )}
             </div>
             <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={restoreDefault}
+                disabled={saving}
+                className="rounded border border-amber-700 px-3 py-1 text-xs text-amber-200 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Replace the current draft with iOS's bundled default. You still need to click Save to persist the restore."
+              >
+                Restore default
+              </button>
               <button
                 type="button"
                 onClick={reloadFromServer}

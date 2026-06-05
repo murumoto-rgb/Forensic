@@ -184,6 +184,32 @@ final class APIClient {
         return try await request("PUT", "/v1/config/aiRulesTemplate", body: body)
     }
 
+    /// Push the iOS-bundled tag library to the server's read-only
+    /// `tagLibraryDefault` snapshot (Build #5.48.1). Only called by
+    /// `AppConfigSyncer.pullAllFromServer()` at launch; nothing
+    /// else writes this key.
+    @discardableResult
+    func putTagLibraryDefault(_ library: TagLibrary,
+                               expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutTagLibraryRequest(
+            value: library,
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/tagLibraryDefault", body: body)
+    }
+
+    /// Sibling of `putTagLibraryDefault` for the AI rules template
+    /// default. Same shape, same semantics.
+    @discardableResult
+    func putAIRulesTemplateDefault(_ text: String,
+                                    expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutAIRulesTemplateRequest(
+            value: AIRulesTemplateWire(text: text),
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/aiRulesTemplateDefault", body: body)
+    }
+
     // MARK: Phase 4 — AI tagging proxy (Build #5.32.1)
 
     /// Forward an AI-tagging call through the Forensic backend. The
