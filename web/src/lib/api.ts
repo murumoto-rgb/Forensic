@@ -258,6 +258,33 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Read-only bundled-defaults snapshot pushed by iOS at every
+   * launch (Build #5.48.1). Used by the admin editors' "Restore
+   * default" button. 404 when the iOS app has never connected
+   * since the new build — caller should fall back to a friendly
+   * "no default available yet; open the iOS app once" message.
+   */
+  getTagLibraryDefaultConfig: async (): Promise<GetAppConfigResponse<"tagLibraryDefault"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"tagLibraryDefault">>(
+        "/v1/config/tagLibraryDefault"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+  getAIRulesTemplateDefaultConfig: async (): Promise<GetAppConfigResponse<"aiRulesTemplateDefault"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"aiRulesTemplateDefault">>(
+        "/v1/config/aiRulesTemplateDefault"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
 };
 
 // Re-export for callers that need the wire types.

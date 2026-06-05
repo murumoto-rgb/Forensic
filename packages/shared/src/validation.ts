@@ -228,6 +228,12 @@ export const AIRulesTemplateSchema = z.object({
 export const AppConfigValueSchemaByKey = {
   tagLibrary: TagLibrarySchema,
   aiRulesTemplate: AIRulesTemplateSchema,
+  // Build #5.48.1: read-only bundled-default mirrors. Same shapes
+  // as the editable keys above — only the semantics differ (iOS
+  // pushes these from its Swift constants every launch; nothing
+  // else writes them).
+  tagLibraryDefault: TagLibrarySchema,
+  aiRulesTemplateDefault: AIRulesTemplateSchema,
 } as const;
 
 export const ProjectSchema = z.object({

@@ -132,6 +132,17 @@ final class AppConfigSyncer {
             // push pre-dated this code).
             await pushAIRulesTemplate(store.aiRulesTemplate)
         }
+
+        // Read-only default mirrors (Build #5.48.1). iOS Swift owns
+        // the canonical defaults (`AIRulesTemplate.defaultText` and
+        // `TagLibrary.defaultSeeds`); on every launch we push them
+        // up to a separate pair of app_config keys so the web admin
+        // pages have a "Restore default" source. Upsert idempotency
+        // means a no-op when the values match, and a TestFlight
+        // ship with a new bundled default propagates to web on the
+        // first launch of the new build.
+        await pushTagLibraryDefault(TagLibrary.defaultSeeds)
+        await pushAIRulesTemplateDefault(AIRulesTemplate.defaultText)
     }
 
     /// Clear all stored revisions. Called on sign-out so the next
@@ -261,6 +272,91 @@ final class AppConfigSyncer {
             storeRevision(resp.revision, for: "aiRulesTemplate")
         } catch {
             surfaceError(error, label: "AI rules template")
+        }
+    }
+
+    // MARK: Default-snapshot push (Build #5.48.1)
+    //
+    // The `*Default` keys carry the iOS-bundled defaults exactly as
+    // Swift constants. Web's "Restore default" button reads from
+    // them. Nothing else writes them — the source of truth is iOS
+    // code, and they're pushed up at every launch via
+    // `pullAllFromServer()`. Idempotent: if the server already has
+    // the same value, the upsert is a no-op content-wise.
+
+    private func pushTagLibraryDefault(_ library: TagLibrary) async {
+        let key = "tagLibraryDefault"
+        guard !inFlight.contains(key) else { return }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+        do {
+            let resp = try await api.putTagLibraryDefault(
+                library,
+                expectedRevision: storedRevision(for: key)
+            )
+            storeRevision(resp.revision, for: key)
+        } catch APIClient.APIError.http(status: 409, _, _) {
+            await refetchAndRetryTagLibraryDefault(library)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, label: "tag library default")
+        }
+    }
+
+    private func pushAIRulesTemplateDefault(_ text: String) async {
+        let key = "aiRulesTemplateDefault"
+        guard !inFlight.contains(key) else { return }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+        do {
+            let resp = try await api.putAIRulesTemplateDefault(
+                text,
+                expectedRevision: storedRevision(for: key)
+            )
+            storeRevision(resp.revision, for: key)
+        } catch APIClient.APIError.http(status: 409, _, _) {
+            await refetchAndRetryAIRulesTemplateDefault(text)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, label: "AI rules template default")
+        }
+    }
+
+    private func refetchAndRetryTagLibraryDefault(_ library: TagLibrary) async {
+        do {
+            let bundle = try await api.getAppConfigBundle()
+            if let entry = bundle.entries["tagLibraryDefault"] {
+                storeRevision(entry.revision, for: "tagLibraryDefault")
+            } else {
+                clearRevision(for: "tagLibraryDefault")
+            }
+            let resp = try await api.putTagLibraryDefault(
+                library,
+                expectedRevision: storedRevision(for: "tagLibraryDefault")
+            )
+            storeRevision(resp.revision, for: "tagLibraryDefault")
+        } catch {
+            surfaceError(error, label: "tag library default")
+        }
+    }
+
+    private func refetchAndRetryAIRulesTemplateDefault(_ text: String) async {
+        do {
+            let bundle = try await api.getAppConfigBundle()
+            if let entry = bundle.entries["aiRulesTemplateDefault"] {
+                storeRevision(entry.revision, for: "aiRulesTemplateDefault")
+            } else {
+                clearRevision(for: "aiRulesTemplateDefault")
+            }
+            let resp = try await api.putAIRulesTemplateDefault(
+                text,
+                expectedRevision: storedRevision(for: "aiRulesTemplateDefault")
+            )
+            storeRevision(resp.revision, for: "aiRulesTemplateDefault")
+        } catch {
+            surfaceError(error, label: "AI rules template default")
         }
     }
 

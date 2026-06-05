@@ -145,6 +145,44 @@ export function AdminAIRulesPage({ session }: Props) {
     setSaveError(null);
   }
 
+  /**
+   * Replace the editor draft with iOS's bundled default rules
+   * template (Build #5.48.1). Same shape as the tag library
+   * editor's "Restore default" — fetched live from
+   * `/v1/config/aiRulesTemplateDefault`, doesn't persist until
+   * the user clicks Save.
+   */
+  async function restoreDefault() {
+    if (
+      !window.confirm(
+        "Replace your current draft with iOS's bundled default AI rules template?\n\nYou'll still need to click Save to persist the restore."
+      )
+    ) {
+      return;
+    }
+    setSaveError(null);
+    try {
+      const resp = await api.getAIRulesTemplateDefaultConfig();
+      if (!resp) {
+        setSaveError(
+          "No bundled default on the server yet. Open the iOS app once (any signed-in session triggers a push) and try again."
+        );
+        return;
+      }
+      setDraft(resp.value.text);
+      setDirty(true);
+      setSavedAt(null);
+    } catch (e: unknown) {
+      const message =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Failed to fetch bundled default.";
+      setSaveError(message);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
       <header className="mb-8 flex items-start justify-between gap-4">
@@ -218,6 +256,15 @@ export function AdminAIRulesPage({ session }: Props) {
               </span>
             </div>
             <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={restoreDefault}
+                disabled={saving}
+                className="rounded border border-amber-700 px-3 py-1 text-xs text-amber-200 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Replace the current draft with iOS's bundled default. You still need to click Save to persist the restore."
+              >
+                Restore default
+              </button>
               <button
                 type="button"
                 onClick={discard}
