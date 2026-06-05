@@ -121,18 +121,33 @@ export interface AITagPhotoRequest {
   model: AITagPhotoModel;
   /**
    * Full system prompt the client assembled (controlled vocabulary,
-   * rules, output schema instructions, etc.). Kept on the CLIENT
-   * side so iOS's prompt-template logic stays in one place and the
-   * server doesn't need to know what the prompt looks like — the
-   * server is a thin auth + R2-fetch + Anthropic-forwarding layer.
+   * rules, output schema instructions, etc.).
+   *
+   * **Optional as of Build #5.46.1.** When omitted, the server
+   * compiles the system prompt itself from the project's manifest
+   * (read from the projects table) + the team's tag library and
+   * AI rules template (read from `app_config`). Same
+   * `compilePrompt(...)` shared logic the client uses, so the
+   * output is byte-equivalent — the choice between client-side and
+   * server-side compilation is a deployment / parity convenience,
+   * not a behaviour difference.
+   *
+   * Clients that have their own customisation pipeline (current
+   * iOS device-key path) keep sending the prompt themselves;
+   * thin clients (future web admin tooling, ad-hoc CLIs) can
+   * omit it and let the server do the work.
    */
-  systemPrompt: string;
+  systemPrompt?: string;
   /**
    * User-message text accompanying the photo. Usually project
    * context + final per-photo instructions the client appends after
    * the system blocks.
+   *
+   * **Optional as of Build #5.46.1** for the same reason as
+   * `systemPrompt`. When omitted, the server compiles the user
+   * prompt via shared `compileUserPrompt(photo.imageFilename)`.
    */
-  userText: string;
+  userText?: string;
   /**
    * Anthropic `max_tokens`. Optional — server defaults to 4096
    * (enough for a structured tag/analysis JSON; bump up for verbose
