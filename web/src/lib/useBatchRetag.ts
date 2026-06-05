@@ -1,13 +1,18 @@
 import { useCallback, useRef, useState } from "react";
-import type { AITagPhotoModel, Photo, Project } from "@forensic/shared";
+import type {
+  AITagPhotoModel,
+  Photo,
+  Project,
+  ValidationVocabulary,
+} from "@forensic/shared";
 import {
   aiAnalysisToSuggestions,
   compilePrompt,
-  compileUserPrompt,
-  parseAIPhotoAnalysis,
   PromptCompileError,
+  resolveValidationVocabulary,
 } from "@forensic/shared";
 import { api, ApiError } from "./api";
+import { tagPhotoWithValidation } from "./tagPhotoFlow";
 
 /**
  * Per-photo outcome of a batch tagging run.
@@ -123,6 +128,7 @@ export function useBatchRetag(args: {
       // burning any Anthropic budget.
       setState({ ...INITIAL, kind: "preparing" });
       let systemPrompt: string;
+      let vocabulary: ValidationVocabulary | null = null;
       try {
         const [tagLibResp, rulesResp] = await Promise.all([
           api.getTagLibraryConfig(),
@@ -143,6 +149,15 @@ export function useBatchRetag(args: {
           project,
         });
         systemPrompt = compiled.joinedSystemPrompt;
+        // Same vocabulary used by every photo's repair retry —
+        // resolve once at prep, reuse for the whole batch.
+        if (project.tagSelection) {
+          vocabulary = resolveValidationVocabulary({
+            library: tagLibResp.value,
+            selection: project.tagSelection,
+            extras: project.aiExtraVocabulary,
+          });
+        }
       } catch (e: unknown) {
         if (e instanceof PromptCompileError) {
           setState({
@@ -257,16 +272,13 @@ export function useBatchRetag(args: {
           },
         }));
         try {
-          const resp = await api.tagPhoto({
+          const { analysis } = await tagPhotoWithValidation({
             projectId,
             photoId: photo.id,
+            imageFilename: photo.imageFilename,
             model: opts.model,
             systemPrompt,
-            userText: compileUserPrompt(photo.imageFilename),
-          });
-          const analysis = parseAIPhotoAnalysis({
-            rawText: resp.rawText,
-            fallbackPhotoID: photo.imageFilename,
+            vocabulary,
           });
           const newSuggestions = aiAnalysisToSuggestions(analysis);
           // Merge with whatever pending suggestions the photo already

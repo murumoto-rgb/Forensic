@@ -9,11 +9,11 @@ import type {
 import {
   aiAnalysisToSuggestions,
   compilePrompt,
-  compileUserPrompt,
-  parseAIPhotoAnalysis,
   PromptCompileError,
+  resolveValidationVocabulary,
 } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { tagPhotoWithValidation } from "../lib/tagPhotoFlow";
 import { useTagConfidenceThreshold } from "../lib/useTagConfidenceThreshold";
 
 /**
@@ -1151,7 +1151,7 @@ function ReTagWithAIControl({
     | { kind: "idle" }
     | { kind: "running" }
     | { kind: "error"; message: string }
-    | { kind: "done"; parseFailed: boolean };
+    | { kind: "done"; parseFailed: boolean; didRepair: boolean; validationErrorCount: number };
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [model, setModel] = useState<AITagPhotoModel>("claude-sonnet-4-6");
 
@@ -1180,18 +1180,27 @@ function ReTagWithAIControl({
         project,
       });
 
-      const resp = await api.tagPhoto({
+      // Resolve validation vocabulary in parallel with the prompt —
+      // both use the same library + selection. The vocabulary lets
+      // the flow do its one-shot repair retry on validator rejections
+      // (Build #5.43.1).
+      const vocabulary = project.tagSelection
+        ? resolveValidationVocabulary({
+            library: tagLibResp.value,
+            selection: project.tagSelection,
+            extras: project.aiExtraVocabulary,
+          })
+        : null;
+
+      const { analysis, didRepair } = await tagPhotoWithValidation({
         projectId,
         photoId: photo.id,
+        imageFilename: photo.imageFilename,
         model,
         systemPrompt: compiled.joinedSystemPrompt,
-        userText: compileUserPrompt(photo.imageFilename),
+        vocabulary,
       });
 
-      const analysis = parseAIPhotoAnalysis({
-        rawText: resp.rawText,
-        fallbackPhotoID: photo.imageFilename,
-      });
       // Build the suggest/accept/reject pipeline payload the same way
       // iOS does (Build #5.41.1). Merge with the photo's existing
       // pendingSuggestions so a previous batch's review state isn't
@@ -1203,7 +1212,12 @@ function ReTagWithAIControl({
         aiAnalysis: analysis,
         pendingSuggestions: merged,
       });
-      setStatus({ kind: "done", parseFailed: analysis.parseFailed });
+      setStatus({
+        kind: "done",
+        parseFailed: analysis.parseFailed,
+        didRepair,
+        validationErrorCount: analysis.validationErrors.length,
+      });
     } catch (e: unknown) {
       if (e instanceof PromptCompileError) {
         setStatus({
@@ -1258,7 +1272,26 @@ function ReTagWithAIControl({
           Model output was unparseable — saved on the photo for review.
         </div>
       )}
-      {status.kind === "done" && !status.parseFailed && (
+      {status.kind === "done" && !status.parseFailed && status.didRepair && status.validationErrorCount === 0 && (
+        <div className="rounded border border-emerald-800 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200">
+          Tagged after one-shot repair retry — model fixed its
+          vocabulary slip on the second pass.
+        </div>
+      )}
+      {status.kind === "done" && !status.parseFailed && status.didRepair && status.validationErrorCount > 0 && (
+        <div className="rounded border border-amber-700 bg-amber-950/40 px-2 py-1 text-xs text-amber-200">
+          Tagged with {status.validationErrorCount} remaining
+          validation issue{status.validationErrorCount === 1 ? "" : "s"} after
+          one-shot repair retry — review the validator notes in the AI analysis viewer.
+        </div>
+      )}
+      {status.kind === "done" && !status.parseFailed && !status.didRepair && status.validationErrorCount > 0 && (
+        <div className="rounded border border-amber-700 bg-amber-950/40 px-2 py-1 text-xs text-amber-200">
+          Tagged with {status.validationErrorCount} validation issue
+          {status.validationErrorCount === 1 ? "" : "s"} — review the validator notes in the AI analysis viewer.
+        </div>
+      )}
+      {status.kind === "done" && !status.parseFailed && !status.didRepair && status.validationErrorCount === 0 && (
         <div className="rounded border border-emerald-800 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200">
           Tagged. Save status indicator confirms persistence.
         </div>
