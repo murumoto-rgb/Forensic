@@ -104,6 +104,17 @@ final class AppConfigSyncer {
             } catch {
                 surfaceError(error, label: "tag library")
             }
+        } else {
+            // Seed-on-empty (Build #5.47.1). Server has no value for
+            // this key yet — push our local copy (which on a fresh
+            // install is the bundled default) so the team's web
+            // admin pages and any future thin clients see a baseline
+            // immediately, without waiting for the engineer to
+            // explicitly edit and re-save. Idempotent across devices:
+            // first push wins, others get a 409 and `pushTagLibrary`'s
+            // refetch-and-retry path lands the same content with the
+            // freshly-pulled revision.
+            await pushTagLibrary(store.tagLibrary)
         }
         if let entry = bundle.entries["aiRulesTemplate"] {
             do {
@@ -113,6 +124,13 @@ final class AppConfigSyncer {
             } catch {
                 surfaceError(error, label: "AI rules template")
             }
+        } else {
+            // Seed-on-empty — same shape as the tagLibrary branch
+            // above. Pushes whichever local value the store carries
+            // (bundled default on a fresh install, or the engineer's
+            // customised text on a returning install whose previous
+            // push pre-dated this code).
+            await pushAIRulesTemplate(store.aiRulesTemplate)
         }
     }
 
