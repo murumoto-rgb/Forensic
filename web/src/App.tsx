@@ -6,6 +6,8 @@ import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { ProjectPlanPage } from "./pages/ProjectPlanPage";
+import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
+import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
 
 export function App() {
@@ -51,6 +53,14 @@ export function App() {
         <Route
           path="/projects/:id/plan"
           element={session ? <ProjectPlanPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/admin/tag-library"
+          element={session ? <AdminTagLibraryPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/admin/ai-rules"
+          element={session ? <AdminAIRulesPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
