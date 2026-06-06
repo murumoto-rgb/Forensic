@@ -11,7 +11,12 @@
 // can hook the HTTP server. Conditional on SENTRY_DSN — no-op when
 // the env var is absent.
 import { initSentry, captureException } from "./sentry.js";
+import { initEmail } from "./email/resend.js";
 initSentry();
+// Resend transactional email (Build #5.61.1). Conditional on
+// RESEND_API_KEY + RESEND_FROM_EMAIL — sends no-op when either is
+// blank so the route handlers don't need to special-case it.
+initEmail();
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";

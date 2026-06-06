@@ -52,6 +52,9 @@ After step 3, the web app can talk to the server.
 | `SENTRY_DSN`                 | sentry.io → server project → Client Keys. Optional. |
 | `SENTRY_RELEASE`             | Optional — defaults to `RENDER_GIT_COMMIT`.         |
 | `SENTRY_TRACES_SAMPLE_RATE`  | Optional — default 0.1.                             |
+| `RESEND_API_KEY`             | resend.com → API Keys. Optional — emails no-op when blank. |
+| `RESEND_FROM_EMAIL`          | A verified sender on Resend (or `onboarding@resend.dev` in sandbox). Optional. |
+| `WEB_BASE_URL`               | Vercel URL of the web app (used in email "open project" links). Optional but required for emails to fire. |
 
 ### Vercel (`forensic-web`)
 
@@ -67,7 +70,9 @@ After step 3, the web app can talk to the server.
 
 The Supabase **secret** key never goes into Vercel — secrets stay
 on the server side only. Sentry / PostHog are optional: omit their
-vars and the SDKs no-op (Build #5.57.1).
+vars and the SDKs no-op (Build #5.57.1). Resend is also optional:
+without `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `WEB_BASE_URL`,
+the lock-collaboration notifications (Build #5.61.1) no-op silently.
 
 ## Related docs
 
