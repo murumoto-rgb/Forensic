@@ -32,6 +32,8 @@ import type {
   GetAppConfigBundleResponse,
   TagLibrary,
   AIRulesTemplate,
+  LockResponse,
+  GetLockResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -285,6 +287,34 @@ export const api = {
       throw e;
     }
   },
+  // -------------------- Project edit lock (Build #5.60.1) --------------------
+  /** Current lock state for a project. `lock` is null when free. */
+  getProjectLock: (projectId: string) =>
+    request<GetLockResponse>(`/v1/projects/${projectId}/lock`),
+  /** Acquire — 409 ApiError when held live by another user; the
+   *  envelope's `details.lock` carries the holder for the conflict
+   *  banner. */
+  acquireProjectLock: (projectId: string) =>
+    request<LockResponse>(`/v1/projects/${projectId}/lock`, {
+      method: "POST",
+      body: JSON.stringify({ client: "web" }),
+    }),
+  /** Bump expiry — 409 `lock_lost` if we're no longer the holder. */
+  heartbeatProjectLock: (projectId: string) =>
+    request<LockResponse>(`/v1/projects/${projectId}/lock/heartbeat`, {
+      method: "POST",
+    }),
+  /** Release (holder-only on the server; idempotent). */
+  releaseProjectLock: (projectId: string) =>
+    request<{ ok: true }>(`/v1/projects/${projectId}/lock`, {
+      method: "DELETE",
+    }),
+  /** Force-release — any signed-in user for now (no admin role
+   *  yet). Server logs at warn so it's traceable. */
+  forceReleaseProjectLock: (projectId: string) =>
+    request<{ ok: true }>(`/v1/projects/${projectId}/lock/force`, {
+      method: "POST",
+    }),
 };
 
 // Re-export for callers that need the wire types.

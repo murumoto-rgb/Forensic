@@ -7,6 +7,8 @@ import { api, ApiError } from "../lib/api";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { BatchRetagControl } from "../components/BatchRetagControl";
+import { LockBanner } from "../components/LockBanner";
+import { useProjectLock } from "../lib/useProjectLock";
 
 /**
  * Project detail page at `/projects/:id`. Loads the full manifest,
@@ -19,6 +21,8 @@ interface Props {
 
 export function ProjectDetailPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
+  const lock = useProjectLock(id ?? null);
+  const canEdit = lock.status.kind === "holding";
   const [project, setProject] = useState<Project | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +105,7 @@ export function ProjectDetailPage({ session }: Props) {
         <div className="flex flex-col items-end gap-2 text-right">
           <span className="text-xs text-neutral-500">{session.user.email}</span>
           <div className="flex gap-2">
-            {project && id && revision !== null && (
+            {project && id && revision !== null && canEdit && (
               <BatchRetagControl
                 projectId={id}
                 projectRef={projectRef}
@@ -127,6 +131,15 @@ export function ProjectDetailPage({ session }: Props) {
           {error}
         </div>
       )}
+
+      <LockBanner
+        status={lock.status}
+        acquire={lock.acquire}
+        release={lock.release}
+        force={lock.force}
+        refresh={lock.refresh}
+        acknowledgeLost={lock.acknowledgeLost}
+      />
 
       {project === null && !error && (
         <div className="text-sm text-neutral-500">Loading…</div>

@@ -6,6 +6,8 @@ import { signOutLocal } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
 import { FloorPlanCanvas } from "../components/FloorPlanCanvas";
 import { PhotoPreviewPanel } from "../components/PhotoPreviewPanel";
+import { LockBanner } from "../components/LockBanner";
+import { useProjectLock } from "../lib/useProjectLock";
 
 /**
  * Project floor plan viewer page. Route: `/projects/:id/plan`.
@@ -97,6 +99,8 @@ function resolveHighlightPinId(
 
 export function ProjectPlanPage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
+  const lock = useProjectLock(id ?? null);
+  const canEdit = lock.status.kind === "holding";
   const [project, setProject] = useState<Project | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -219,6 +223,17 @@ export function ProjectPlanPage({ session }: Props) {
   useEffect(() => {
     revisionRef.current = revision;
   }, [revision]);
+
+  // Drop both edit modes if the lock evaporates (lock_lost, release,
+  // force-released by someone else). Prevents the canvas from staying
+  // in a drag-pins or add-distress state that the page no longer has
+  // authority to commit.
+  useEffect(() => {
+    if (!canEdit) {
+      setPinsUnlocked(false);
+      setDistressUnlocked(false);
+    }
+  }, [canEdit]);
 
   useEffect(() => {
     if (!id) return;
@@ -557,6 +572,15 @@ export function ProjectPlanPage({ session }: Props) {
         </div>
       )}
 
+      <LockBanner
+        status={lock.status}
+        acquire={lock.acquire}
+        release={lock.release}
+        force={lock.force}
+        refresh={lock.refresh}
+        acknowledgeLost={lock.acknowledgeLost}
+      />
+
       {saveStatus.kind === "error" && (
         <div className="mb-4 rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
           Save failed: {saveStatus.message}
@@ -646,38 +670,42 @@ export function ProjectPlanPage({ session }: Props) {
                   +
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={togglePinsUnlocked}
-                className={
-                  pinsUnlocked
-                    ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
-                    : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                }
-                title={
-                  pinsUnlocked
-                    ? "Pins are unlocked — drag to reposition. Click to lock."
-                    : "Pins are locked. Click to unlock and reposition."
-                }
-              >
-                {pinsUnlocked ? "🔓 Pins unlocked" : "🔒 Unlock pins"}
-              </button>
-              <button
-                type="button"
-                onClick={toggleDistressUnlocked}
-                className={
-                  distressUnlocked
-                    ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
-                    : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                }
-                title={
-                  distressUnlocked
-                    ? "Distress mode is on — click or drag the canvas to add. Click to exit."
-                    : "Click to enter distress mode (add / edit / delete marks on this plan)."
-                }
-              >
-                {distressUnlocked ? "✚ Adding distress" : "✚ Add distress"}
-              </button>
+              {canEdit && (
+                <>
+                  <button
+                    type="button"
+                    onClick={togglePinsUnlocked}
+                    className={
+                      pinsUnlocked
+                        ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
+                        : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                    }
+                    title={
+                      pinsUnlocked
+                        ? "Pins are unlocked — drag to reposition. Click to lock."
+                        : "Pins are locked. Click to unlock and reposition."
+                    }
+                  >
+                    {pinsUnlocked ? "🔓 Pins unlocked" : "🔒 Unlock pins"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleDistressUnlocked}
+                    className={
+                      distressUnlocked
+                        ? "rounded border border-amber-500 bg-amber-950/40 px-3 py-1 text-xs text-amber-200 hover:bg-amber-900/40"
+                        : "rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                    }
+                    title={
+                      distressUnlocked
+                        ? "Distress mode is on — click or drag the canvas to add. Click to exit."
+                        : "Click to enter distress mode (add / edit / delete marks on this plan)."
+                    }
+                  >
+                    {distressUnlocked ? "✚ Adding distress" : "✚ Add distress"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -944,19 +972,27 @@ export function ProjectPlanPage({ session }: Props) {
               s ? { ...s, selectedPhotoId: photoId } : null
             )
           }
-          onPhotoUpdated={(updated) => {
-            // Splice the mutated photo into the project, persist via
-            // the same optimistic-save loop pin-drag uses.
-            if (!project) return;
-            const idx = project.photos.findIndex((p) => p.id === updated.id);
-            if (idx < 0) return;
-            const nextPhotos = [...project.photos];
-            nextPhotos[idx] = updated;
-            const next: Project = { ...project, photos: nextPhotos };
-            setProject(next);
-            pendingRef.current = next;
-            void runSaveLoop();
-          }}
+          // Re-tag / accept-suggestion / reject-suggestion live behind
+          // this callback inside the panel — leaving it undefined when
+          // we don't hold the lock makes those affordances hide
+          // entirely (their existing `onPhotoUpdated && …` guards).
+          onPhotoUpdated={
+            canEdit
+              ? (updated) => {
+                  if (!project) return;
+                  const idx = project.photos.findIndex(
+                    (p) => p.id === updated.id
+                  );
+                  if (idx < 0) return;
+                  const nextPhotos = [...project.photos];
+                  nextPhotos[idx] = updated;
+                  const next: Project = { ...project, photos: nextPhotos };
+                  setProject(next);
+                  pendingRef.current = next;
+                  void runSaveLoop();
+                }
+              : undefined
+          }
           onClose={() => setPreviewState(null)}
         />
       )}
