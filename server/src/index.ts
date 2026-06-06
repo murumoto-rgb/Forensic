@@ -7,6 +7,12 @@
  * land in subsequent commits.
  */
 
+// Sentry must be initialised BEFORE Fastify so its auto-instrumentation
+// can hook the HTTP server. Conditional on SENTRY_DSN — no-op when
+// the env var is absent.
+import { initSentry, captureException } from "./sentry.js";
+initSentry();
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
@@ -65,6 +71,23 @@ async function main() {
   await app.register(plansRoute);
   await app.register(aiTagRoute);
   await app.register(appConfigRoute);
+
+  // Error handler — captures non-4xx exceptions into Sentry then
+  // delegates to Fastify's default reply machinery (Build #5.57.1).
+  // 4xx responses are caller-driven validation / auth / not-found
+  // outcomes that don't warrant Sentry's quota; only 5xx + uncaught
+  // throws flow through.
+  app.setErrorHandler((error: import("fastify").FastifyError, request, reply) => {
+    const statusCode = error.statusCode ?? 500;
+    if (statusCode >= 500) {
+      captureException(error, {
+        method: request.method,
+        url: request.url,
+        userId: (request as { user?: { id: string } }).user?.id,
+      });
+    }
+    reply.send(error);
+  });
 
   try {
     await app.listen({ port: env.PORT, host: "0.0.0.0" });

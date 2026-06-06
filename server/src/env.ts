@@ -40,6 +40,19 @@ const EnvSchema = z.object({
   // Lets us deploy the endpoint before the env var is set, then add
   // it in Render's dashboard separately.
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+
+  // Sentry DSN for server-side error reporting (Build #5.57.1).
+  // OPTIONAL — when absent, Sentry instrumentation no-ops cleanly.
+  // Grab the DSN from sentry.io → Project Settings → Client Keys.
+  SENTRY_DSN: z.string().url().optional(),
+  // Sentry release identifier — defaults to the git SHA Render sets
+  // (`RENDER_GIT_COMMIT`) when present, otherwise undefined. Lets
+  // Sentry group errors by deployed build.
+  SENTRY_RELEASE: z.string().optional(),
+  // Sample rate for performance traces. 0 disables performance
+  // monitoring; 1 captures every transaction. Default 0.1 keeps the
+  // quota-friendly trickle on Render's free tier.
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 });
 
 function loadEnv() {

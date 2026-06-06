@@ -12,6 +12,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import { verifyUserJWT } from "../supabase.js";
+import { setRequestUser } from "../sentry.js";
 
 const BEARER_RE = /^Bearer\s+(.+)$/;
 
@@ -39,6 +40,10 @@ export async function requireAuth(
     return;
   }
   request.user = { id: user.id, email: user.email };
+  // Tag the current request scope with the user id so any later
+  // exception captured by `setErrorHandler` carries enough context
+  // to triage without us threading the user through every callsite.
+  setRequestUser(user.id);
 }
 
 /**
