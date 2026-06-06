@@ -10,6 +10,7 @@ struct SettingsSheet: View {
     @Environment(ManifestSyncer.self) private var syncer
     @Environment(PhotoSyncer.self) private var photoSyncer
     @Environment(AppConfigSyncer.self) private var appConfigSyncer
+    @Environment(BinaryBackfillService.self) private var backfillService
 
     @State private var apiKey: String = ""
     @State private var hasStoredKey: Bool = false
@@ -82,6 +83,7 @@ struct SettingsSheet: View {
                             syncer.resetRevisions()
                             photoSyncer.resetUploadCache()
                             appConfigSyncer.resetRevisions()
+                            backfillService.reset()
                             try? await auth.signOut()
                             dismiss()
                         }
@@ -99,8 +101,10 @@ struct SettingsSheet: View {
                         Task {
                             toastCenter.post("Sync started…", kind: .info)
                             await appConfigSyncer.pullAllFromServer()
+                            await syncer.pullAllFromServer()
                             await syncer.pushAllToServer()
                             await photoSyncer.syncAll()
+                            await backfillService.backfillAll()
                             toastCenter.post("Sync sweep done.", kind: .info)
                         }
                     } label: {
@@ -275,23 +279,15 @@ struct SettingsSheet: View {
 
                 Section {
                     HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
-                            .foregroundStyle(store.usingICloud ? .blue : .orange)
+                        Image(systemName: storageIconName)
+                            .foregroundStyle(storageIconTint)
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(store.usingICloud
-                                 ? "Synced via iCloud Drive"
-                                 : "Local storage only")
+                            Text(storageHeadline)
                                 .font(.subheadline.bold())
-                            if store.usingICloud {
-                                Text("Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them, or AirDrop the folder to share.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else if let reason = store.iCloudUnavailableReason {
-                                Text(reason)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text(storageSubtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 } header: {
@@ -382,6 +378,42 @@ struct SettingsSheet: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    /// Storage-row branching mirrors the projects-list footer's
+    /// (`StorageStatusFooter`) so the same three states render the
+    /// same way in both places (Build #5.49.1).
+    private var isOnBackend: Bool { auth.session != nil }
+    private var storageIconName: String {
+        if store.usingICloud { return "icloud.fill" }
+        if isOnBackend { return "externaldrive.fill.badge.icloud" }
+        return "iphone"
+    }
+    private var storageIconTint: Color {
+        if store.usingICloud { return .blue }
+        if isOnBackend { return .blue }
+        return .orange
+    }
+    private var storageHeadline: String {
+        if store.usingICloud {
+            return isOnBackend ? "Synced via iCloud + backend" : "Synced via iCloud Drive"
+        }
+        if isOnBackend {
+            return "Synced via backend (no iCloud)"
+        }
+        return "Local storage only"
+    }
+    private var storageSubtitle: String {
+        if store.usingICloud {
+            if isOnBackend {
+                return "Projects sync to iCloud Drive AND the Forensic backend (Supabase + R2). Open Files app to browse the local copy, or AirDrop the folder to share."
+            }
+            return "Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them, or AirDrop the folder to share."
+        }
+        if isOnBackend {
+            return "iCloud Drive is unavailable on this device, but your work syncs to the Forensic backend. Photos + plans backfill from R2 on launch so a fresh install / restored device fills in."
+        }
+        return store.iCloudUnavailableReason ?? "Sign in (Account section above) to back up to the Forensic team server."
     }
 
     private var rulesTemplateSubtitle: String {

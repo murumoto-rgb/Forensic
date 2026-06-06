@@ -7,6 +7,8 @@ struct ContentView: View {
     @Binding var atRoot: Bool
 
     @Environment(ProjectStore.self) private var store
+    @Environment(AuthService.self) private var auth
+    @Environment(BinaryBackfillService.self) private var backfill
 
     @State private var path = NavigationPath()
     @State private var showingNew = false
@@ -57,7 +59,7 @@ struct ContentView: View {
                             }
                         }
 
-                        Section { StorageStatusFooter(store: store) }
+                        Section { StorageStatusFooter(store: store, auth: auth, backfill: backfill) }
                     }
                     .listStyle(.insetGrouped)
                 }
@@ -210,32 +212,88 @@ private struct EmptyProjectsView: View {
 
 private struct StorageStatusFooter: View {
     let store: ProjectStore
+    let auth: AuthService
+    let backfill: BinaryBackfillService
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: store.usingICloud ? "icloud.fill" : "iphone")
-                .foregroundStyle(store.usingICloud ? .blue : .orange)
+            Image(systemName: iconName)
+                .foregroundStyle(iconTint)
             VStack(alignment: .leading, spacing: 2) {
-                Text(store.usingICloud ? "Saved to iCloud Drive" : "Local storage only")
+                Text(headlineText)
                     .font(.caption.bold())
-                if store.usingICloud {
-                    Text("Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them.")
+                Text(subtitleText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if backfill.isRunning,
+                   backfill.progress.totalFiles > 0 {
+                    Text("Backfilling files: \(backfill.progress.downloadedFiles)/\(backfill.progress.totalFiles)\(backfill.progress.failedFiles > 0 ? " (\(backfill.progress.failedFiles) failed)" : "")")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else if let reason = store.iCloudUnavailableReason {
-                    Text(reason)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.blue)
                 }
             }
             Spacer()
         }
         .padding(.top, 4)
     }
+
+    // Three combined states the footer reflects (Build #5.49.1):
+    //  * iCloud + backend — strongest persistence.
+    //  * No iCloud, backend signed in — local + Supabase + R2.
+    //    Was misleadingly labelled "Local storage only" before this
+    //    build; the simulator + any fresh install hit this branch
+    //    and the user thought their work wasn't being saved
+    //    anywhere off-device.
+    //  * No iCloud, not signed in — truly local only.
+
+    private var isOnBackend: Bool { auth.session != nil }
+
+    private var iconName: String {
+        if store.usingICloud { return "icloud.fill" }
+        if isOnBackend { return "externaldrive.fill.badge.icloud" }
+        return "iphone"
+    }
+    private var iconTint: Color {
+        if store.usingICloud { return .blue }
+        if isOnBackend { return .blue }
+        return .orange
+    }
+    private var headlineText: String {
+        if store.usingICloud {
+            return isOnBackend ? "Saved to iCloud + backend" : "Saved to iCloud Drive"
+        }
+        if isOnBackend {
+            return "Saved to backend (no iCloud)"
+        }
+        return "Local storage only"
+    }
+    private var subtitleText: String {
+        if store.usingICloud {
+            if isOnBackend {
+                return "Projects sync to iCloud Drive AND the Forensic backend (Supabase + R2). Open Files app to browse the local copy."
+            }
+            return "Projects sync to iCloud Drive → SitePhoto. Open the Files app to browse them."
+        }
+        if isOnBackend {
+            // The simulator default — used to read "Local storage only".
+            return "iCloud Drive is unavailable, but your work syncs to the Forensic backend (Supabase + R2). Photos + plans backfill from R2 on launch so a fresh install / restored device fills in."
+        }
+        return store.iCloudUnavailableReason ?? "Sign in (Settings → Account) to back up to the Forensic team server."
+    }
 }
 
 #Preview {
-    ContentView(atRoot: .constant(true))
-        .environment(ProjectStore())
+    let toast = ToastCenter()
+    let auth = AuthService()
+    let api = APIClient(auth: auth)
+    let store = ProjectStore()
+    let backfill = BinaryBackfillService(api: api,
+                                          auth: auth,
+                                          store: store,
+                                          toast: toast)
+    return ContentView(atRoot: .constant(true))
+        .environment(store)
         .environment(LocationService())
+        .environment(auth)
+        .environment(backfill)
 }
