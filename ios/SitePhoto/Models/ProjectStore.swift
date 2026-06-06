@@ -3999,6 +3999,40 @@ extension ProjectStore {
         return mut as Data
     }
 
+    /// Generate the on-disk thumbnail for a photo from its local
+    /// full-resolution image, when the full image exists locally but
+    /// the thumb is missing (Build #5.53.1). Used by
+    /// `BinaryBackfillService` so a device that backfilled full
+    /// images doesn't have to re-download anything to populate the
+    /// photo-list thumbnails — the server's thumb endpoint just
+    /// falls back to the full image anyway (iOS only ever uploads
+    /// the `photo` kind), so regenerating on-device from the
+    /// already-present full image is strictly cheaper than a network
+    /// round trip.
+    ///
+    /// Returns true when a thumb was written (or already existed),
+    /// false when the full image isn't on disk / couldn't be
+    /// downsampled (caller can then fall back to a network fetch).
+    @discardableResult
+    func regenerateThumbnailFromLocalImage(for photo: Photo, in project: Project) -> Bool {
+        guard let thumbURL = thumbnailURL(for: photo, in: project) else { return false }
+        if fileManager.fileExists(atPath: thumbURL.path) { return true }
+        let imageURL = imageURL(for: photo, in: project)
+        guard fileManager.fileExists(atPath: imageURL.path),
+              let imageData = try? Data(contentsOf: imageURL),
+              let thumbData = Self.makeThumbnail(from: imageData, maxPixelSize: 256) else {
+            return false
+        }
+        do {
+            try fileManager.createDirectory(at: thumbURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            try thumbData.write(to: thumbURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Photo filename scheme
 
     /// "Project Name - 3 - 260508 14-30-22.jpg"
