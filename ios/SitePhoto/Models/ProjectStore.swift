@@ -3961,7 +3961,12 @@ extension ProjectStore {
         }
     }
 
-    private static func makeThumbnail(from imageData: Data, maxPixelSize: CGFloat) -> Data? {
+    /// CG-only thumbnail generator. Visibility broadened from
+    /// `private` in Build #5.54.1 so background-task callers
+    /// (`BinaryBackfillService`'s thumb-regen pass) can use it off
+    /// the main actor — the work is pure Core Graphics + ImageIO and
+    /// doesn't touch observable state.
+    static func makeThumbnail(from imageData: Data, maxPixelSize: CGFloat) -> Data? {
         guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
