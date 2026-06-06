@@ -35,6 +35,7 @@ import type {
   DistressKind,
   DistressMark,
   FloorPlan,
+  PdfExportOptions,
   Photo,
   Project,
 } from "@forensic/shared";
@@ -148,22 +149,6 @@ async function fetchImagesParallel(
     Array.from({ length: Math.min(concurrency, keys.length) }, worker)
   );
   return results;
-}
-
-/** Throws if the project is too large for the skeleton renderer. The
- *  job is marked failed via the worker's catch path; the web UI
- *  shows the message tooltip. */
-function assertProjectSize(project: Project): void {
-  const activePhotoCount = project.photos.filter(
-    (p) => p.trashedAt == null
-  ).length;
-  if (activePhotoCount > MAX_PHOTOS_PER_PDF) {
-    throw new Error(
-      `Project has ${activePhotoCount} active photos; the PDF renderer caps at ` +
-        `${MAX_PHOTOS_PER_PDF}. Trash unused photos or wait for the options-sheet ` +
-        `release to pick a subset.`
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,26 +358,58 @@ function planPage(
 // Top-level render
 // ---------------------------------------------------------------------------
 
-/** Build the complete report HTML. Throws if the project is over
- *  `MAX_PHOTOS_PER_PDF`. */
+/** Apply the user's photo filter on top of the always-applied
+ *  "exclude trashed unless `includeTrashed`" rule. */
+function selectPhotos(project: Project, options: PdfExportOptions): Photo[] {
+  let pool = project.photos;
+  if (!options.includeTrashed) {
+    pool = pool.filter((p) => p.trashedAt == null);
+  }
+  if (options.photoFilter === "favorites") {
+    pool = pool.filter((p) => p.isFavorite);
+  } else if (options.photoFilter === "byFloorPlan" && options.floorPlanId) {
+    pool = pool.filter((p) => p.floorPlanID === options.floorPlanId);
+  }
+  return pool;
+}
+
+/** Chunk an array into groups of `size`. The last group may be
+ *  shorter. */
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
+  }
+  return out;
+}
+
+/** Build the complete report HTML. Throws if the selected photo set
+ *  exceeds `MAX_PHOTOS_PER_PDF`. */
 export async function renderReportHtml(
   project: Project,
   projectId: string,
-  log: FastifyBaseLogger
+  log: FastifyBaseLogger,
+  options: PdfExportOptions
 ): Promise<string> {
-  assertProjectSize(project);
+  const selectedPhotos = selectPhotos(project, options);
+  if (selectedPhotos.length > MAX_PHOTOS_PER_PDF) {
+    throw new Error(
+      `Selection contains ${selectedPhotos.length} photos; the PDF renderer caps at ` +
+        `${MAX_PHOTOS_PER_PDF}. Narrow the filter (favorites only, single floor plan) or ` +
+        `trash unused photos.`
+    );
+  }
 
-  const activePhotos = project.photos.filter((p) => p.trashedAt == null);
-
-  // Fetch all images in one parallel pass — photos use thumbs (fast,
-  // small), plans use full images so the overlay coordinates line up.
-  const photoKeys = activePhotos.map((p) =>
+  // Plan pages (when included) always render every plan — even when
+  // the photo filter scopes to a single one, the team often wants
+  // every plan available for spatial context.
+  const planKeys = options.includeFloorPlanPages
+    ? project.floorPlans.map((p) => planImageKey(projectId, p.id))
+    : [];
+  const photoKeys = selectedPhotos.map((p) =>
     p.thumbnailFilename
       ? photoThumbKey(projectId, p.id)
       : photoImageKey(projectId, p.id)
-  );
-  const planKeys = project.floorPlans.map((p) =>
-    planImageKey(projectId, p.id)
   );
   const allKeys = Array.from(new Set([...photoKeys, ...planKeys]));
   const blobs = await fetchImagesParallel(allKeys, log);
@@ -401,32 +418,73 @@ export async function renderReportHtml(
     project.floorPlans.map((p) => [p.id, p.label] as const)
   );
 
-  const photoPagesHtml = activePhotos
-    .map((p, i) => {
-      const key = photoKeys[i] ?? "";
-      const blob = blobs.get(key) ?? null;
-      return photoPage(p, blob, p.floorPlanID ? planLabelById.get(p.floorPlanID) ?? null : null);
+  // Photos-per-page: 1 → one page per photo; 2 / 4 → grouped pages.
+  // Each group still page-breaks after itself; the CSS grid layout
+  // arranges the 2- or 4-up tiles inside.
+  const photoGroups = chunk(selectedPhotos, options.photosPerPage);
+  const photoPagesHtml = photoGroups
+    .map((group) => {
+      const tiles = group
+        .map((p) => {
+          const tileKey = p.thumbnailFilename
+            ? photoThumbKey(projectId, p.id)
+            : photoImageKey(projectId, p.id);
+          const blob = blobs.get(tileKey) ?? null;
+          return photoPage(
+            p,
+            blob,
+            p.floorPlanID ? planLabelById.get(p.floorPlanID) ?? null : null
+          );
+        })
+        .join("\n");
+      // For 1-per-page we render the photoPage directly (already a
+      // <section class="page photo">). For 2/4-per-page we wrap a
+      // grid container so the tiles share one printed page.
+      if (options.photosPerPage === 1) return tiles;
+      const cls = options.photosPerPage === 2 ? "photogrid-2" : "photogrid-4";
+      return `<section class="page photogrid ${cls}">${tiles}</section>`;
     })
     .join("\n");
 
-  const planPagesHtml = project.floorPlans
-    .map((plan) => {
-      const key = planImageKey(projectId, plan.id);
-      const blob = blobs.get(key) ?? null;
-      const planPhotos = activePhotos.filter((p) => p.floorPlanID === plan.id);
-      return planPage(plan, blob, planPhotos);
-    })
-    .join("\n");
+  const planPagesHtml = options.includeFloorPlanPages
+    ? project.floorPlans
+        .map((plan) => {
+          const key = planImageKey(projectId, plan.id);
+          const blob = blobs.get(key) ?? null;
+          // The plan still shows ALL its pins (not just the
+          // filtered selection) — engineers want the unfiltered
+          // spatial picture even when they exported a subset.
+          const planPhotos = project.photos.filter(
+            (p) => p.floorPlanID === plan.id && p.trashedAt == null
+          );
+          return planPage(plan, blob, planPhotos);
+        })
+        .join("\n")
+    : "";
+
+  const pageSizeCss = options.pageSize === "a4" ? "A4" : "Letter";
 
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title>
 <style>
-  @page { size: Letter; margin: 0.5in; }
+  @page { size: ${pageSizeCss}; margin: 0.5in; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
          color: #0f172a; margin: 0; font-size: 11pt; }
   .page { page-break-after: always; min-height: 10in; padding: 0; }
   .page:last-child { page-break-after: auto; }
+
+  /* Multi-photo grid layouts (Build #5.64.1). Tiles inside a grid
+     page reset their page-break since they share the printed page. */
+  .photogrid { display: grid; gap: 0.25in; min-height: 10in; }
+  .photogrid > .photo { page-break-after: avoid; min-height: 0; }
+  .photogrid-2 { grid-template-rows: 1fr 1fr; }
+  .photogrid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  .photogrid .photo .img { height: auto; max-height: 3.5in; }
+  .photogrid-4 .photo .img { max-height: 2.2in; }
+  .photogrid .photo .aifields { display: none; }
+  .photogrid-4 .photo .observation { display: none; }
+  .photogrid-4 .photo .tags.secondary { display: none; }
 
   /* Cover */
   .cover { display: flex; flex-direction: column; min-height: 10in; }
@@ -478,7 +536,7 @@ export async function renderReportHtml(
   .plan .legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 </style></head>
 <body>
-${coverPage(project)}
+${options.includeCoverPage ? coverPage(project) : ""}
 ${photoPagesHtml}
 ${planPagesHtml}
 </body></html>`;

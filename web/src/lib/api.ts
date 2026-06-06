@@ -36,6 +36,7 @@ import type {
   GetLockResponse,
   CreatePdfExportResponse,
   GetPdfExportResponse,
+  PdfExportOptions,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -319,11 +320,12 @@ export const api = {
     }),
   // -------------------- PDF export (Build #5.62.1) ------------------
   /** Enqueue a PDF render. Returns immediately with a job handle the
-   *  caller polls via `getPdfExport`. */
-  createPdfExport: (projectId: string) =>
+   *  caller polls via `getPdfExport`. `options` is optional — the
+   *  server fills in defaults when fields are omitted. */
+  createPdfExport: (projectId: string, options?: Partial<PdfExportOptions>) =>
     request<CreatePdfExportResponse>(
       `/v1/projects/${projectId}/export/pdf`,
-      { method: "POST", body: JSON.stringify({}) }
+      { method: "POST", body: JSON.stringify({ options: options ?? {} }) }
     ),
   /** Poll for status. When `job.status === "done"`, `downloadUrl` is
    *  a short-lived presigned R2 URL the browser can hit directly. */

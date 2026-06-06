@@ -38,11 +38,12 @@
 
 import type { FastifyBaseLogger } from "fastify";
 import puppeteer, { type Browser } from "puppeteer";
-import type { Project } from "@forensic/shared";
+import type { PdfExportOptions, Project } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
 import { renderReportHtml } from "./htmlReport.js";
+import { applyOptionDefaults } from "./options.js";
 
 /** How often to scan the queue. Render free tier sleeps after 15
  *  min of idle; on cold-start the first poll fires immediately after
@@ -61,6 +62,7 @@ interface JobRow {
   id: string;
   project_id: string;
   status: string;
+  options?: Partial<PdfExportOptions> | null;
 }
 
 async function getOrLaunchBrowser(): Promise<Browser> {
@@ -87,7 +89,7 @@ async function getOrLaunchBrowser(): Promise<Browser> {
 async function claimNextJob(log: FastifyBaseLogger): Promise<JobRow | null> {
   const { data: candidates, error: scanErr } = await supabaseAdmin
     .from("pdf_export_jobs")
-    .select("id, project_id, status")
+    .select("id, project_id, status, options")
     .eq("status", "queued")
     .order("created_at", { ascending: true })
     .limit(1);
@@ -105,7 +107,7 @@ async function claimNextJob(log: FastifyBaseLogger): Promise<JobRow | null> {
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("id", candidate.id)
     .eq("status", "queued")
-    .select("id, project_id, status")
+    .select("id, project_id, status, options")
     .maybeSingle();
   if (claimErr) {
     log.error({ err: claimErr, jobId: candidate.id }, "pdf worker — claim failed");
@@ -127,17 +129,24 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     );
   }
   const project = (row as { manifest: Project }).manifest;
-  // PR #2: real per-photo + per-plan layout. The renderer fetches
-  // thumb / plan bytes from R2 in parallel and inlines them as
-  // base64 data URLs, so setContent's `waitUntil: "load"` is still
-  // the right signal (no remote subresources fired during render).
-  const html = await renderReportHtml(project, job.project_id, log);
+  // PR #3: options drive layout choices (page size, photos per page,
+  // photo filter, included sections). Worker fills defaults for any
+  // missing field so old / minimal clients still produce the
+  // #5.63.1 output shape.
+  const options = applyOptionDefaults(job.options ?? {});
+  const html = await renderReportHtml(project, job.project_id, log, options);
 
   const b = await getOrLaunchBrowser();
   const page = await b.newPage();
   try {
     await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
-    const pdf = await page.pdf({ format: "Letter", printBackground: true });
+    // page.pdf's `format` is the paper size for ALL pages. The HTML
+    // also sets `@page { size: ... }` so the CSS-level page break
+    // hints line up with Puppeteer's paper size.
+    const pdf = await page.pdf({
+      format: options.pageSize === "a4" ? "A4" : "Letter",
+      printBackground: true,
+    });
     const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
     const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
     await putObjectBytes({

@@ -330,9 +330,47 @@ export interface PdfExportJob {
   completedAt: string | null;
 }
 
-/** Reserved for the options sheet (Build #5.64.1+). The skeleton PR
- *  takes no body and the worker renders a fixed cover-page layout. */
-export interface CreatePdfExportRequest {}
+/** Paper size for the rendered PDF. iOS export defaults to letter
+ *  (US engineering convention); A4 is the European-team affordance. */
+export type PdfPageSize = "letter" | "a4";
+
+/** How many photos to fit on each photo page. `1` is the default
+ *  (most legible, 5-inch image); `2` and `4` are stacked / grid
+ *  layouts for projects with hundreds of photos where the engineer
+ *  wants a compact contact-sheet feel. */
+export type PdfPhotosPerPage = 1 | 2 | 4;
+
+/** Which photos to include in the rendered PDF. `all` is every
+ *  non-trashed photo (or every photo when `includeTrashed`); the
+ *  scoped modes narrow to favorites or a single floor plan. */
+export type PdfPhotoFilter = "all" | "favorites" | "byFloorPlan";
+
+/**
+ * Per-job options passed alongside the create request. All fields
+ * carry sensible defaults so the field that was always-implicit
+ * before #5.64.1 still works — the worker substitutes defaults for
+ * any missing field rather than rejecting.
+ */
+export interface PdfExportOptions {
+  pageSize: PdfPageSize;
+  photosPerPage: PdfPhotosPerPage;
+  photoFilter: PdfPhotoFilter;
+  /** Required when `photoFilter === "byFloorPlan"`; ignored otherwise. */
+  floorPlanId: string | null;
+  /** Include photos with a non-null `trashedAt`. Default false. */
+  includeTrashed: boolean;
+  /** Include the project cover page. Default true. */
+  includeCoverPage: boolean;
+  /** Include one page per floor plan with the pin + distress overlay.
+   *  Default true. */
+  includeFloorPlanPages: boolean;
+}
+
+export interface CreatePdfExportRequest {
+  /** Optional — the server applies a sensible-defaults block when
+   *  omitted so legacy clients that POST `{}` still work. */
+  options?: Partial<PdfExportOptions>;
+}
 
 export interface CreatePdfExportResponse {
   job: PdfExportJob;
