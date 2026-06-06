@@ -23,6 +23,12 @@ struct BucketLibraryManagerSheet: View {
 
     @State private var deletingCategory: BucketLibraryCategory?
 
+    /// Drives the "Reset to default seed?" confirmation alert added
+    /// in Build #5.56.1. Bound to the toolbar's overflow menu so the
+    /// user gets a deliberate two-tap confirmation before their
+    /// customisations are replaced.
+    @State private var confirmingReset: Bool = false
+
     @State private var addingEntryToCategory: BucketLibraryCategory?
     /// When true, present `AddEntrySheet` with no pre-selected category
     /// — the top-level "Add Bucket" entry point lets the engineer
@@ -78,8 +84,34 @@ struct BucketLibraryManagerSheet: View {
                         }
                         .accessibilityLabel("Add Primary Investigation Type")
                         EditButton()
+                        // Overflow menu — currently houses just the
+                        // "Reset to default" affordance (Build
+                        // #5.56.1). Same shape as the Tag Library
+                        // Manager's reset and the AI rules template
+                        // sheet's reset.
+                        Menu {
+                            Button(role: .destructive) {
+                                confirmingReset = true
+                            } label: {
+                                Label("Reset to default", systemImage: "arrow.uturn.backward")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("More")
                     }
                 }
+            }
+            .alert("Reset bucket library to default?",
+                   isPresented: $confirmingReset) {
+                Button("Reset", role: .destructive) {
+                    store.restoreBucketLibraryToDefaults()
+                    Haptics.success()
+                    toastCenter.post("Bucket library reset to default", kind: .success)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your customised bucket library will be replaced with the bundled forensic-engineering default. Per-project buckets already copied from the library are not affected. This can't be undone.")
             }
             .alert("New Primary Investigation Type",
                    isPresented: $showingAddCategoryPrompt) {

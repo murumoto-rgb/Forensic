@@ -904,6 +904,32 @@ final class ProjectStore {
         persistTagLibrary()
     }
 
+    /// Replace the persisted bucket library with
+    /// `BucketLibraryCategory.defaultSeeds`. Engineer-initiated
+    /// path only — invoked from the "Restore to default seed" button
+    /// in the Bucket Library Manager (Build #5.56.1). Intentionally
+    /// scoped narrowly: per-project bucket selections (added from the
+    /// library) are NOT touched, they're independent copies on each
+    /// project.
+    func restoreBucketLibraryToDefaults() {
+        bucketLibrary = BucketLibraryCategory.defaultSeeds
+        persistBucketLibrary()
+    }
+
+    /// Replace the persisted report branding with `ReportBranding.empty`
+    /// — the bundled default state that falls back to the in-app
+    /// Baykal logo + project name (Build #5.56.1). Engineer-initiated
+    /// path only — invoked from the "Reset to default" button on the
+    /// Report Branding sheet. Also scrubs the on-disk logo file so the
+    /// next PDF render picks up the bundled logo rather than a stale
+    /// upload.
+    func restoreReportBrandingToDefaults() {
+        if let url = brandingLogoURL {
+            try? fileManager.removeItem(at: url)
+        }
+        _ = updateBranding(.empty)
+    }
+
     // Contexts ----------------------------------------------------------
 
     @discardableResult

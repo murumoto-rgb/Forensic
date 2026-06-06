@@ -9,6 +9,7 @@ import UIKit
 /// explicit "Save" button — just edit and dismiss.
 struct ReportBrandingSheet: View {
     @Environment(ProjectStore.self) private var store
+    @Environment(ToastCenter.self) private var toastCenter
     @Environment(\.dismiss) private var dismiss
 
     @State private var coverTitle: String = ""
@@ -17,6 +18,10 @@ struct ReportBrandingSheet: View {
     @State private var logoItem: PhotosPickerItem?
     @State private var logoPreview: UIImage?
     @State private var loaded: Bool = false
+    /// Two-tap confirmation alert for the "Reset to default" button
+    /// (Build #5.56.1; same shape as the other settings sheets'
+    /// reset affordances).
+    @State private var confirmingReset: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -90,21 +95,33 @@ struct ReportBrandingSheet: View {
                 if store.reportBranding.hasContent {
                     Section {
                         Button(role: .destructive) {
-                            coverTitle = ""
-                            coverSubtitle = ""
-                            footerText = ""
-                            _ = store.setBrandingLogo(nil)
-                            logoPreview = nil
-                            logoItem = nil
-                            _ = store.updateBranding(.empty)
+                            confirmingReset = true
                         } label: {
-                            Label("Clear All Branding", systemImage: "trash")
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
                         }
+                    } footer: {
+                        Text("Replaces every field with the bundled default — the in-app Baykal logo + project name on every PDF cover.")
                     }
                 }
             }
             .navigationTitle("Report Branding")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("Reset report branding to default?",
+                   isPresented: $confirmingReset) {
+                Button("Reset", role: .destructive) {
+                    coverTitle = ""
+                    coverSubtitle = ""
+                    footerText = ""
+                    logoPreview = nil
+                    logoItem = nil
+                    store.restoreReportBrandingToDefaults()
+                    Haptics.success()
+                    toastCenter.post("Report branding reset to default", kind: .success)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your customised cover title, subtitle, footer, and logo will be replaced with the bundled default (in-app Baykal logo + project name). This can't be undone.")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
