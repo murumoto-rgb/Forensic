@@ -143,27 +143,45 @@ final class BinaryBackfillService {
             }
         }
 
-        // Local thumb-regeneration pass (Build #5.53.1). Runs AFTER
-        // the download sweep so every full image that was going to
-        // land is on disk. For each photo whose manifest names a
-        // thumb that's missing locally, regenerate it from the full
-        // image — no network. This is what makes the photo LIST show
-        // real thumbnails instead of grey placeholders; the list
-        // renders the thumb file, not the full image (which only the
-        // lightbox loads).
-        var thumbsRegenerated = 0
-        var thumbsStillMissing = 0
+        // Local thumb-regeneration pass (Build #5.53.1, moved off
+        // the main actor in #5.54.1). Runs AFTER the download sweep
+        // so every full image that was going to land is on disk.
+        // For each photo whose manifest names a thumb that's missing
+        // locally, regenerate it from the full image — no network.
+        // This is what makes the photo LIST show real thumbnails
+        // instead of grey placeholders; the list renders the thumb
+        // file, not the full image (which only the lightbox loads).
+        //
+        // Building the (imagePath, thumbPath) work list happens on
+        // MainActor (reads `store.activeProjects` + per-project
+        // helpers), but the heavy CG decode / downsample / encode
+        // work runs in a detached background task so the UI stays
+        // responsive while 1000+ thumbs process.
+        var thumbWorkList: [ThumbWork] = []
         for project in store.activeProjects {
             for photo in project.photos {
                 guard let thumbURL = store.thumbnailURL(for: photo, in: project),
                       !fileManager.fileExists(atPath: thumbURL.path) else { continue }
-                if store.regenerateThumbnailFromLocalImage(for: photo, in: project) {
-                    thumbsRegenerated += 1
-                } else {
-                    thumbsStillMissing += 1
-                }
+                let imageURL = store.imageURL(for: photo, in: project)
+                thumbWorkList.append(ThumbWork(
+                    imagePath: imageURL.path,
+                    thumbPath: thumbURL.path
+                ))
             }
         }
+        let snapshot = thumbWorkList   // immutable copy captured by the detached task
+        let (thumbsRegenerated, thumbsStillMissing) = await Task.detached(priority: .background) {
+            var regen = 0
+            var missing = 0
+            for w in snapshot {
+                if Self.regenerateThumbnail(imagePath: w.imagePath, thumbPath: w.thumbPath) {
+                    regen += 1
+                } else {
+                    missing += 1
+                }
+            }
+            return (regen, missing)
+        }.value
         if thumbsRegenerated > 0 || thumbsStillMissing > 0 {
             print("[BinaryBackfill] thumb pass: regenerated \(thumbsRegenerated), still missing \(thumbsStillMissing) (full image absent)")
         }
@@ -212,6 +230,46 @@ final class BinaryBackfillService {
         enum Kind: Sendable {
             case photo(Photo)
             case plan(FloorPlan)
+        }
+    }
+
+    /// Path-only unit of work for the off-main thumb-regen pass.
+    /// `Sendable` because it holds only `String` values, so a
+    /// `Task.detached` can capture an array of these without
+    /// crossing actor boundaries with reference types.
+    private struct ThumbWork: Sendable {
+        let imagePath: String
+        let thumbPath: String
+    }
+
+    /// Background-safe thumbnail regenerator (Build #5.54.1). Pure
+    /// file I/O + Core Graphics / ImageIO — no observable-state
+    /// access, no actor isolation needed. Called from a detached
+    /// background Task in `backfillAll()`'s thumb pass so the main
+    /// thread stays responsive while 1000+ thumbs process.
+    ///
+    /// Returns true when a thumb file ended up on disk (either
+    /// already existed or was just written); false when the full
+    /// image was absent or the downsample failed.
+    nonisolated private static func regenerateThumbnail(
+        imagePath: String,
+        thumbPath: String
+    ) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: thumbPath) { return true }
+        guard fm.fileExists(atPath: imagePath),
+              let imageData = try? Data(contentsOf: URL(fileURLWithPath: imagePath)),
+              let thumbData = ProjectStore.makeThumbnail(from: imageData, maxPixelSize: 256) else {
+            return false
+        }
+        let thumbURL = URL(fileURLWithPath: thumbPath)
+        do {
+            try fm.createDirectory(at: thumbURL.deletingLastPathComponent(),
+                                    withIntermediateDirectories: true)
+            try thumbData.write(to: thumbURL, options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 
