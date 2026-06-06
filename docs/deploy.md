@@ -44,6 +44,14 @@ After step 3, the web app can talk to the server.
 | `SUPABASE_SECRET_KEY`        | Supabase Dashboard → Settings → API.               |
 | `CORS_ORIGINS`               | Vercel URL once Vercel is deployed.                |
 | `PORT`                       | Render auto-sets this.                             |
+| `R2_ACCOUNT_ID`              | Cloudflare R2 dashboard.                            |
+| `R2_ACCESS_KEY_ID`           | R2 API token (Object Read & Write).                 |
+| `R2_SECRET_ACCESS_KEY`       | R2 API token.                                       |
+| `R2_BUCKET`                  | R2 bucket name (`forensic-photos`).                 |
+| `ANTHROPIC_API_KEY`          | console.anthropic.com → API Keys. Optional.         |
+| `SENTRY_DSN`                 | sentry.io → server project → Client Keys. Optional. |
+| `SENTRY_RELEASE`             | Optional — defaults to `RENDER_GIT_COMMIT`.         |
+| `SENTRY_TRACES_SAMPLE_RATE`  | Optional — default 0.1.                             |
 
 ### Vercel (`forensic-web`)
 
@@ -52,6 +60,21 @@ After step 3, the web app can talk to the server.
 | `VITE_SUPABASE_URL`              | Supabase Dashboard → Settings → API → Project URL. |
 | `VITE_SUPABASE_PUBLISHABLE_KEY`  | Supabase Dashboard → Settings → API.               |
 | `VITE_API_URL`                   | Render URL.                                        |
+| `VITE_SENTRY_DSN`                | sentry.io → web project → Client Keys. Optional.   |
+| `VITE_SENTRY_TRACES_SAMPLE_RATE` | Optional — default 0.1.                            |
+| `VITE_POSTHOG_KEY`               | posthog.com → Project Settings → API Key. Optional.|
+| `VITE_POSTHOG_HOST`              | Optional — defaults to `https://us.i.posthog.com`. |
 
 The Supabase **secret** key never goes into Vercel — secrets stay
-on the server side only.
+on the server side only. Sentry / PostHog are optional: omit their
+vars and the SDKs no-op (Build #5.57.1).
+
+## Related docs
+
+- **`docs/ops-runbook.md`** — day-2 operations: what's running where,
+  how to read logs, the common-incident playbook ("server is down",
+  "photos won't load", "AI tagging 503s", etc.).
+- **`docs/backup-restore-drill.md`** — what's backed up, where, and
+  the step-by-step recovery procedure for each failure class
+  (dropped DB row, corrupted manifest, lost R2 object, full
+  project-level restore).
