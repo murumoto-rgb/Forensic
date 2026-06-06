@@ -85,10 +85,16 @@ final class BinaryBackfillService {
         print("[BinaryBackfill] sweep starting across \(store.activeProjects.count) active project(s)")
 
         // Build the work list up front so progress reporting +
-        // concurrency are honest.
+        // concurrency are honest. Thumbs are NOT network work items —
+        // they're regenerated locally from the full image after the
+        // download sweep (see the thumb pass below), which avoids a
+        // redundant network round trip (the server's thumb endpoint
+        // just falls back to the full image anyway, since iOS only
+        // ever uploads the `photo` kind).
         var work: [Work] = []
         for project in store.activeProjects {
             var missingPhotos = 0
+            var missingThumbs = 0
             var missingPlans = 0
             for photo in project.photos {
                 let url = store.imageURL(for: photo, in: project)
@@ -97,6 +103,10 @@ final class BinaryBackfillService {
                     work.append(Work(projectId: project.id,
                                      projectName: project.name,
                                      kind: .photo(photo)))
+                }
+                if let thumbURL = store.thumbnailURL(for: photo, in: project),
+                   !fileManager.fileExists(atPath: thumbURL.path) {
+                    missingThumbs += 1
                 }
             }
             for plan in project.floorPlans {
@@ -108,38 +118,54 @@ final class BinaryBackfillService {
                                      kind: .plan(plan)))
                 }
             }
-            print("[BinaryBackfill] project \(project.name): \(project.photos.count) photos, \(project.floorPlans.count) plans — missing \(missingPhotos) photo(s), \(missingPlans) plan(s) locally")
+            print("[BinaryBackfill] project \(project.name): \(project.photos.count) photos, \(project.floorPlans.count) plans — missing \(missingPhotos) photo(s), \(missingThumbs) thumb(s), \(missingPlans) plan(s) locally")
         }
 
-        if work.isEmpty {
-            print("[BinaryBackfill] sweep done: nothing missing locally")
-            // Surface a "nothing to backfill" toast + leave progress
-            // visible so the user can tell the sweep actually ran
-            // even when there was zero work. Build #5.51.1.
-            progress = Progress(totalFiles: 0, downloadedFiles: 0, failedFiles: 0)
-            toast.post("Backfill: nothing missing locally — all files already on disk.", kind: .info)
-            return
-        }
+        // Network sweep for missing photos + plans (if any).
+        if !work.isEmpty {
+            print("[BinaryBackfill] queued \(work.count) missing file(s) for download")
+            progress = Progress(totalFiles: work.count, downloadedFiles: 0, failedFiles: 0)
 
-        print("[BinaryBackfill] queued \(work.count) missing file(s) for download")
-        progress = Progress(totalFiles: work.count, downloadedFiles: 0, failedFiles: 0)
-
-        // Bounded-concurrency runner — same shape useBatchRetag uses
-        // on web. Up to `maxConcurrent` workers pull from the shared
-        // iterator until exhausted.
-        await withTaskGroup(of: Void.self) { group in
-            var iterator = work.makeIterator()
-
-            func launchNext() -> Bool {
-                guard let item = iterator.next() else { return false }
-                group.addTask { [self] in
-                    await processOne(item)
+            // Bounded-concurrency runner — same shape useBatchRetag
+            // uses on web. Up to `maxConcurrent` workers pull from the
+            // shared iterator until exhausted.
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = work.makeIterator()
+                func launchNext() -> Bool {
+                    guard let item = iterator.next() else { return false }
+                    group.addTask { [self] in
+                        await processOne(item)
+                    }
+                    return true
                 }
-                return true
+                for _ in 0..<maxConcurrent { if !launchNext() { break } }
+                for await _ in group { _ = launchNext() }
             }
+        }
 
-            for _ in 0..<maxConcurrent { if !launchNext() { break } }
-            for await _ in group { _ = launchNext() }
+        // Local thumb-regeneration pass (Build #5.53.1). Runs AFTER
+        // the download sweep so every full image that was going to
+        // land is on disk. For each photo whose manifest names a
+        // thumb that's missing locally, regenerate it from the full
+        // image — no network. This is what makes the photo LIST show
+        // real thumbnails instead of grey placeholders; the list
+        // renders the thumb file, not the full image (which only the
+        // lightbox loads).
+        var thumbsRegenerated = 0
+        var thumbsStillMissing = 0
+        for project in store.activeProjects {
+            for photo in project.photos {
+                guard let thumbURL = store.thumbnailURL(for: photo, in: project),
+                      !fileManager.fileExists(atPath: thumbURL.path) else { continue }
+                if store.regenerateThumbnailFromLocalImage(for: photo, in: project) {
+                    thumbsRegenerated += 1
+                } else {
+                    thumbsStillMissing += 1
+                }
+            }
+        }
+        if thumbsRegenerated > 0 || thumbsStillMissing > 0 {
+            print("[BinaryBackfill] thumb pass: regenerated \(thumbsRegenerated), still missing \(thumbsStillMissing) (full image absent)")
         }
 
         // Summary toast — single per-sweep notification so the user
@@ -150,13 +176,21 @@ final class BinaryBackfillService {
         let downloaded = progress.downloadedFiles
         let failed = progress.failedFiles
         let total = progress.totalFiles
+
+        if total == 0 && thumbsRegenerated == 0 {
+            print("[BinaryBackfill] sweep done: nothing missing locally")
+            toast.post("Backfill: nothing missing locally — all files already on disk.", kind: .info)
+            return
+        }
+
+        let thumbTail = thumbsRegenerated > 0 ? " Rebuilt \(thumbsRegenerated) thumbnail(s)." : ""
         let summary: String
         if failed == 0 {
-            summary = "Backfill: downloaded \(downloaded) of \(total) files."
+            summary = "Backfill: downloaded \(downloaded) of \(total) files.\(thumbTail)"
         } else if downloaded > 0 {
-            summary = "Backfill: downloaded \(downloaded) of \(total) files. \(failed) couldn't be downloaded — they may not have been uploaded from any device yet."
+            summary = "Backfill: downloaded \(downloaded) of \(total) files.\(thumbTail) \(failed) couldn't be downloaded — they may not have been uploaded from any device yet."
         } else {
-            summary = "Backfill couldn't download any of \(total) missing files. Likely those files were never uploaded to the backend, or the server hasn't recorded them in the files table yet."
+            summary = "Backfill couldn't download any of \(total) missing files.\(thumbTail) Likely those files were never uploaded to the backend, or the server hasn't recorded them in the files table yet."
         }
         let kind: Toast.Kind = failed > 0 ? .warning : .info
         toast.post(summary, kind: kind)
