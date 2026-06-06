@@ -307,3 +307,44 @@ export interface LockResponse {
 export interface GetLockResponse {
   lock: ProjectLock | null;
 }
+
+// ===========================================================================
+// Phase 4 — Server-side PDF export (Build #5.62.1)
+// ===========================================================================
+
+/** Job lifecycle states. Worker transitions queued → running → done|failed. */
+export type PdfExportStatus = "queued" | "running" | "done" | "failed";
+
+/** What the web client sees about a job at any point in its lifecycle.
+ *  Mirrors the `pdf_export_jobs` row, normalized to camelCase. */
+export interface PdfExportJob {
+  id: string;
+  projectId: string;
+  status: PdfExportStatus;
+  /** Populated once the worker has uploaded the PDF to R2. */
+  pdfObjectKey: string | null;
+  /** Human-readable failure reason; null until/unless status is "failed". */
+  errorMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/** Reserved for the options sheet (Build #5.64.1+). The skeleton PR
+ *  takes no body and the worker renders a fixed cover-page layout. */
+export interface CreatePdfExportRequest {}
+
+export interface CreatePdfExportResponse {
+  job: PdfExportJob;
+}
+
+/** GET /v1/exports/:jobId response. `downloadUrl` is populated only
+ *  when status is "done" — a short-lived (5 min) presigned R2 GET URL
+ *  the browser can hit directly without an auth header. */
+export interface GetPdfExportResponse {
+  job: PdfExportJob;
+  downloadUrl: string | null;
+  /** ISO timestamp when `downloadUrl` stops working. Null when there's
+   *  no URL yet. */
+  downloadUrlExpiresAt: string | null;
+}

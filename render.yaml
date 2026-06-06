@@ -21,6 +21,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Puppeteer (Build #5.62.1) downloads Chromium at `pnpm install`
+      # time. Render persists `/opt/render/.cache` between builds, so
+      # pointing the Puppeteer cache there avoids re-downloading
+      # ~150 MB of Chromium on every deploy.
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/.cache/puppeteer
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_PUBLISHABLE_KEY

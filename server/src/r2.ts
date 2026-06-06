@@ -107,6 +107,30 @@ export async function getObjectBytes(objectKey: string): Promise<Buffer> {
 }
 
 /**
+ * Server-side upload helper — pushes a buffer straight into R2. Used
+ * by the PDF export worker (Build #5.62.1) to land the rendered PDF
+ * without round-tripping through a presigned URL. Photo uploads from
+ * iOS / web stay on the presigned-PUT path so the byte stream avoids
+ * the server entirely; this helper is for the small number of cases
+ * where the server itself generates the artifact.
+ */
+export async function putObjectBytes(args: {
+  objectKey: string;
+  body: Buffer;
+  contentType: string;
+}): Promise<void> {
+  await r2.send(
+    new PutObjectCommand({
+      Bucket: r2Bucket,
+      Key: args.objectKey,
+      Body: args.body,
+      ContentType: args.contentType,
+      ContentLength: args.body.byteLength,
+    })
+  );
+}
+
+/**
  * Check whether an object already exists in R2. Used by
  * `POST /v1/sync/files/check` so iOS can skip re-uploads on
  * launch-time sync passes.
