@@ -25,6 +25,7 @@ import { photosRoute } from "./routes/photos.js";
 import { plansRoute } from "./routes/plans.js";
 import { aiTagRoute } from "./routes/aiTag.js";
 import { appConfigRoute } from "./routes/appConfig.js";
+import { locksRoute } from "./routes/locks.js";
 
 async function main() {
   const app = Fastify({
@@ -71,6 +72,7 @@ async function main() {
   await app.register(plansRoute);
   await app.register(aiTagRoute);
   await app.register(appConfigRoute);
+  await app.register(locksRoute);
 
   // Error handler — captures non-4xx exceptions into Sentry then
   // delegates to Fastify's default reply machinery (Build #5.57.1).

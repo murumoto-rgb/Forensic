@@ -263,3 +263,47 @@ export interface PutAppConfigRequest<K extends AppConfigKey = AppConfigKey> {
 export interface PutAppConfigResponse {
   revision: string;
 }
+
+// ===========================================================================
+// Phase 2 (belated) — Project edit locks (Build #5.59.1)
+// ===========================================================================
+
+/** Which client platform holds (or is acquiring) a lock. Drives the
+ *  viewer banner copy ("Editing on web" / "Editing on iPad"). */
+export type LockClient = "web" | "ios";
+
+/**
+ * A project's current lock state. Returned by the lock endpoints and
+ * read by viewers to render the "Currently editing: X" banner.
+ * `null`-shaped absence (404 from GET /lock) means the project is
+ * free to edit.
+ */
+export interface ProjectLock {
+  projectId: string;
+  /** Supabase user id of the lock holder. */
+  userId: string;
+  /** Holder's email — shown in the viewer banner. */
+  userEmail: string;
+  client: LockClient;
+  acquiredAt: string;
+  lastHeartbeat: string;
+  /** ISO timestamp the lock auto-expires at if no heartbeat lands. */
+  expiresAt: string;
+}
+
+export interface AcquireLockRequest {
+  client: LockClient;
+}
+
+/** Response to acquire / heartbeat — the now-current lock (held by
+ *  the caller). Acquire returns 409 + `ApiError` when another live
+ *  user holds it. */
+export interface LockResponse {
+  lock: ProjectLock;
+}
+
+/** GET /lock response. `lock` is null when the project is free
+ *  (no row, or the existing row has expired). */
+export interface GetLockResponse {
+  lock: ProjectLock | null;
+}
