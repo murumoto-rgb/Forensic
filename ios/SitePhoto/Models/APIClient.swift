@@ -144,6 +144,62 @@ final class APIClient {
         )
     }
 
+    // MARK: Phase 2 — files (download from R2 via presigned URL)
+
+    /// Resolve the presigned R2 GET URL for a photo's full-resolution
+    /// image. Used by the backfill service (Build #5.49.1) to fetch
+    /// binaries from R2 on a device that pulled the manifest from the
+    /// server but never had the photo locally (fresh install, simulator,
+    /// restored device).
+    func getPhotoImageURL(projectId: UUID, photoId: UUID) async throws -> PhotoUrlResponse {
+        try await request(
+            "GET",
+            "/v1/projects/\(projectId.uuidString.lowercased())/photos/\(photoId.uuidString.lowercased())/image",
+            body: Optional<Empty>.none
+        )
+    }
+
+    /// Same as `getPhotoImageURL` but for the thumb file. iOS uses the
+    /// full image in most surfaces, but the grid + preview-bar code
+    /// hits this path for fast thumb loads on slow networks.
+    func getPhotoThumbURL(projectId: UUID, photoId: UUID) async throws -> PhotoUrlResponse {
+        try await request(
+            "GET",
+            "/v1/projects/\(projectId.uuidString.lowercased())/photos/\(photoId.uuidString.lowercased())/thumb",
+            body: Optional<Empty>.none
+        )
+    }
+
+    /// Resolve the presigned R2 GET URL for a floor plan's rendered
+    /// image. Server uses the same `plan` file kind PhotoSyncer
+    /// uploads; one row per plan in the `files` table.
+    func getPlanImageURL(projectId: UUID, planId: UUID) async throws -> PhotoUrlResponse {
+        try await request(
+            "GET",
+            "/v1/projects/\(projectId.uuidString.lowercased())/plans/\(planId.uuidString.lowercased())/image",
+            body: Optional<Empty>.none
+        )
+    }
+
+    /// Download bytes from a presigned R2 GET URL. No auth header —
+    /// the signed query string IS the auth, same shape as the upload
+    /// path's PUT.
+    func downloadBytesFromPresignedURL(_ url: URL) async throws -> Data {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw APIError.http(
+                status: code,
+                code: "r2_download_failed",
+                message: "R2 download returned \(code)"
+            )
+        }
+        return data
+    }
+
     // MARK: Phase 4 — App-wide config sync (Build #5.36.1)
 
     /// Bulk fetch of every known `app_config` key. Called at launch

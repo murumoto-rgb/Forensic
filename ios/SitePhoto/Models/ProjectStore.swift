@@ -1762,6 +1762,15 @@ final class ProjectStore {
         return projectURL(project).appending(path: plan.imageFilename)
     }
 
+    /// URL for a plan's rasterised image. Same as `floorPlanURL` but
+    /// takes the `FloorPlan` directly so callers that already have
+    /// one don't need to round-trip through `floorPlan(id:)`. Build
+    /// #5.49.1 — used by `BinaryBackfillService` to know where to
+    /// write a freshly-downloaded plan binary on disk.
+    func planImageURL(for plan: FloorPlan, in project: Project) -> URL {
+        projectURL(project).appending(path: plan.imageFilename)
+    }
+
     /// Update calibration on a specific plan. Photo positions on this
     /// plan have their local coords re-derived so the readouts match.
     @discardableResult

@@ -9,6 +9,7 @@ struct SitePhotoApp: App {
     @State private var syncer: ManifestSyncer
     @State private var photoSyncer: PhotoSyncer
     @State private var appConfigSyncer: AppConfigSyncer
+    @State private var backfillService: BinaryBackfillService
 
     init() {
         let toast = ToastCenter()
@@ -22,6 +23,10 @@ struct SitePhotoApp: App {
                                        store: store,
                                        toast: toast)
         let appConfigSyncer = AppConfigSyncer(api: api, auth: auth, toast: toast)
+        let backfillService = BinaryBackfillService(api: api,
+                                                     auth: auth,
+                                                     store: store,
+                                                     toast: toast)
         store.toastCenter = toast
         // Lets the AI-tagging dispatch reach the team-server proxy when
         // the user has flipped the Settings toggle on (Build #5.33.1).
@@ -43,6 +48,7 @@ struct SitePhotoApp: App {
         _syncer = State(initialValue: syncer)
         _photoSyncer = State(initialValue: photoSyncer)
         _appConfigSyncer = State(initialValue: appConfigSyncer)
+        _backfillService = State(initialValue: backfillService)
     }
 
     /// True once the white splash screen has faded out.
@@ -76,6 +82,7 @@ struct SitePhotoApp: App {
                 .environment(syncer)
                 .environment(photoSyncer)
                 .environment(appConfigSyncer)
+                .environment(backfillService)
                 .tint(accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if atRoot {
@@ -137,6 +144,15 @@ struct SitePhotoApp: App {
                             await syncer.pullAllFromServer()
                             await syncer.pushAllToServer()
                             await photoSyncer.syncAll()
+                            // Backfill any photos / plans whose
+                            // manifest is present but whose binary
+                            // never landed locally (simulator,
+                            // fresh install, restored device). Last
+                            // step so manifests + uploads finish
+                            // first — backfill is the gentlest
+                            // operation, no chance to interfere with
+                            // the user's edits.
+                            await backfillService.backfillAll()
                         }
                     }
                 }
@@ -165,6 +181,7 @@ struct SitePhotoApp: App {
                         await syncer.pullAllFromServer()
                         await syncer.pushAllToServer()
                         await photoSyncer.syncAll()
+                        await backfillService.backfillAll()
                     }
                 }
         }
