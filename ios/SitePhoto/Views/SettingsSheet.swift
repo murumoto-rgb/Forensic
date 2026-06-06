@@ -110,10 +110,23 @@ struct SettingsSheet: View {
                     } label: {
                         Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
                     }
+                    // Build #5.51.1 — dedicated entry point for the
+                    // backfill path so the user can isolate it from
+                    // the full sweep above. Useful when the launch
+                    // sweep is slow or noisy and the user wants to
+                    // verify backfill specifically.
+                    Button {
+                        Task {
+                            toastCenter.post("Backfill started…", kind: .info)
+                            await backfillService.backfillAll()
+                        }
+                    } label: {
+                        Label("Backfill missing files", systemImage: "arrow.down.circle")
+                    }
                 } header: {
                     Text("Sync")
                 } footer: {
-                    Text("Pulls the team's tag library and AI rules template, pushes any pending manifest changes, and uploads any photo / plan binaries that haven't reached R2 yet. Errors surface as toasts.")
+                    Text("Sync now: pulls the team's tag library and AI rules template, pushes any pending manifest changes, and uploads any photo / plan binaries that haven't reached R2 yet.\n\nBackfill missing files: only downloads photos / plans whose manifest is present locally but whose binary is missing (simulator, fresh install, restored device). Backfill summary toast and persistent chip in the projects-list footer surface the result.")
                 }
 
                 Section {
