@@ -225,11 +225,15 @@ private struct StorageStatusFooter: View {
                 Text(subtitleText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if backfill.isRunning,
-                   backfill.progress.totalFiles > 0 {
-                    Text("Backfilling files: \(backfill.progress.downloadedFiles)/\(backfill.progress.totalFiles)\(backfill.progress.failedFiles > 0 ? " (\(backfill.progress.failedFiles) failed)" : "")")
+                // Backfill chip — visible while running AND after
+                // completion (Build #5.50.1) so the counts persist
+                // when the sweep finishes too quickly to notice.
+                // Hidden only when nothing was attempted this
+                // session (`totalFiles == 0`).
+                if backfill.progress.totalFiles > 0 {
+                    Text(backfillChipText)
                         .font(.caption2)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(backfillChipColor)
                 }
             }
             Spacer()
@@ -247,6 +251,27 @@ private struct StorageStatusFooter: View {
     //  * No iCloud, not signed in — truly local only.
 
     private var isOnBackend: Bool { auth.session != nil }
+
+    // Backfill chip — phrased differently while the sweep is in
+    // flight vs after it's done, so the user can tell the
+    // distinction at a glance.
+    private var backfillChipText: String {
+        let p = backfill.progress
+        if backfill.isRunning {
+            let failureTail = p.failedFiles > 0 ? " (\(p.failedFiles) failed)" : ""
+            return "Backfilling files: \(p.downloadedFiles)/\(p.totalFiles)\(failureTail)"
+        }
+        // Finished — show results until the user signs out or the
+        // next sweep starts.
+        if p.failedFiles == 0 {
+            return "Backfill: downloaded \(p.downloadedFiles) of \(p.totalFiles) files."
+        }
+        return "Backfill: \(p.downloadedFiles) of \(p.totalFiles) downloaded; \(p.failedFiles) couldn't be fetched."
+    }
+    private var backfillChipColor: Color {
+        if backfill.isRunning { return .blue }
+        return backfill.progress.failedFiles > 0 ? .orange : .green
+    }
 
     private var iconName: String {
         if store.usingICloud { return "icloud.fill" }
