@@ -130,36 +130,63 @@ struct SettingsSheet: View {
                 }
 
                 Section {
-                    SecureField("sk-ant-…", text: $apiKey, prompt: Text("Anthropic API key"))
-                        .textContentType(.password)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    HStack {
-                        Button("Save") { save() }
-                            .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
-                        Spacer()
-                        if hasStoredKey {
-                            Button(role: .destructive) {
-                                clear()
-                            } label: {
-                                Label("Remove", systemImage: "trash")
+                    if useBackendAI {
+                        // Team-server mode (Build #5.52.1) — the device
+                        // key isn't used. Show a clear "not needed"
+                        // state rather than an active field the user
+                        // might think they have to fill in. The field
+                        // + Save / Remove are hidden; the stored key
+                        // (if any) is preserved so flipping the toggle
+                        // back off restores the device-key path
+                        // without re-entry.
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Using team server — no device key needed")
+                                    .foregroundStyle(.primary)
+                                Text(hasStoredKey
+                                     ? "A device key is on file and will be used again if you turn off \"Use team server for AI\" below."
+                                     : "AI tagging runs on the Forensic backend with a shared key managed by your admin.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
-                            .controlSize(.small)
+                        } icon: {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
                         }
-                    }
-                    if saved {
-                        Label("Saved to Keychain", systemImage: "checkmark.circle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                    } else if hasStoredKey {
-                        Label("Key on file", systemImage: "key.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                    } else {
+                        SecureField("sk-ant-…", text: $apiKey, prompt: Text("Anthropic API key"))
+                            .textContentType(.password)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        HStack {
+                            Button("Save") { save() }
+                                .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                            Spacer()
+                            if hasStoredKey {
+                                Button(role: .destructive) {
+                                    clear()
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                        if saved {
+                            Label("Saved to Keychain", systemImage: "checkmark.circle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(.green)
+                        } else if hasStoredKey {
+                            Label("Key on file", systemImage: "key.fill")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } header: {
                     Text("AI Tagging — Anthropic API Key")
                 } footer: {
-                    Text("Required for the \"Suggest with AI\" button on photos. The key is stored in the device Keychain and never leaves the device except in calls to api.anthropic.com. Charges are billed to your Anthropic account at roughly half a cent per photo.")
+                    Text(useBackendAI
+                         ? "AI tagging is set to run on the team server (toggle below). Your personal Anthropic key isn't used in this mode — the server bills a shared account. Turn off \"Use team server for AI\" to make calls from this device with your own key instead."
+                         : "Required for the \"Suggest with AI\" button on photos. The key is stored in the device Keychain and never leaves the device except in calls to api.anthropic.com. Charges are billed to your Anthropic account at roughly half a cent per photo.")
                 }
 
                 Section {
