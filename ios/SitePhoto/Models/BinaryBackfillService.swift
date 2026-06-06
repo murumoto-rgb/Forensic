@@ -70,12 +70,19 @@ final class BinaryBackfillService {
     /// plan binaries. Idempotent — every download checks the local
     /// file first.
     func backfillAll() async {
-        guard auth.session != nil else { return }
-        guard !isRunning else { return }
+        guard auth.session != nil else {
+            print("[BinaryBackfill] skipped: not signed in")
+            return
+        }
+        guard !isRunning else {
+            print("[BinaryBackfill] skipped: already running")
+            return
+        }
         isRunning = true
         toastedProjects.removeAll()
         progress = .zero
         defer { isRunning = false }
+        print("[BinaryBackfill] sweep starting across \(store.activeProjects.count) active project(s)")
 
         // Build the work list up front so progress reporting +
         // concurrency are honest.
@@ -100,10 +107,12 @@ final class BinaryBackfillService {
         }
 
         if work.isEmpty {
+            print("[BinaryBackfill] sweep done: nothing missing locally")
             progress = .zero
             return
         }
 
+        print("[BinaryBackfill] queued \(work.count) missing file(s) for download")
         progress = Progress(totalFiles: work.count, downloadedFiles: 0, failedFiles: 0)
 
         // Bounded-concurrency runner — same shape useBatchRetag uses
@@ -123,6 +132,25 @@ final class BinaryBackfillService {
             for _ in 0..<maxConcurrent { if !launchNext() { break } }
             for await _ in group { _ = launchNext() }
         }
+
+        // Summary toast — single per-sweep notification so the user
+        // can confirm the run happened even when no individual error
+        // toast fires. The chip in the projects-list footer also
+        // stays visible after completion (Build #5.50.1) so the
+        // counts persist visually.
+        let downloaded = progress.downloadedFiles
+        let failed = progress.failedFiles
+        let total = progress.totalFiles
+        let summary: String
+        if failed == 0 {
+            summary = "Backfill: downloaded \(downloaded) of \(total) files."
+        } else if downloaded > 0 {
+            summary = "Backfill: downloaded \(downloaded) of \(total) files. \(failed) couldn't be downloaded — they may not have been uploaded from any device yet."
+        } else {
+            summary = "Backfill couldn't download any of \(total) missing files. Likely those files were never uploaded to the backend, or the server hasn't recorded them in the files table yet."
+        }
+        let kind: Toast.Kind = failed > 0 ? .warning : .info
+        toast.post(summary, kind: kind)
     }
 
     /// Reset any state that's tied to the current sign-in. Called from
@@ -182,11 +210,12 @@ final class BinaryBackfillService {
             return
         } catch APIClient.APIError.http(status: 404, _, _) {
             // Server doesn't have the file (project pushed but photo
-            // never uploaded from any device). Not actionable; skip
-            // silently.
+            // never uploaded from any device).
+            print("[BinaryBackfill] photo 404: \(projectName) / \(photo.imageFilename)")
             bumpFailed()
             return
         } catch {
+            print("[BinaryBackfill] photo error: \(projectName) / \(photo.imageFilename) — \(error.localizedDescription)")
             bumpFailed()
             surfaceErrorOnce(error, projectId: project.id, projectName: projectName, label: "photos")
         }
@@ -213,9 +242,11 @@ final class BinaryBackfillService {
             bumpFailed()
             return
         } catch APIClient.APIError.http(status: 404, _, _) {
+            print("[BinaryBackfill] plan 404: \(projectName) / \(plan.label) (\(plan.imageFilename))")
             bumpFailed()
             return
         } catch {
+            print("[BinaryBackfill] plan error: \(projectName) / \(plan.label) — \(error.localizedDescription)")
             bumpFailed()
             surfaceErrorOnce(error, projectId: project.id, projectName: projectName, label: "plans")
         }
