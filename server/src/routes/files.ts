@@ -223,6 +223,18 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
   // -----------------------------------------------------------------
   // POST /v1/sync/files/check — batch existence
   // -----------------------------------------------------------------
+  //
+  // Implementation note: the client may send up to 500 object keys
+  // per request (matching its `SyncFilesCheckBodySchema.objectKeys
+  // .max(500)`). Supabase PostgREST URL-encodes the `.in(...)`
+  // filter into the request URL, and at 500 × ~80-char keys the URL
+  // overflows typical 8 KB length limits → 500 "Database error".
+  // (Reported by PhotoSyncer's pre-check on Cabral / Manandhar in
+  // Build #5.51.1 sessions; fixed in #5.55.1.) We chunk into smaller
+  // sub-batches server-side and merge results. SUB_BATCH_SIZE is
+  // chosen to keep the encoded URL well under 4 KB even at the
+  // widest key shape we ship today.
+  const SUB_BATCH_SIZE = 50;
   app.post<{
     Body: unknown;
     Reply: SyncFilesCheckResponse | ApiError;
@@ -239,34 +251,38 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     const { objectKeys } = parsed.data;
     if (objectKeys.length === 0) return { existing: [] };
 
-    // One DB query rather than N R2 HEAD calls — the `files` table is
-    // the source of truth for committed uploads. (A successful R2 PUT
-    // that the client never committed remains orphan; HEAD-based
-    // check would conclude "uploaded" and miss the registration step.)
-    const { data, error } = await supabaseAdmin
-      .from("files")
-      .select("object_key, project_id, projects!inner(owner_id)")
-      .in("object_key", objectKeys);
-
-    if (error) {
-      request.log.error({ err: error }, "Files-check query failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-
-    // Filter out rows whose project the caller doesn't own — defense
-    // in depth in case we ever share projects across users. supabase-js
-    // types the joined relation as either an object or an array
-    // depending on the FK shape; we accept both.
-    const existing = (data ?? [])
-      .filter((row) => {
+    // Sub-batch the incoming keys, run one query per sub-batch,
+    // merge results. Owner filter applied per sub-batch so the
+    // join doesn't broaden the result set unexpectedly.
+    const existing: string[] = [];
+    for (let i = 0; i < objectKeys.length; i += SUB_BATCH_SIZE) {
+      const chunk = objectKeys.slice(i, i + SUB_BATCH_SIZE);
+      const { data, error } = await supabaseAdmin
+        .from("files")
+        .select("object_key, project_id, projects!inner(owner_id)")
+        .in("object_key", chunk);
+      if (error) {
+        request.log.error(
+          { err: error, chunkOffset: i, chunkSize: chunk.length },
+          "Files-check sub-batch query failed"
+        );
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+      // Filter out rows whose project the caller doesn't own —
+      // defense in depth in case we ever share projects across
+      // users. supabase-js types the joined relation as either an
+      // object or an array depending on the FK shape; accept both.
+      for (const row of data ?? []) {
         const joined = (row as unknown as {
           projects: { owner_id: string } | { owner_id: string }[] | null;
         }).projects;
         const owner = Array.isArray(joined) ? joined[0] : joined;
-        return owner?.owner_id === request.user.id;
-      })
-      .map((row) => row.object_key as string);
+        if (owner?.owner_id === request.user.id) {
+          existing.push(row.object_key as string);
+        }
+      }
+    }
 
     return { existing };
   });
