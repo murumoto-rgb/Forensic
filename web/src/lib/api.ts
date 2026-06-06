@@ -34,6 +34,8 @@ import type {
   AIRulesTemplate,
   LockResponse,
   GetLockResponse,
+  CreatePdfExportResponse,
+  GetPdfExportResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -315,6 +317,18 @@ export const api = {
     request<{ ok: true }>(`/v1/projects/${projectId}/lock/force`, {
       method: "POST",
     }),
+  // -------------------- PDF export (Build #5.62.1) ------------------
+  /** Enqueue a PDF render. Returns immediately with a job handle the
+   *  caller polls via `getPdfExport`. */
+  createPdfExport: (projectId: string) =>
+    request<CreatePdfExportResponse>(
+      `/v1/projects/${projectId}/export/pdf`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  /** Poll for status. When `job.status === "done"`, `downloadUrl` is
+   *  a short-lived presigned R2 URL the browser can hit directly. */
+  getPdfExport: (jobId: string) =>
+    request<GetPdfExportResponse>(`/v1/exports/${jobId}`),
 };
 
 // Re-export for callers that need the wire types.

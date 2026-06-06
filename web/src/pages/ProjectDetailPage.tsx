@@ -7,6 +7,7 @@ import { api, ApiError } from "../lib/api";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { BatchRetagControl } from "../components/BatchRetagControl";
+import { ExportPdfControl } from "../components/ExportPdfControl";
 import { LockBanner } from "../components/LockBanner";
 import { useProjectLock } from "../lib/useProjectLock";
 
@@ -114,6 +115,9 @@ export function ProjectDetailPage({ session }: Props) {
                 setRevision={setRevision}
                 photoCount={project.photos.length}
               />
+            )}
+            {project && id && (
+              <ExportPdfControl projectId={id} canExport={canEdit} />
             )}
             <button
               type="button"

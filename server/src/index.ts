@@ -31,6 +31,8 @@ import { plansRoute } from "./routes/plans.js";
 import { aiTagRoute } from "./routes/aiTag.js";
 import { appConfigRoute } from "./routes/appConfig.js";
 import { locksRoute } from "./routes/locks.js";
+import { exportsRoute } from "./routes/exports.js";
+import { startPdfExportWorker } from "./exports/pdfWorker.js";
 
 async function main() {
   const app = Fastify({
@@ -78,6 +80,7 @@ async function main() {
   await app.register(aiTagRoute);
   await app.register(appConfigRoute);
   await app.register(locksRoute);
+  await app.register(exportsRoute);
 
   // Error handler — captures non-4xx exceptions into Sentry then
   // delegates to Fastify's default reply machinery (Build #5.57.1).
@@ -101,6 +104,10 @@ async function main() {
     app.log.info(
       `Forensic server listening on port ${env.PORT} (${env.NODE_ENV})`
     );
+    // PDF export worker (Build #5.62.1) starts AFTER the HTTP listener
+    // so a Puppeteer launch hiccup can't keep the server from binding
+    // the port (and never showing up as "Ready" on Render).
+    startPdfExportWorker(app.log);
   } catch (err) {
     app.log.error(err);
     process.exit(1);
