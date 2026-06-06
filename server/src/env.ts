@@ -53,6 +53,23 @@ const EnvSchema = z.object({
   // monitoring; 1 captures every transaction. Default 0.1 keeps the
   // quota-friendly trickle on Render's free tier.
   SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
+
+  // Resend transactional email (Build #5.61.1) — drives the
+  // collaboration-safety notifications: someone force-released your
+  // edit lock, someone took the lock after yours expired. OPTIONAL —
+  // when either var is blank the email helpers no-op cleanly so the
+  // route handlers don't have to special-case "email not configured".
+  // Issue an API key at resend.com → API Keys. The `from` address
+  // MUST be on a domain you've verified with Resend (sandbox mode
+  // works against `onboarding@resend.dev` for first-time setup).
+  RESEND_API_KEY: z.string().min(1).optional(),
+  RESEND_FROM_EMAIL: z.string().email().optional(),
+
+  // Base URL of the deployed web app. Used to build "open project"
+  // links inside notification emails. Optional — emails fall back to
+  // a path-only link if blank, which still works when the user is
+  // already signed in to the web app.
+  WEB_BASE_URL: z.string().url().optional(),
 });
 
 function loadEnv() {

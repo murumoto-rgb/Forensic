@@ -32,6 +32,12 @@ import type {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { sendEmail } from "../email/resend.js";
+import {
+  lockForceReleasedEmail,
+  lockExpiredTakenOverEmail,
+} from "../email/templates.js";
+import { env } from "../env.js";
 
 /** Lock lifetime per heartbeat — 10 minutes. Matches the plan's
  *  "auto-expires after 10 min without heartbeat." */
@@ -87,6 +93,26 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       .maybeSingle();
     if (error) throw error;
     return data != null;
+  }
+
+  // Name lookup for the notification-email subject lines. Pulls just
+  // the column the templates need and is tolerant of a missing row
+  // (caller falls back to the project id). Email is fire-and-forget;
+  // a slow GET here would briefly hold the route open but the route
+  // already returned 200 to the client before we await, so it doesn't
+  // affect latency the user sees.
+  async function loadProjectNameOrFallback(projectId: string): Promise<string> {
+    try {
+      const { data } = await supabaseAdmin
+        .from("projects")
+        .select("name")
+        .eq("id", projectId)
+        .maybeSingle();
+      const name = (data as { name?: string } | null)?.name;
+      return name && name.length > 0 ? name : projectId;
+    } catch {
+      return projectId;
+    }
   }
 
   // -----------------------------------------------------------------
@@ -199,6 +225,32 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     request.log.info({ projectId, userId: request.user.id }, "lock acquired");
+
+    // Courtesy email to the previous holder when we just picked up
+    // an expired lock that belonged to someone else (Build #5.61.1).
+    // No-ops cleanly when email isn't configured. Fire-and-forget so
+    // the route returns immediately — the user shouldn't wait on a
+    // hosted SMTP relay.
+    if (
+      existing &&
+      !isLive(existing as LockRow) &&
+      (existing as LockRow).user_id !== request.user.id &&
+      (existing as LockRow).user_email
+    ) {
+      const previousHolderEmail = (existing as LockRow).user_email;
+      const newHolderEmail = request.user.email ?? "(unknown)";
+      void (async () => {
+        const projectName = await loadProjectNameOrFallback(projectId);
+        const email = lockExpiredTakenOverEmail({
+          projectId,
+          projectName,
+          webBaseUrl: env.WEB_BASE_URL ?? "",
+          newHolderEmail,
+        });
+        await sendEmail({ ...email, to: previousHolderEmail });
+      })();
+    }
+
     return { lock: rowToLock(upserted as LockRow) };
   });
 
@@ -285,6 +337,34 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     Reply: { ok: true } | ApiError;
   }>("/v1/projects/:id/lock/force", async (request, reply) => {
     const projectId = request.params.id;
+
+    // Capture the prior holder's email before we delete, so the
+    // Build #5.61.1 notification has somewhere to send. Errors here
+    // don't fail the route — the user did request "force release,"
+    // they get it; we just lose the email.
+    let priorHolderEmail: string | null = null;
+    let priorHolderUserId: string | null = null;
+    try {
+      const { data: existing } = await supabaseAdmin
+        .from("project_locks")
+        .select("user_id, user_email, expires_at")
+        .eq("project_id", projectId)
+        .maybeSingle();
+      if (
+        existing &&
+        isLive(existing as LockRow) &&
+        (existing as LockRow).user_id !== request.user.id
+      ) {
+        priorHolderEmail = (existing as LockRow).user_email ?? null;
+        priorHolderUserId = (existing as LockRow).user_id;
+      }
+    } catch (err) {
+      request.log.warn(
+        { err, projectId },
+        "lock force — could not read prior holder for notification"
+      );
+    }
+
     const { error } = await supabaseAdmin
       .from("project_locks")
       .delete()
@@ -295,9 +375,31 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     request.log.warn(
-      { projectId, forcedBy: request.user.id },
+      {
+        projectId,
+        forcedBy: request.user.id,
+        priorHolderUserId,
+      },
       "lock force-released"
     );
+
+    // Notify the previous holder that their lock was taken
+    // (Build #5.61.1). No-ops when email isn't configured. Fire and
+    // forget — don't make the actor wait on email delivery.
+    if (priorHolderEmail) {
+      const actorEmail = request.user.email ?? "(unknown)";
+      void (async () => {
+        const projectName = await loadProjectNameOrFallback(projectId);
+        const email = lockForceReleasedEmail({
+          projectId,
+          projectName,
+          webBaseUrl: env.WEB_BASE_URL ?? "",
+          actorEmail,
+        });
+        await sendEmail({ ...email, to: priorHolderEmail });
+      })();
+    }
+
     return { ok: true };
   });
 };
