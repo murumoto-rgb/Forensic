@@ -42,6 +42,7 @@ import type { Project } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
+import { renderReportHtml } from "./htmlReport.js";
 
 /** How often to scan the queue. Render free tier sleeps after 15
  *  min of idle; on cold-start the first poll fires immediately after
@@ -79,54 +80,6 @@ async function getOrLaunchBrowser(): Promise<Browser> {
     ],
   });
   return browser;
-}
-
-/** Minimal cover-page HTML for the skeleton PR. Real layout lands in
- *  PR #2; this just proves the pipeline works end-to-end. */
-function renderHtml(project: Project): string {
-  // `trashedPhotos` is the iOS-style soft-delete bucket — the office
-  // PDF reflects only the active set.
-  const photoCount = project.photos.filter((p) => p.trashedAt == null).length;
-  const planCount = project.floorPlans.length;
-  const generatedAt = new Date().toLocaleString();
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title>
-<style>
-  @page { size: Letter; margin: 1in; }
-  body { font-family: -apple-system, system-ui, sans-serif; color: #0f172a; margin: 0; }
-  .cover { display: flex; flex-direction: column; min-height: 9in; }
-  h1 { font-size: 32pt; margin: 0 0 0.25in; }
-  .meta { font-size: 11pt; color: #475569; margin-bottom: 0.5in; }
-  .stats { display: flex; gap: 1in; margin-top: auto; padding-top: 0.5in;
-           border-top: 1px solid #cbd5e1; }
-  .stat .n { font-size: 28pt; font-weight: 600; }
-  .stat .l { font-size: 10pt; color: #64748b; text-transform: uppercase; }
-  .gen { font-size: 9pt; color: #94a3b8; margin-top: 0.5in; }
-</style></head>
-<body><div class="cover">
-  <h1>${escapeHtml(project.name)}</h1>
-  ${
-    project.projectAddress
-      ? `<div class="meta">${escapeHtml(project.projectAddress)}</div>`
-      : ""
-  }
-  <div class="stats">
-    <div class="stat"><div class="n">${photoCount}</div>
-         <div class="l">Photo${photoCount === 1 ? "" : "s"}</div></div>
-    <div class="stat"><div class="n">${planCount}</div>
-         <div class="l">Floor plan${planCount === 1 ? "" : "s"}</div></div>
-  </div>
-  <div class="gen">Generated ${escapeHtml(generatedAt)} — preview export</div>
-</div></body></html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 /** Try to claim one queued job. Returns the claimed row or null when
@@ -174,16 +127,16 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     );
   }
   const project = (row as { manifest: Project }).manifest;
-  const html = renderHtml(project);
+  // PR #2: real per-photo + per-plan layout. The renderer fetches
+  // thumb / plan bytes from R2 in parallel and inlines them as
+  // base64 data URLs, so setContent's `waitUntil: "load"` is still
+  // the right signal (no remote subresources fired during render).
+  const html = await renderReportHtml(project, job.project_id, log);
 
   const b = await getOrLaunchBrowser();
   const page = await b.newPage();
   try {
-    // For static HTML with no remote resources, "load" is the right
-    // signal — "networkidle0" is for navigations and isn't accepted
-    // by setContent's type. The skeleton has no external assets;
-    // PR #2 will need to wait on photo thumbnails to fetch.
-    await page.setContent(html, { waitUntil: "load", timeout: 30_000 });
+    await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
     const pdf = await page.pdf({ format: "Letter", printBackground: true });
     const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
     const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
