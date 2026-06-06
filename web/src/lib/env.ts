@@ -15,8 +15,20 @@ function required(name: string): string {
   return value;
 }
 
+function optional(name: string): string | undefined {
+  const value = import.meta.env[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 export const env = {
   SUPABASE_URL: required("VITE_SUPABASE_URL"),
   SUPABASE_PUBLISHABLE_KEY: required("VITE_SUPABASE_PUBLISHABLE_KEY"),
   API_URL: required("VITE_API_URL"),
+  // Optional observability — when unset, Sentry + PostHog SDKs
+  // initialise but stay quiet (`init(...)` is skipped). Lets the
+  // app run locally without Vercel env-var setup.
+  SENTRY_DSN: optional("VITE_SENTRY_DSN"),
+  SENTRY_TRACES_SAMPLE_RATE: optional("VITE_SENTRY_TRACES_SAMPLE_RATE"),
+  POSTHOG_KEY: optional("VITE_POSTHOG_KEY"),
+  POSTHOG_HOST: optional("VITE_POSTHOG_HOST") ?? "https://us.i.posthog.com",
 } as const;

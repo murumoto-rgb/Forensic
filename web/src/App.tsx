@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
+import { identifyUser, resetUser } from "./lib/observability";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
@@ -19,10 +20,24 @@ export function App() {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoading(false);
+      if (data.session?.user.id) {
+        identifyUser({
+          userId: data.session.user.id,
+          email: data.session.user.email,
+        });
+      }
     });
     // Then subscribe to changes (sign-in, sign-out, token refresh).
     const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
+      if (newSession?.user.id) {
+        identifyUser({
+          userId: newSession.user.id,
+          email: newSession.user.email,
+        });
+      } else {
+        resetUser();
+      }
     });
     return () => data.subscription.unsubscribe();
   }, []);
