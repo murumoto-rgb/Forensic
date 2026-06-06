@@ -88,9 +88,12 @@ final class BinaryBackfillService {
         // concurrency are honest.
         var work: [Work] = []
         for project in store.activeProjects {
+            var missingPhotos = 0
+            var missingPlans = 0
             for photo in project.photos {
                 let url = store.imageURL(for: photo, in: project)
                 if !fileManager.fileExists(atPath: url.path) {
+                    missingPhotos += 1
                     work.append(Work(projectId: project.id,
                                      projectName: project.name,
                                      kind: .photo(photo)))
@@ -99,16 +102,22 @@ final class BinaryBackfillService {
             for plan in project.floorPlans {
                 let url = store.planImageURL(for: plan, in: project)
                 if !fileManager.fileExists(atPath: url.path) {
+                    missingPlans += 1
                     work.append(Work(projectId: project.id,
                                      projectName: project.name,
                                      kind: .plan(plan)))
                 }
             }
+            print("[BinaryBackfill] project \(project.name): \(project.photos.count) photos, \(project.floorPlans.count) plans — missing \(missingPhotos) photo(s), \(missingPlans) plan(s) locally")
         }
 
         if work.isEmpty {
             print("[BinaryBackfill] sweep done: nothing missing locally")
-            progress = .zero
+            // Surface a "nothing to backfill" toast + leave progress
+            // visible so the user can tell the sweep actually ran
+            // even when there was zero work. Build #5.51.1.
+            progress = Progress(totalFiles: 0, downloadedFiles: 0, failedFiles: 0)
+            toast.post("Backfill: nothing missing locally — all files already on disk.", kind: .info)
             return
         }
 
