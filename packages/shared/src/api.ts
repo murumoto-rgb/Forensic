@@ -331,39 +331,139 @@ export interface PdfExportJob {
 }
 
 /** Paper size for the rendered PDF. iOS export defaults to letter
- *  (US engineering convention); A4 is the European-team affordance. */
+ *  (US engineering convention); A4 is the European-team affordance.
+ *  Web-only option (iOS PDF service is hard-coded to Letter). */
 export type PdfPageSize = "letter" | "a4";
 
-/** How many photos to fit on each photo page. `1` is the default
- *  (most legible, 5-inch image); `2` and `4` are stacked / grid
- *  layouts for projects with hundreds of photos where the engineer
- *  wants a compact contact-sheet feel. */
+/**
+ * Legacy fixed-set of photos-per-page (Build #5.64.1). Superseded by
+ * the iOS-parity `perPage: number` field added in #5.67.1 — the new
+ * field is a flexible Int in the 1-12 range, matching the iOS
+ * `PDFExportOptions.perPage` field. Kept for backwards compatibility
+ * with old `pdf_export_jobs.options` rows during the parity rollout;
+ * the renderer reads `perPage` first and falls back to this.
+ *
+ * @deprecated since #5.67.1 — use `perPage` instead.
+ */
 export type PdfPhotosPerPage = 1 | 2 | 4;
 
-/** Which photos to include in the rendered PDF. `all` is every
- *  non-trashed photo (or every photo when `includeTrashed`); the
- *  scoped modes narrow to favorites or a single floor plan. */
+/**
+ * Legacy single-mode photo filter (Build #5.64.1). Superseded by
+ * `selectedFloorIds: string[] | null` (multi-select, matching iOS)
+ * in #5.67.1. Kept for backwards compatibility — the renderer prefers
+ * the new field when present, falls back to this otherwise.
+ *
+ * @deprecated since #5.67.1 — use `selectedFloorIds` (with `null`
+ *   meaning "include every floor plan").
+ */
 export type PdfPhotoFilter = "all" | "favorites" | "byFloorPlan";
 
 /**
- * Per-job options passed alongside the create request. All fields
- * carry sensible defaults so the field that was always-implicit
- * before #5.64.1 still works — the worker substitutes defaults for
- * any missing field rather than rejecting.
+ * Plan-page render mode (Build #5.67.1 — iOS parity). Mirrors the iOS
+ * `PDFExportOptions.PlanRenderMode` enum field-for-field. Default
+ * `photoOnly` matches the prior web behaviour (and iOS's own default)
+ * so existing clients keep producing the same output. The four modes
+ * cover the cross-product of {photo pins, distress marks} × {separate
+ * pages, one merged page}.
+ */
+export type PdfPlanMode =
+  | "photoOnly"
+  | "distressOnly"
+  | "photoAndDistressSeparate"
+  | "merged";
+
+/**
+ * Optional section in the rendered PDF, ordered by `sectionOrder`
+ * (Build #5.67.1). Mirrors iOS's `PDFExportOptions.Section`. The
+ * cover page is always page 1 and is NOT in this list — it can't be
+ * reordered or removed (matches iOS). Sections whose underlying data
+ * isn't applicable get skipped (no floor plans → skip `plan`,
+ * `includeMetadataTable === false` → skip `metadataTable`).
+ */
+export type PdfSection = "plan" | "contactSheets" | "metadataTable";
+
+/**
+ * Per-photo annotations rendered under each contact-sheet cell
+ * (Build #5.67.1). Mirrors iOS's `PDFExportOptions.AnnotationOptions`
+ * field-for-field. Default keeps the legacy "tags only" behaviour
+ * (matches iOS default).
+ */
+export interface PdfAnnotationOptions {
+  includeTags: boolean;
+  includeCaption: boolean;
+  includeObservation: boolean;
+  includeMeasurement: boolean;
+  includeReviewerFlag: boolean;
+}
+
+/**
+ * Per-job options passed alongside the create request.
+ *
+ * Build #5.67.1 brought the field set up to iOS parity. The renderer
+ * prefers the new iOS-mirror fields (`perPage`, `groupByBucket`,
+ * `includeMetadataTable`, `annotations`, `sectionOrder`,
+ * `selectedFloorIds`, `planMode`) when present, falling back to the
+ * legacy #5.64.1 fields (`photosPerPage`, `photoFilter`,
+ * `floorPlanId`, `includeFloorPlanPages`) so old jobs and old web
+ * clients keep working through the rollout.
+ *
+ * All fields carry sensible defaults — the worker substitutes
+ * defaults for any missing field rather than rejecting — so a
+ * client that POSTs `{}` still produces a valid PDF.
  */
 export interface PdfExportOptions {
+  // ----- iOS parity fields (#5.67.1) -----
+
+  /**
+   * Photos per contact-sheet page. iOS-style flexible Int. Matches
+   * iOS `PDFExportOptions.perPage` (default 6). Server clamps to the
+   * 1-12 range; anything outside falls back to the default.
+   */
+  perPage: number;
+  /** Mirrors iOS `groupByBucket`. Default false. */
+  groupByBucket: boolean;
+  /** Mirrors iOS `includeMetadataTable`. Default false. */
+  includeMetadataTable: boolean;
+  /** Mirrors iOS `annotations`. Default: tags-only. */
+  annotations: PdfAnnotationOptions;
+  /** Mirrors iOS `sectionOrder`. Default: [plan, contactSheets, metadataTable]. */
+  sectionOrder: PdfSection[];
+  /**
+   * Mirrors iOS `selectedFloorIDs`. `null` means "include every
+   * floor plan" (matching iOS's nil-default). Photos not on any
+   * included plan land in a trailing "Unlocated photos" group so
+   * nothing gets dropped.
+   */
+  selectedFloorIds: string[] | null;
+  /** Mirrors iOS `planMode`. Default `photoOnly`. */
+  planMode: PdfPlanMode;
+
+  // ----- Web-specific carryover from #5.64.1 -----
+
   pageSize: PdfPageSize;
-  photosPerPage: PdfPhotosPerPage;
-  photoFilter: PdfPhotoFilter;
-  /** Required when `photoFilter === "byFloorPlan"`; ignored otherwise. */
-  floorPlanId: string | null;
-  /** Include photos with a non-null `trashedAt`. Default false. */
+  /** Include photos with a non-null `trashedAt`. Default false.
+   *  iOS hides trashed photos unconditionally — this is a web
+   *  affordance for the office reviewer who occasionally wants to
+   *  audit what's been hidden. */
   includeTrashed: boolean;
-  /** Include the project cover page. Default true. */
+  /** Include the project cover page. Default true. iOS always
+   *  renders the cover (not toggleable); web exposes it for the
+   *  office staff who want a minimal printout. */
   includeCoverPage: boolean;
-  /** Include one page per floor plan with the pin + distress overlay.
-   *  Default true. */
-  includeFloorPlanPages: boolean;
+
+  // ----- Legacy fields (kept for backwards compat) -----
+
+  /** @deprecated #5.67.1 — use `perPage`. */
+  photosPerPage?: PdfPhotosPerPage;
+  /** @deprecated #5.67.1 — use `selectedFloorIds`. */
+  photoFilter?: PdfPhotoFilter;
+  /** @deprecated #5.67.1 — selecting via `selectedFloorIds` covers
+   *  the single-plan case too. Required when `photoFilter === "byFloorPlan"`
+   *  on legacy callers. */
+  floorPlanId?: string | null;
+  /** @deprecated #5.67.1 — use `sectionOrder` (omit `plan` to skip
+   *  floor-plan pages, or pass an empty `selectedFloorIds` array). */
+  includeFloorPlanPages?: boolean;
 }
 
 export interface CreatePdfExportRequest {
