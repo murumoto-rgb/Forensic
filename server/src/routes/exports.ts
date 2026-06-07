@@ -21,6 +21,7 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 import type {
   ApiError,
   CreatePdfExportResponse,
@@ -31,6 +32,21 @@ import type {
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { presignedGet } from "../r2.js";
+import { applyOptionDefaults } from "../exports/options.js";
+
+const PdfExportOptionsSchema = z.object({
+  pageSize: z.enum(["letter", "a4"]).optional(),
+  photosPerPage: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),
+  photoFilter: z.enum(["all", "favorites", "byFloorPlan"]).optional(),
+  floorPlanId: z.string().nullable().optional(),
+  includeTrashed: z.boolean().optional(),
+  includeCoverPage: z.boolean().optional(),
+  includeFloorPlanPages: z.boolean().optional(),
+});
+
+const CreateBodySchema = z.object({
+  options: PdfExportOptionsSchema.optional(),
+});
 
 const DOWNLOAD_URL_TTL_SECONDS = 300; // 5 min
 
@@ -81,9 +97,31 @@ export const exportsRoute: FastifyPluginAsync = async (app) => {
   // -----------------------------------------------------------------
   app.post<{
     Params: { id: string };
+    Body: unknown;
     Reply: CreatePdfExportResponse | ApiError;
   }>("/v1/projects/:id/export/pdf", async (request, reply) => {
     const projectId = request.params.id;
+
+    // Body is fully optional — `{}` or even no body at all is fine.
+    // When `options` is partial, the worker fills in defaults.
+    const bodyToParse = request.body ?? {};
+    const parsed = CreateBodySchema.safeParse(bodyToParse);
+    if (!parsed.success) {
+      reply.code(400).send({
+        error: "bad_request",
+        message: "Request body failed validation",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+    const options = applyOptionDefaults(parsed.data.options ?? {});
+    if (options.photoFilter === "byFloorPlan" && !options.floorPlanId) {
+      reply.code(400).send({
+        error: "bad_request",
+        message: "floorPlanId is required when photoFilter is 'byFloorPlan'.",
+      });
+      return;
+    }
 
     try {
       if (!(await callerOwnsProject(projectId, request.user.id))) {
@@ -102,6 +140,7 @@ export const exportsRoute: FastifyPluginAsync = async (app) => {
         project_id: projectId,
         requested_by: request.user.id,
         status: "queued" as PdfExportStatus,
+        options,
       })
       .select("*")
       .maybeSingle();

@@ -117,7 +117,14 @@ export function ProjectDetailPage({ session }: Props) {
               />
             )}
             {project && id && (
-              <ExportPdfControl projectId={id} canExport={canEdit} />
+              <ExportPdfControl
+                projectId={id}
+                canExport={canEdit}
+                floorPlans={project.floorPlans.map((p) => ({
+                  id: p.id,
+                  label: p.label,
+                }))}
+              />
             )}
             <button
               type="button"

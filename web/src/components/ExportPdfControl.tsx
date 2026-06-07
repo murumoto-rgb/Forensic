@@ -1,24 +1,29 @@
 import { useEffect, useRef, useState } from "react";
-import type { PdfExportJob } from "@forensic/shared";
+import type { PdfExportJob, PdfExportOptions } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 
 /**
- * "Export PDF" button + status pill (Build #5.62.1, plan item #3 PR #1).
+ * "Export PDF" button + options modal + status pill
+ * (Build #5.62.1 / #5.63.1 / #5.64.1, plan item #3).
  *
- * Clicking the button:
- *   1. POSTs `/v1/projects/:id/export/pdf` to enqueue a render job.
- *   2. Polls `/v1/exports/:jobId` every 2 seconds until the job
- *      reaches `done` or `failed`.
- *   3. On `done` — auto-clicks a hidden anchor pointing at the
- *      presigned R2 URL so the PDF downloads without the user
- *      having to confirm a second click.
+ * Click → options modal → user picks page size + photo filter +
+ * photos-per-page + include-flags → "Generate PDF" submits a job
+ * with the chosen options. The component polls
+ * `/v1/exports/:jobId` every 2 seconds until the job is done or
+ * failed, then auto-triggers a hidden `<a>` click on the presigned
+ * R2 URL so the PDF downloads without the user clicking a second
+ * time.
  *
- * Layout-wise this is intentionally the same width/affordance as the
- * Re-tag-all-with-AI button next to it on the project detail page.
- * Real options-sheet UI (page size, photo-per-page count, include
- * trashed photos, etc.) lands in PR #3; this PR ships the pipeline
- * with no choices to make.
+ * Defaults match the prior #5.63.1 behavior (all photos, 1 per
+ * page, Letter, cover + plans included) so any user who hits
+ * Generate PDF without changing options gets the same output the
+ * previous build produced.
  */
+
+interface FloorPlanSummary {
+  id: string;
+  label: string;
+}
 
 interface Props {
   projectId: string;
@@ -27,7 +32,20 @@ interface Props {
    *  because it consumes the same `requested_by` user row + leaves
    *  a permanent server-side artifact. */
   canExport: boolean;
+  /** For the "By floor plan" filter dropdown. Empty when the project
+   *  has no plans — the option hides automatically. */
+  floorPlans: FloorPlanSummary[];
 }
+
+const DEFAULT_OPTIONS: PdfExportOptions = {
+  pageSize: "letter",
+  photosPerPage: 1,
+  photoFilter: "all",
+  floorPlanId: null,
+  includeTrashed: false,
+  includeCoverPage: true,
+  includeFloorPlanPages: true,
+};
 
 type State =
   | { kind: "idle" }
@@ -39,8 +57,15 @@ type State =
 
 const POLL_MS = 2_000;
 
-export function ExportPdfControl({ projectId, canExport }: Props) {
+export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
   const [state, setState] = useState<State>({ kind: "idle" });
+  const [showModal, setShowModal] = useState(false);
+  const [options, setOptions] = useState<PdfExportOptions>(() => ({
+    ...DEFAULT_OPTIONS,
+    // If the project has exactly one plan and the user picks
+    // "By floor plan," pre-fill it so they don't have to.
+    floorPlanId: floorPlans.length === 1 ? floorPlans[0]!.id : null,
+  }));
   const pollRef = useRef<number | null>(null);
   // Tracks the active job id so a slow setInterval callback can bail
   // if the user clicked Reset / a new job started in the meantime.
@@ -117,7 +142,8 @@ export function ExportPdfControl({ projectId, canExport }: Props) {
       });
   }
 
-  function start() {
+  function start(opts: PdfExportOptions) {
+    setShowModal(false);
     clearPoll();
     setState({
       kind: "queued",
@@ -133,7 +159,7 @@ export function ExportPdfControl({ projectId, canExport }: Props) {
       },
     });
     api
-      .createPdfExport(projectId)
+      .createPdfExport(projectId, opts)
       .then((res) => {
         const jobId = res.job.id;
         activeJobIdRef.current = jobId;
@@ -206,17 +232,184 @@ export function ExportPdfControl({ projectId, canExport }: Props) {
       )}
       <button
         type="button"
-        onClick={start}
+        onClick={() => setShowModal(true)}
         disabled={!canExport || inFlight}
         className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
         title={
           canExport
-            ? "Render the project to a PDF on the server. The download starts when the render completes."
+            ? "Open the PDF export options. The download starts when the render completes."
             : "Take the edit lock first."
         }
       >
         Export PDF
       </button>
+
+      {showModal && (
+        <ExportOptionsModal
+          options={options}
+          onChange={setOptions}
+          floorPlans={floorPlans}
+          onCancel={() => setShowModal(false)}
+          onSubmit={() => start(options)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface ModalProps {
+  options: PdfExportOptions;
+  onChange: (next: PdfExportOptions) => void;
+  floorPlans: FloorPlanSummary[];
+  onCancel: () => void;
+  onSubmit: () => void;
+}
+
+function ExportOptionsModal({
+  options,
+  onChange,
+  floorPlans,
+  onCancel,
+  onSubmit,
+}: ModalProps) {
+  function patch(p: Partial<PdfExportOptions>) {
+    onChange({ ...options, ...p });
+  }
+  const submitDisabled =
+    options.photoFilter === "byFloorPlan" && !options.floorPlanId;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    >
+      <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+        <h2 className="text-base font-semibold text-neutral-100">
+          Export PDF — options
+        </h2>
+
+        <label className="flex flex-col gap-1 text-xs text-neutral-400">
+          Page size
+          <select
+            value={options.pageSize}
+            onChange={(e) =>
+              patch({ pageSize: e.target.value as PdfExportOptions["pageSize"] })
+            }
+            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
+          >
+            <option value="letter">Letter (8.5 × 11 in)</option>
+            <option value="a4">A4 (210 × 297 mm)</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs text-neutral-400">
+          Photos per page
+          <select
+            value={options.photosPerPage}
+            onChange={(e) =>
+              patch({
+                photosPerPage: Number(e.target.value) as PdfExportOptions["photosPerPage"],
+              })
+            }
+            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
+          >
+            <option value={1}>1 (full size, with AI fields)</option>
+            <option value={2}>2 (stacked, contact-sheet feel)</option>
+            <option value={4}>4 (compact grid)</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs text-neutral-400">
+          Photo filter
+          <select
+            value={options.photoFilter}
+            onChange={(e) =>
+              patch({
+                photoFilter: e.target.value as PdfExportOptions["photoFilter"],
+              })
+            }
+            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
+          >
+            <option value="all">All photos</option>
+            <option value="favorites">Favorites only</option>
+            {floorPlans.length > 0 && (
+              <option value="byFloorPlan">By floor plan</option>
+            )}
+          </select>
+        </label>
+
+        {options.photoFilter === "byFloorPlan" && floorPlans.length > 0 && (
+          <label className="flex flex-col gap-1 text-xs text-neutral-400">
+            Floor plan
+            <select
+              value={options.floorPlanId ?? ""}
+              onChange={(e) =>
+                patch({ floorPlanId: e.target.value || null })
+              }
+              className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
+            >
+              <option value="">(pick one)</option>
+              {floorPlans.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3 text-xs text-neutral-300">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={options.includeCoverPage}
+              onChange={(e) => patch({ includeCoverPage: e.target.checked })}
+            />
+            Include cover page
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={options.includeFloorPlanPages}
+              onChange={(e) =>
+                patch({ includeFloorPlanPages: e.target.checked })
+              }
+            />
+            Include floor-plan pages (with pin overlay)
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={options.includeTrashed}
+              onChange={(e) => patch({ includeTrashed: e.target.checked })}
+            />
+            Include trashed photos
+          </label>
+        </div>
+
+        <div className="flex justify-end gap-3 pt-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={submitDisabled}
+            className="rounded border border-blue-500 bg-blue-600/80 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              submitDisabled
+                ? "Pick a floor plan above first."
+                : "Generate the PDF with these options."
+            }
+          >
+            Generate PDF
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
