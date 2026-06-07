@@ -139,7 +139,15 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
   const b = await getOrLaunchBrowser();
   const page = await b.newPage();
   try {
+    // Memory probe (Build #5.65.1) — surfaces actual RSS around the
+    // heaviest step so we can tune `MAX_PHOTOS_PER_PDF` from measured
+    // data rather than guesses. `rss` is the process's resident set
+    // size in bytes (total memory the OS is holding for us).
+    const mbAtStart = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    log.info({ jobId: job.id, rssMb: mbAtStart, htmlBytes: html.length }, "pdf worker — pre-render");
     await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
+    const mbAfterSetContent = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    log.info({ jobId: job.id, rssMb: mbAfterSetContent }, "pdf worker — post-setContent");
     // page.pdf's `format` is the paper size for ALL pages. The HTML
     // also sets `@page { size: ... }` so the CSS-level page break
     // hints line up with Puppeteer's paper size.
@@ -147,6 +155,16 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
       format: options.pageSize === "a4" ? "A4" : "Letter",
       printBackground: true,
     });
+    const mbAfterPdf = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    log.info(
+      {
+        jobId: job.id,
+        rssMb: mbAfterPdf,
+        rssDeltaMb: mbAfterPdf - mbAtStart,
+        pdfKb: Math.round((Buffer.isBuffer(pdf) ? pdf.byteLength : Buffer.from(pdf).byteLength) / 1024),
+      },
+      "pdf worker — post-pdf"
+    );
     const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
     const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
     await putObjectBytes({

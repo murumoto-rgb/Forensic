@@ -41,10 +41,14 @@ import type {
 } from "@forensic/shared";
 import { getObjectBytes } from "../r2.js";
 
-/** Hard cap on photos rendered into a single PDF. Anything above
- *  this and we abort with a clear error rather than producing a
- *  pathological output. */
-export const MAX_PHOTOS_PER_PDF = 200;
+/** Hard cap on photos rendered into a single PDF. Bumped from 200
+ *  → 1000 in #5.65.1 after office staff hit the 200 limit on a real
+ *  525-photo project. At 1000 thumbs × ~30 KB base64 each the HTML
+ *  is ~30 MB and Chromium's parsed DOM is several × that, putting
+ *  us near Render's 512 MB free-tier ceiling. The
+ *  `pdfWorker.ts` logs `process.memoryUsage().rss` before + after
+ *  the print so we have measured data for the next adjustment. */
+export const MAX_PHOTOS_PER_PDF = 1000;
 
 /** Color palette for distress marks. Mirrors the web canvas + iOS
  *  PDF for consistency across the three render surfaces. */
