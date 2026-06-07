@@ -37,6 +37,7 @@ import type {
   FloorPlan,
   PdfAnnotationOptions,
   PdfExportOptions,
+  PdfPlanMode,
   Photo,
   Project,
 } from "@forensic/shared";
@@ -379,38 +380,93 @@ function distressOverlay(mark: DistressMark): string {
   return `<g><circle cx="${p.x}" cy="${p.y}" r="12" fill="${color}" opacity="0.85"/></g>`;
 }
 
-function planPage(
+/**
+ * Plan-page render helpers (Build #5.69.1 — iOS plan modes).
+ *
+ * iOS's `PdfPlanMode` enum drives which overlays are drawn:
+ *
+ *   - `photoOnly`                → numbered photo pins only (1 page)
+ *   - `distressOnly`             → distress markers only (1 page)
+ *   - `photoAndDistressSeparate` → 2 pages per plan (pins page, then distress page)
+ *   - `merged`                   → pins + distress on one page
+ *
+ * Mirrors iOS `PDFExportOptions.PlanRenderMode.{rendersPhotos,
+ * rendersDistress, collapsesOntoOnePage}`. The renderer (in
+ * `renderReportHtml`) calls `planSection` once or twice per plan
+ * depending on `collapsesOntoOnePage` — wrapping the per-plan
+ * decision in one place keeps the iOS / web logic in lockstep.
+ */
+
+/** Whether photo pins should be drawn for a given mode. Mirrors
+ *  iOS `PlanRenderMode.rendersPhotos`. */
+function modeRendersPhotos(mode: PdfPlanMode): boolean {
+  return (
+    mode === "photoOnly" ||
+    mode === "photoAndDistressSeparate" ||
+    mode === "merged"
+  );
+}
+
+/** Whether distress markers should be drawn for a given mode.
+ *  Mirrors iOS `PlanRenderMode.rendersDistress`. */
+function modeRendersDistress(mode: PdfPlanMode): boolean {
+  return (
+    mode === "distressOnly" ||
+    mode === "photoAndDistressSeparate" ||
+    mode === "merged"
+  );
+}
+
+interface PlanSectionOptions {
+  includePhotos: boolean;
+  includeDistress: boolean;
+  /** Optional subtitle suffix (e.g. "Photos" / "Distress") for the
+   *  `photoAndDistressSeparate` mode's two pages. */
+  subtitle?: string;
+}
+
+function planSection(
   plan: FloorPlan,
   planImage: ImageBlob | null,
-  planPhotos: Photo[]
+  planPhotos: Photo[],
+  sectionOptions: PlanSectionOptions
 ): string {
+  const title = sectionOptions.subtitle
+    ? `${escapeHtml(plan.label)} <span class="subtitle">— ${escapeHtml(sectionOptions.subtitle)}</span>`
+    : escapeHtml(plan.label);
   if (!planImage) {
     return `<section class="page plan">
-      <h2>${escapeHtml(plan.label)}</h2>
+      <h2>${title}</h2>
       <div class="missing">(plan image pending sync)</div>
     </section>`;
   }
   const W = planImage.width || 1000;
   const H = planImage.height || 1000;
-  const pinSvg = planPhotos
-    .filter(
-      (p) =>
-        p.planPixelX != null &&
-        p.planPixelY != null &&
-        (p.isPrimary || p.groupID == null)
-    )
-    .map((p) => {
-      const x = p.planPixelX!;
-      const y = p.planPixelY!;
-      return `<g>
-        <circle cx="${x}" cy="${y}" r="14" fill="#2563eb" stroke="#fff" stroke-width="2"/>
-        <text x="${x}" y="${y + 5}" text-anchor="middle" font-size="14" fill="#fff" font-weight="600">${p.sequenceNumber}</text>
-      </g>`;
-    })
-    .join("");
-  const distressSvg = plan.distress.map(distressOverlay).join("");
-  const legend = plan.distress.length > 0
-    ? `<div class="legend">
+  const pinSvg = sectionOptions.includePhotos
+    ? planPhotos
+        .filter(
+          (p) =>
+            p.planPixelX != null &&
+            p.planPixelY != null &&
+            (p.isPrimary || p.groupID == null)
+        )
+        .map((p) => {
+          const x = p.planPixelX!;
+          const y = p.planPixelY!;
+          return `<g>
+            <circle cx="${x}" cy="${y}" r="14" fill="#2563eb" stroke="#fff" stroke-width="2"/>
+            <text x="${x}" y="${y + 5}" text-anchor="middle" font-size="14" fill="#fff" font-weight="600">${p.sequenceNumber}</text>
+          </g>`;
+        })
+        .join("")
+    : "";
+  const distressSvg = sectionOptions.includeDistress
+    ? plan.distress.map(distressOverlay).join("")
+    : "";
+  // Legend only shows when distress is actually being rendered.
+  const legend =
+    sectionOptions.includeDistress && plan.distress.length > 0
+      ? `<div class="legend">
         ${Array.from(new Set(plan.distress.map((m) => m.kind)))
           .map(
             (k) => `<span class="li">
@@ -420,9 +476,9 @@ function planPage(
           )
           .join("")}
       </div>`
-    : "";
+      : "";
   return `<section class="page plan">
-    <h2>${escapeHtml(plan.label)}</h2>
+    <h2>${title}</h2>
     <div class="planwrap">
       <img class="planimg" src="${planImage.dataUrl}" alt="${escapeHtml(plan.label)}">
       <svg class="planoverlay" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
@@ -432,6 +488,34 @@ function planPage(
     </div>
     ${legend}
   </section>`;
+}
+
+/** Render one OR two `<section class="page plan">` blocks for a
+ *  given floor plan, depending on `mode`. Returns the concatenated
+ *  HTML. */
+function planPages(
+  plan: FloorPlan,
+  planImage: ImageBlob | null,
+  planPhotos: Photo[],
+  mode: PdfPlanMode
+): string {
+  if (mode === "photoAndDistressSeparate") {
+    const photoPage = planSection(plan, planImage, planPhotos, {
+      includePhotos: true,
+      includeDistress: false,
+      subtitle: "Photos",
+    });
+    const distressPage = planSection(plan, planImage, planPhotos, {
+      includePhotos: false,
+      includeDistress: true,
+      subtitle: "Distress",
+    });
+    return `${photoPage}\n${distressPage}`;
+  }
+  return planSection(plan, planImage, planPhotos, {
+    includePhotos: modeRendersPhotos(mode),
+    includeDistress: modeRendersDistress(mode),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +605,10 @@ export async function renderReportHtml(
           const planPhotos = project.photos.filter(
             (p) => p.floorPlanID === plan.id && p.trashedAt == null
           );
-          return planPage(plan, blob, planPhotos);
+          // Plan mode (Build #5.69.1) selects between the four iOS
+          // modes. `planPages` returns 1 or 2 sections depending on
+          // `photoAndDistressSeparate`.
+          return planPages(plan, blob, planPhotos, options.planMode);
         })
         .join("\n")
     : "";
@@ -580,6 +667,7 @@ export async function renderReportHtml(
 
   /* Plan pages */
   .plan h2 { font-size: 18pt; margin: 0 0 0.2in; }
+  .plan h2 .subtitle { font-size: 11pt; color: #64748b; font-weight: 400; }
   .plan .planwrap { position: relative; width: 100%; }
   .plan .planimg { width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; }
   .plan .planoverlay { position: absolute; inset: 0; width: 100%; height: 100%; }
