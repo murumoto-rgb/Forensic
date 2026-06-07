@@ -32,12 +32,14 @@
 import type { FastifyBaseLogger } from "fastify";
 import { imageSize } from "image-size";
 import type {
+  Bucket,
   DistressKind,
   DistressMark,
   FloorPlan,
   PdfAnnotationOptions,
   PdfExportOptions,
   PdfPlanMode,
+  PdfSection,
   Photo,
   Project,
 } from "@forensic/shared";
@@ -519,6 +521,127 @@ function planPages(
 }
 
 /**
+ * Bucket-grouped + flat contact-sheet renderers (Build #5.71.1 —
+ * iOS parity). The flat path is what every job before this PR did:
+ * one stream of contact sheets, chunked by `perPage`. The grouped
+ * path partitions the selected photo set by bucket, sorts groups by
+ * iOS `Bucket.sortOrder`, emits a divider page with the bucket
+ * name + colour bar for each group, then the bucket's contact
+ * sheets.
+ *
+ * "Unbucketed" group: photos with `bucketID === null` (or pointing
+ * at a bucket that's been deleted from the manifest) land in a
+ * trailing group with the bucket name "Unbucketed" — same way iOS
+ * handles the unlocated case for plans. Nothing gets dropped.
+ */
+function renderUngroupedContactSheets(
+  selectedPhotos: Photo[],
+  perPage: number,
+  blobs: Map<string, ImageBlob | null>,
+  projectId: string,
+  planLabelById: Map<string, string>,
+  options: PdfExportOptions
+): string {
+  return chunk(selectedPhotos, perPage)
+    .map((group) =>
+      contactSheetPage(group, blobs, projectId, planLabelById, options)
+    )
+    .join("\n");
+}
+
+function renderBucketedContactSheets(
+  selectedPhotos: Photo[],
+  buckets: Bucket[],
+  perPage: number,
+  blobs: Map<string, ImageBlob | null>,
+  projectId: string,
+  planLabelById: Map<string, string>,
+  options: PdfExportOptions
+): string {
+  // Build a stable order: buckets by `sortOrder`, then a trailing
+  // sentinel for "Unbucketed". Photos missing or pointing at a
+  // deleted bucket land in the sentinel group.
+  const bucketById = new Map(buckets.map((b) => [b.id, b]));
+  const orderedBuckets = [...buckets].sort(
+    (a, b) => a.sortOrder - b.sortOrder
+  );
+
+  const groups: Array<{ bucket: Bucket | null; photos: Photo[] }> = [];
+  for (const b of orderedBuckets) {
+    const photos = selectedPhotos.filter((p) => p.bucketID === b.id);
+    if (photos.length > 0) groups.push({ bucket: b, photos });
+  }
+  const unbucketed = selectedPhotos.filter(
+    (p) => !p.bucketID || !bucketById.has(p.bucketID)
+  );
+  if (unbucketed.length > 0) groups.push({ bucket: null, photos: unbucketed });
+
+  return groups
+    .map(({ bucket, photos }) => {
+      const divider = bucketDividerHtml(bucket, photos.length);
+      const sheets = chunk(photos, perPage)
+        .map((g) =>
+          contactSheetPage(g, blobs, projectId, planLabelById, options)
+        )
+        .join("\n");
+      return `${divider}\n${sheets}`;
+    })
+    .join("\n");
+}
+
+/** One full page introducing a bucket group — big colour bar + name
+ *  + photo count. Same shape for the synthetic "Unbucketed" group
+ *  (no colour bar, neutral name). */
+function bucketDividerHtml(
+  bucket: Bucket | null,
+  photoCount: number
+): string {
+  const name = bucket ? bucket.name : "Unbucketed";
+  const colour = bucket?.colorHex ?? "#94a3b8";
+  return `<section class="page bucket-divider">
+    <div class="bucket-block">
+      <div class="bucket-bar" style="background:${escapeHtml(colour)}"></div>
+      <div class="bucket-text">
+        <div class="bucket-name">${escapeHtml(name)}</div>
+        <div class="bucket-count">${photoCount} photo${photoCount === 1 ? "" : "s"}</div>
+      </div>
+    </div>
+  </section>`;
+}
+
+/** Plan-pages section renderer extracted in #5.71.1 so the
+ *  body-section iteration over `sectionOrder` can compose it from
+ *  one call. Returns "" when there are no plans OR the
+ *  caller-configured legacy `includeFloorPlanPages` flag is false. */
+function renderPlanPages(
+  floorPlans: FloorPlan[],
+  allPhotos: Photo[],
+  blobs: Map<string, ImageBlob | null>,
+  projectId: string,
+  options: PdfExportOptions
+): string {
+  if (floorPlans.length === 0) return "";
+  // Honour the legacy includeFloorPlanPages flag when present (jobs
+  // persisted before #5.67.1 wrote it). Once the modal in #5.73.1
+  // drops it, sectionOrder is the only switch — but for the rollout
+  // we keep both working.
+  if (options.includeFloorPlanPages === false) return "";
+  return floorPlans
+    .map((plan) => {
+      const key = planImageKey(projectId, plan.id);
+      const blob = blobs.get(key) ?? null;
+      // The plan still shows ALL its pins (not just the filtered
+      // selection) — engineers want the unfiltered spatial picture
+      // even when they exported a subset.
+      const planPhotos = allPhotos.filter(
+        (p) => p.floorPlanID === plan.id && p.trashedAt == null
+      );
+      return planPages(plan, blob, planPhotos, options.planMode);
+    })
+    .join("\n");
+}
+
+/**
  * Metadata-table section (Build #5.70.1 — iOS parity).
  *
  * Mirrors iOS's `PDFExportOptions.includeMetadataTable` /
@@ -669,31 +792,59 @@ export async function renderReportHtml(
   // `photosPerPage` for jobs persisted before #5.67.1. `applyOptionDefaults`
   // clamps to 1-12, so we don't re-validate here.
   const perPageResolved = options.perPage ?? options.photosPerPage ?? 6;
-  const photoGroups = chunk(selectedPhotos, perPageResolved);
-  const photoPagesHtml = photoGroups
-    .map((group) =>
-      contactSheetPage(group, blobs, projectId, planLabelById, options)
-    )
-    .join("\n");
 
-  const planPagesHtml = options.includeFloorPlanPages
-    ? project.floorPlans
-        .map((plan) => {
-          const key = planImageKey(projectId, plan.id);
-          const blob = blobs.get(key) ?? null;
-          // The plan still shows ALL its pins (not just the
-          // filtered selection) — engineers want the unfiltered
-          // spatial picture even when they exported a subset.
-          const planPhotos = project.photos.filter(
-            (p) => p.floorPlanID === plan.id && p.trashedAt == null
-          );
-          // Plan mode (Build #5.69.1) selects between the four iOS
-          // modes. `planPages` returns 1 or 2 sections depending on
-          // `photoAndDistressSeparate`.
-          return planPages(plan, blob, planPhotos, options.planMode);
-        })
-        .join("\n")
+  // Bucket-grouped contact sheets (Build #5.71.1 — iOS parity).
+  // When `groupByBucket` is on, each bucket gets a divider page
+  // followed by its photos' contact sheets, in iOS `Bucket.sortOrder`
+  // order. Photos with `bucketID === null` land in a trailing
+  // "Unbucketed" group so nothing gets dropped. When off, every
+  // photo flows into one stream — the #5.68.1 behaviour.
+  const photoPagesHtml = options.groupByBucket
+    ? renderBucketedContactSheets(
+        selectedPhotos,
+        project.buckets,
+        perPageResolved,
+        blobs,
+        projectId,
+        planLabelById,
+        options
+      )
+    : renderUngroupedContactSheets(
+        selectedPhotos,
+        perPageResolved,
+        blobs,
+        projectId,
+        planLabelById,
+        options
+      );
+
+  const planPagesHtml = renderPlanPages(
+    project.floorPlans,
+    project.photos,
+    blobs,
+    projectId,
+    options
+  );
+
+  const metadataTableSection = options.includeMetadataTable
+    ? metadataTableHtml(selectedPhotos, planLabelById)
     : "";
+
+  // Body sections rendered in `options.sectionOrder` (Build #5.71.1
+  // — iOS parity). Cover always lands first when included; it's
+  // intentionally NOT in `sectionOrder` (same convention iOS uses).
+  // Each entry is keyed by `PdfSection`; the renderer skips any
+  // whose HTML is empty (no plans, no photos, metadataTable toggle
+  // off, etc.) so an empty group doesn't produce an empty page.
+  const sectionHtmlByKey: Record<PdfSection, string> = {
+    plan: planPagesHtml,
+    contactSheets: photoPagesHtml,
+    metadataTable: metadataTableSection,
+  };
+  const bodySectionsHtml = options.sectionOrder
+    .map((s) => sectionHtmlByKey[s] ?? "")
+    .filter((html) => html.length > 0)
+    .join("\n");
 
   const pageSizeCss = options.pageSize === "a4" ? "A4" : "Letter";
 
@@ -784,11 +935,24 @@ export async function renderReportHtml(
   .metadata-table .col-tags { width: 1.4in; }
   .metadata-table .col-caption { font-weight: 600; }
   .metadata-table .col-observation { color: #475569; }
+
+  /* Bucket dividers (Build #5.71.1 — iOS parity).
+     Each grouped contact-sheet stream is preceded by one full page
+     introducing the bucket: a coloured bar matching Bucket.colorHex
+     and the bucket name + photo count. */
+  .bucket-divider { display: flex; align-items: center;
+                    justify-content: center; min-height: 10in; }
+  .bucket-divider .bucket-block { display: flex; align-items: center;
+                                  gap: 0.4in; }
+  .bucket-divider .bucket-bar { width: 0.4in; height: 2.5in;
+                                border-radius: 0.05in; }
+  .bucket-divider .bucket-name { font-size: 36pt; font-weight: 600;
+                                  color: #0f172a; line-height: 1.1; }
+  .bucket-divider .bucket-count { font-size: 14pt; color: #64748b;
+                                   margin-top: 0.15in; }
 </style></head>
 <body>
 ${options.includeCoverPage ? coverPage(project) : ""}
-${photoPagesHtml}
-${planPagesHtml}
-${options.includeMetadataTable ? metadataTableHtml(selectedPhotos, planLabelById) : ""}
+${bodySectionsHtml}
 </body></html>`;
 }
