@@ -422,10 +422,16 @@ export async function renderReportHtml(
     project.floorPlans.map((p) => [p.id, p.label] as const)
   );
 
-  // Photos-per-page: 1 → one page per photo; 2 / 4 → grouped pages.
-  // Each group still page-breaks after itself; the CSS grid layout
-  // arranges the 2- or 4-up tiles inside.
-  const photoGroups = chunk(selectedPhotos, options.photosPerPage);
+  // Photos-per-page resolution (Build #5.67.1 iOS parity rollout):
+  // prefer the new `perPage` field, fall back to legacy
+  // `photosPerPage` for old jobs/clients, then to the iOS default.
+  // The renderer's CSS / layout work for 6+ photos per page lands in
+  // PR #5.68.1 (contact-sheet layout); for now we clamp to the 1/2/4
+  // grid the existing code understands.
+  const requestedPerPage = options.perPage ?? options.photosPerPage ?? 1;
+  const photosPerPageForRender =
+    requestedPerPage >= 4 ? 4 : requestedPerPage >= 2 ? 2 : 1;
+  const photoGroups = chunk(selectedPhotos, photosPerPageForRender);
   const photoPagesHtml = photoGroups
     .map((group) => {
       const tiles = group
@@ -444,8 +450,11 @@ export async function renderReportHtml(
       // For 1-per-page we render the photoPage directly (already a
       // <section class="page photo">). For 2/4-per-page we wrap a
       // grid container so the tiles share one printed page.
-      if (options.photosPerPage === 1) return tiles;
-      const cls = options.photosPerPage === 2 ? "photogrid-2" : "photogrid-4";
+      // (PR #5.68.1 will replace this with a flexible contact-sheet
+      // layout matching iOS perPage Int — the clamped 1/2/4 above
+      // is the bridge.)
+      if (photosPerPageForRender === 1) return tiles;
+      const cls = photosPerPageForRender === 2 ? "photogrid-2" : "photogrid-4";
       return `<section class="page photogrid ${cls}">${tiles}</section>`;
     })
     .join("\n");

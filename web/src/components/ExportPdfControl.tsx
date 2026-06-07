@@ -37,7 +37,16 @@ interface Props {
   floorPlans: FloorPlanSummary[];
 }
 
+// Until the modal rewrite in PR #5.73.1, the existing UI only knows
+// how to set the legacy fields (`photosPerPage`, `photoFilter`,
+// etc.). We still satisfy the iOS-parity `PdfExportOptions` shape
+// from #5.67.1 by filling the new fields with their iOS defaults,
+// which is what `applyOptionDefaults` on the server would produce
+// anyway. So the wire output is unchanged for now — the legacy
+// fields drive the renderer until PRs #5.68.1 — #5.71.1 plumb the
+// new fields through.
 const DEFAULT_OPTIONS: PdfExportOptions = {
+  // Legacy fields the current modal sets.
   pageSize: "letter",
   photosPerPage: 1,
   photoFilter: "all",
@@ -45,6 +54,22 @@ const DEFAULT_OPTIONS: PdfExportOptions = {
   includeTrashed: false,
   includeCoverPage: true,
   includeFloorPlanPages: true,
+  // New iOS-parity fields — set to iOS defaults so the wire shape
+  // type-checks. Rewritten modal in PR #5.73.1 will let the user
+  // touch these.
+  perPage: 6,
+  groupByBucket: false,
+  includeMetadataTable: false,
+  annotations: {
+    includeTags: true,
+    includeCaption: false,
+    includeObservation: false,
+    includeMeasurement: false,
+    includeReviewerFlag: false,
+  },
+  sectionOrder: ["plan", "contactSheets", "metadataTable"],
+  selectedFloorIds: null,
+  planMode: "photoOnly",
 };
 
 type State =

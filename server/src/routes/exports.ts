@@ -27,6 +27,7 @@ import type {
   CreatePdfExportResponse,
   GetPdfExportResponse,
   PdfExportJob,
+  PdfExportOptions,
   PdfExportStatus,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
@@ -34,13 +35,43 @@ import { authPlugin } from "../middleware/auth.js";
 import { presignedGet } from "../r2.js";
 import { applyOptionDefaults } from "../exports/options.js";
 
+// Schema accepts both the iOS-parity fields (Build #5.67.1) and the
+// legacy #5.64.1 fields. Every field is optional — `applyOptionDefaults`
+// fills in the rest. The renderer (PRs #5.68.1 — #5.71.1) prefers the
+// new fields when present and falls back to the legacy ones so
+// in-flight web UIs that haven't shipped the new modal yet (PR
+// #5.73.1) keep working.
+const PdfAnnotationOptionsSchema = z.object({
+  includeTags: z.boolean().optional(),
+  includeCaption: z.boolean().optional(),
+  includeObservation: z.boolean().optional(),
+  includeMeasurement: z.boolean().optional(),
+  includeReviewerFlag: z.boolean().optional(),
+});
+
 const PdfExportOptionsSchema = z.object({
+  // iOS parity fields.
+  perPage: z.number().int().optional(),
+  groupByBucket: z.boolean().optional(),
+  includeMetadataTable: z.boolean().optional(),
+  annotations: PdfAnnotationOptionsSchema.optional(),
+  sectionOrder: z
+    .array(z.enum(["plan", "contactSheets", "metadataTable"]))
+    .optional(),
+  selectedFloorIds: z.array(z.string()).nullable().optional(),
+  planMode: z
+    .enum(["photoOnly", "distressOnly", "photoAndDistressSeparate", "merged"])
+    .optional(),
+
+  // Web-specific carryover.
   pageSize: z.enum(["letter", "a4"]).optional(),
+  includeTrashed: z.boolean().optional(),
+  includeCoverPage: z.boolean().optional(),
+
+  // Legacy fields — accepted for backwards compat.
   photosPerPage: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),
   photoFilter: z.enum(["all", "favorites", "byFloorPlan"]).optional(),
   floorPlanId: z.string().nullable().optional(),
-  includeTrashed: z.boolean().optional(),
-  includeCoverPage: z.boolean().optional(),
   includeFloorPlanPages: z.boolean().optional(),
 });
 
@@ -114,7 +145,15 @@ export const exportsRoute: FastifyPluginAsync = async (app) => {
       });
       return;
     }
-    const options = applyOptionDefaults(parsed.data.options ?? {});
+    // Cast through `unknown` because zod's nested-optional inference
+    // produces a structurally-compatible-but-stricter type
+    // (`{includeTags?: boolean | undefined; …}`) than
+    // `Partial<PdfExportOptions>` (`{includeTags: boolean; …}` inside
+    // `annotations?`). `applyOptionDefaults` is total — every nested
+    // field has a `??` fallback — so the cast is safe.
+    const options = applyOptionDefaults(
+      (parsed.data.options ?? {}) as Partial<PdfExportOptions>
+    );
     if (options.photoFilter === "byFloorPlan" && !options.floorPlanId) {
       reply.code(400).send({
         error: "bad_request",
