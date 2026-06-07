@@ -15,7 +15,15 @@ services:
     plan: free
     branch: main
     rootDir: .
-    buildCommand: "corepack enable && pnpm install --frozen-lockfile"
+    # Belt-and-suspenders for Chromium install (Build #5.66.1):
+    # `pnpm install` should run puppeteer's postinstall because of the
+    # root package.json's `pnpm.onlyBuiltDependencies` whitelist, but
+    # Render's pnpm/cache machinery occasionally skips it on
+    # `--frozen-lockfile`. The explicit `puppeteer browsers install`
+    # step at the end guarantees Chromium is in PUPPETEER_CACHE_DIR
+    # before the server boots, regardless. ~1 sec when cached, ~30 sec
+    # on a fresh download.
+    buildCommand: "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @forensic/server exec puppeteer browsers install chrome"
     startCommand: "pnpm --filter @forensic/server start"
     healthCheckPath: /healthz
     envVars:
