@@ -37,12 +37,13 @@
  */
 
 import type { FastifyBaseLogger } from "fastify";
+import { PDFDocument } from "pdf-lib";
 import puppeteer, { type Browser } from "puppeteer";
 import type { PdfExportOptions, Project } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
-import { renderReportHtml } from "./htmlReport.js";
+import { renderReportChunks } from "./htmlReport.js";
 import { applyOptionDefaults } from "./options.js";
 
 /** How often to scan the queue. Render free tier sleeps after 15
@@ -129,66 +130,107 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     );
   }
   const project = (row as { manifest: Project }).manifest;
-  // PR #3: options drive layout choices (page size, photos per page,
-  // photo filter, included sections). Worker fills defaults for any
-  // missing field so old / minimal clients still produce the
-  // #5.63.1 output shape.
   const options = applyOptionDefaults(job.options ?? {});
-  const html = await renderReportHtml(project, job.project_id, log, options);
+
+  // Chunked rendering (Build #5.72.1). `renderReportChunks` returns
+  // an array of complete HTML documents — one per body-section
+  // sub-chunk. We feed each through its own Puppeteer setContent →
+  // page.pdf cycle so Chromium's working set tracks the per-chunk
+  // size, not the whole report. `pdf-lib` then merges the per-chunk
+  // PDF buffers into the final document we upload to R2.
+  const chunks = await renderReportChunks(
+    project,
+    job.project_id,
+    log,
+    options
+  );
+  if (chunks.length === 0) {
+    throw new Error(
+      "Selection is empty — no cover, no photos, no plans, no metadata table to render."
+    );
+  }
 
   const b = await getOrLaunchBrowser();
-  const page = await b.newPage();
-  try {
-    // Memory probe (Build #5.65.1) — surfaces actual RSS around the
-    // heaviest step so we can tune `MAX_PHOTOS_PER_PDF` from measured
-    // data rather than guesses. `rss` is the process's resident set
-    // size in bytes (total memory the OS is holding for us).
-    const mbAtStart = Math.round(process.memoryUsage().rss / 1024 / 1024);
-    log.info({ jobId: job.id, rssMb: mbAtStart, htmlBytes: html.length }, "pdf worker — pre-render");
-    await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
-    const mbAfterSetContent = Math.round(process.memoryUsage().rss / 1024 / 1024);
-    log.info({ jobId: job.id, rssMb: mbAfterSetContent }, "pdf worker — post-setContent");
-    // page.pdf's `format` is the paper size for ALL pages. The HTML
-    // also sets `@page { size: ... }` so the CSS-level page break
-    // hints line up with Puppeteer's paper size.
-    const pdf = await page.pdf({
-      format: options.pageSize === "a4" ? "A4" : "Letter",
-      printBackground: true,
-    });
-    const mbAfterPdf = Math.round(process.memoryUsage().rss / 1024 / 1024);
-    log.info(
-      {
-        jobId: job.id,
-        rssMb: mbAfterPdf,
-        rssDeltaMb: mbAfterPdf - mbAtStart,
-        pdfKb: Math.round((Buffer.isBuffer(pdf) ? pdf.byteLength : Buffer.from(pdf).byteLength) / 1024),
-      },
-      "pdf worker — post-pdf"
-    );
-    const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
-    const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
-    await putObjectBytes({
-      objectKey,
-      body: pdfBuffer,
-      contentType: "application/pdf",
-    });
-    const { error: updateErr } = await supabaseAdmin
-      .from("pdf_export_jobs")
-      .update({
-        status: "done",
-        pdf_object_key: objectKey,
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", job.id);
-    if (updateErr) {
-      // Render succeeded but the row update failed — log loudly but
-      // don't throw, the PDF is in R2 even if the row is wrong.
-      log.error({ err: updateErr, jobId: job.id }, "pdf worker — completion update failed");
-    } else {
-      log.info({ jobId: job.id, projectId: job.project_id }, "pdf export done");
+  const pdfFormat = options.pageSize === "a4" ? "A4" : "Letter";
+  const chunkPdfs: Buffer[] = [];
+  const mbAtStart = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  log.info(
+    { jobId: job.id, chunkCount: chunks.length, rssMb: mbAtStart },
+    "pdf worker — pre-render"
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    const html = chunks[i]!;
+    const page = await b.newPage();
+    try {
+      await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
+      const pdf = await page.pdf({ format: pdfFormat, printBackground: true });
+      const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+      chunkPdfs.push(pdfBuffer);
+      const mbAfter = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      log.info(
+        {
+          jobId: job.id,
+          chunkIndex: i,
+          chunkHtmlBytes: html.length,
+          chunkPdfKb: Math.round(pdfBuffer.byteLength / 1024),
+          rssMb: mbAfter,
+        },
+        "pdf worker — chunk done"
+      );
+    } finally {
+      await page.close().catch(() => {});
     }
-  } finally {
-    await page.close().catch(() => {});
+  }
+
+  // Merge per-chunk PDFs into the final document. `pdf-lib` is pure
+  // JS and operates on the parsed page tree, so even hundreds of
+  // pages merge in well under a second on Render's free tier.
+  const merged = await PDFDocument.create();
+  for (const buf of chunkPdfs) {
+    const src = await PDFDocument.load(buf);
+    const pages = await merged.copyPages(src, src.getPageIndices());
+    for (const p of pages) merged.addPage(p);
+  }
+  const finalBytes = Buffer.from(await merged.save());
+  const mbFinal = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  log.info(
+    {
+      jobId: job.id,
+      finalPdfKb: Math.round(finalBytes.byteLength / 1024),
+      pageCount: merged.getPageCount(),
+      rssMb: mbFinal,
+      rssDeltaMb: mbFinal - mbAtStart,
+    },
+    "pdf worker — merged"
+  );
+
+  const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
+  await putObjectBytes({
+    objectKey,
+    body: finalBytes,
+    contentType: "application/pdf",
+  });
+  const { error: updateErr } = await supabaseAdmin
+    .from("pdf_export_jobs")
+    .update({
+      status: "done",
+      pdf_object_key: objectKey,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+  if (updateErr) {
+    // Upload succeeded but the row update failed — log loudly but
+    // don't throw, the PDF is in R2 even if the row is wrong.
+    log.error(
+      { err: updateErr, jobId: job.id },
+      "pdf worker — completion update failed"
+    );
+  } else {
+    log.info(
+      { jobId: job.id, projectId: job.project_id },
+      "pdf export done"
+    );
   }
 }
 

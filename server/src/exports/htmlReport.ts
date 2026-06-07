@@ -45,14 +45,18 @@ import type {
 } from "@forensic/shared";
 import { getObjectBytes } from "../r2.js";
 
-/** Hard cap on photos rendered into a single PDF. Bumped from 200
- *  → 1000 in #5.65.1 after office staff hit the 200 limit on a real
- *  525-photo project. At 1000 thumbs × ~30 KB base64 each the HTML
- *  is ~30 MB and Chromium's parsed DOM is several × that, putting
- *  us near Render's 512 MB free-tier ceiling. The
- *  `pdfWorker.ts` logs `process.memoryUsage().rss` before + after
- *  the print so we have measured data for the next adjustment. */
-export const MAX_PHOTOS_PER_PDF = 1000;
+/**
+ * Maximum HTML pages per rendered chunk (Build #5.72.1 — chunked
+ * rendering). The renderer now produces an array of HTML chunks;
+ * each chunk goes through its own Puppeteer setContent → page.pdf
+ * cycle, and the worker merges the per-chunk PDF buffers with
+ * `pdf-lib`. This caps Chromium's working set to one chunk's
+ * worth of HTML, dropping the previous `MAX_PHOTOS_PER_PDF = 1000`
+ * limit entirely. Picked conservatively for Render's free-tier
+ * 512 MB: at perPage=6 a chunk carries ~150 photos worth of
+ * inline-base64 thumbs ≈ 4-5 MB HTML, well within memory budget.
+ */
+export const PAGES_PER_CHUNK = 25;
 
 /** Color palette for distress marks. Mirrors the web canvas + iOS
  *  PDF for consistency across the three render surfaces. */
@@ -541,12 +545,10 @@ function renderUngroupedContactSheets(
   projectId: string,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
-): string {
-  return chunk(selectedPhotos, perPage)
-    .map((group) =>
-      contactSheetPage(group, blobs, projectId, planLabelById, options)
-    )
-    .join("\n");
+): string[] {
+  return chunk(selectedPhotos, perPage).map((group) =>
+    contactSheetPage(group, blobs, projectId, planLabelById, options)
+  );
 }
 
 function renderBucketedContactSheets(
@@ -557,7 +559,7 @@ function renderBucketedContactSheets(
   projectId: string,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
-): string {
+): string[] {
   // Build a stable order: buckets by `sortOrder`, then a trailing
   // sentinel for "Unbucketed". Photos missing or pointing at a
   // deleted bucket land in the sentinel group.
@@ -576,17 +578,17 @@ function renderBucketedContactSheets(
   );
   if (unbucketed.length > 0) groups.push({ bucket: null, photos: unbucketed });
 
-  return groups
-    .map(({ bucket, photos }) => {
-      const divider = bucketDividerHtml(bucket, photos.length);
-      const sheets = chunk(photos, perPage)
-        .map((g) =>
-          contactSheetPage(g, blobs, projectId, planLabelById, options)
-        )
-        .join("\n");
-      return `${divider}\n${sheets}`;
-    })
-    .join("\n");
+  // Each bucket group contributes: [dividerPage, ...sheetPages].
+  const pages: string[] = [];
+  for (const { bucket, photos } of groups) {
+    pages.push(bucketDividerHtml(bucket, photos.length));
+    for (const sheet of chunk(photos, perPage)) {
+      pages.push(
+        contactSheetPage(sheet, blobs, projectId, planLabelById, options)
+      );
+    }
+  }
+  return pages;
 }
 
 /** One full page introducing a bucket group — big colour bar + name
@@ -619,26 +621,24 @@ function renderPlanPages(
   blobs: Map<string, ImageBlob | null>,
   projectId: string,
   options: PdfExportOptions
-): string {
-  if (floorPlans.length === 0) return "";
+): string[] {
+  if (floorPlans.length === 0) return [];
   // Honour the legacy includeFloorPlanPages flag when present (jobs
   // persisted before #5.67.1 wrote it). Once the modal in #5.73.1
   // drops it, sectionOrder is the only switch — but for the rollout
   // we keep both working.
-  if (options.includeFloorPlanPages === false) return "";
-  return floorPlans
-    .map((plan) => {
-      const key = planImageKey(projectId, plan.id);
-      const blob = blobs.get(key) ?? null;
-      // The plan still shows ALL its pins (not just the filtered
-      // selection) — engineers want the unfiltered spatial picture
-      // even when they exported a subset.
-      const planPhotos = allPhotos.filter(
-        (p) => p.floorPlanID === plan.id && p.trashedAt == null
-      );
-      return planPages(plan, blob, planPhotos, options.planMode);
-    })
-    .join("\n");
+  if (options.includeFloorPlanPages === false) return [];
+  return floorPlans.map((plan) => {
+    const key = planImageKey(projectId, plan.id);
+    const blob = blobs.get(key) ?? null;
+    // The plan still shows ALL its pins (not just the filtered
+    // selection) — engineers want the unfiltered spatial picture
+    // even when they exported a subset.
+    const planPhotos = allPhotos.filter(
+      (p) => p.floorPlanID === plan.id && p.trashedAt == null
+    );
+    return planPages(plan, blob, planPhotos, options.planMode);
+  });
 }
 
 /**
@@ -752,105 +752,26 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-/** Build the complete report HTML. Throws if the selected photo set
- *  exceeds `MAX_PHOTOS_PER_PDF`. */
-export async function renderReportHtml(
-  project: Project,
-  projectId: string,
-  log: FastifyBaseLogger,
-  options: PdfExportOptions
-): Promise<string> {
-  const selectedPhotos = selectPhotos(project, options);
-  if (selectedPhotos.length > MAX_PHOTOS_PER_PDF) {
-    throw new Error(
-      `Selection contains ${selectedPhotos.length} photos; the PDF renderer caps at ` +
-        `${MAX_PHOTOS_PER_PDF}. Narrow the filter (favorites only, single floor plan) or ` +
-        `trash unused photos.`
-    );
-  }
-
-  // Plan pages (when included) always render every plan — even when
-  // the photo filter scopes to a single one, the team often wants
-  // every plan available for spatial context.
-  const planKeys = options.includeFloorPlanPages
-    ? project.floorPlans.map((p) => planImageKey(projectId, p.id))
-    : [];
-  const photoKeys = selectedPhotos.map((p) =>
-    p.thumbnailFilename
-      ? photoThumbKey(projectId, p.id)
-      : photoImageKey(projectId, p.id)
-  );
-  const allKeys = Array.from(new Set([...photoKeys, ...planKeys]));
-  const blobs = await fetchImagesParallel(allKeys, log);
-
-  const planLabelById = new Map(
-    project.floorPlans.map((p) => [p.id, p.label] as const)
-  );
-
-  // Photos per contact-sheet page (Build #5.68.1 — iOS-style
-  // flexible Int 1-12). Prefer the new `perPage`; fall back to legacy
-  // `photosPerPage` for jobs persisted before #5.67.1. `applyOptionDefaults`
-  // clamps to 1-12, so we don't re-validate here.
-  const perPageResolved = options.perPage ?? options.photosPerPage ?? 6;
-
-  // Bucket-grouped contact sheets (Build #5.71.1 — iOS parity).
-  // When `groupByBucket` is on, each bucket gets a divider page
-  // followed by its photos' contact sheets, in iOS `Bucket.sortOrder`
-  // order. Photos with `bucketID === null` land in a trailing
-  // "Unbucketed" group so nothing gets dropped. When off, every
-  // photo flows into one stream — the #5.68.1 behaviour.
-  const photoPagesHtml = options.groupByBucket
-    ? renderBucketedContactSheets(
-        selectedPhotos,
-        project.buckets,
-        perPageResolved,
-        blobs,
-        projectId,
-        planLabelById,
-        options
-      )
-    : renderUngroupedContactSheets(
-        selectedPhotos,
-        perPageResolved,
-        blobs,
-        projectId,
-        planLabelById,
-        options
-      );
-
-  const planPagesHtml = renderPlanPages(
-    project.floorPlans,
-    project.photos,
-    blobs,
-    projectId,
-    options
-  );
-
-  const metadataTableSection = options.includeMetadataTable
-    ? metadataTableHtml(selectedPhotos, planLabelById)
-    : "";
-
-  // Body sections rendered in `options.sectionOrder` (Build #5.71.1
-  // — iOS parity). Cover always lands first when included; it's
-  // intentionally NOT in `sectionOrder` (same convention iOS uses).
-  // Each entry is keyed by `PdfSection`; the renderer skips any
-  // whose HTML is empty (no plans, no photos, metadataTable toggle
-  // off, etc.) so an empty group doesn't produce an empty page.
-  const sectionHtmlByKey: Record<PdfSection, string> = {
-    plan: planPagesHtml,
-    contactSheets: photoPagesHtml,
-    metadataTable: metadataTableSection,
-  };
-  const bodySectionsHtml = options.sectionOrder
-    .map((s) => sectionHtmlByKey[s] ?? "")
-    .filter((html) => html.length > 0)
-    .join("\n");
-
-  const pageSizeCss = options.pageSize === "a4" ? "A4" : "Letter";
-
+/** Wrap a body HTML fragment in the full document scaffold + shared
+ *  styles. Every chunk produced by `renderReportChunks` goes through
+ *  this so Chromium gets the same `@page` size + style block on each
+ *  setContent call. */
+function wrapHtml(
+  bodyHtml: string,
+  styles: string,
+  project: Project
+): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title>
-<style>
+<style>${styles}</style></head>
+<body>${bodyHtml}</body></html>`;
+}
+
+/** The full inline `<style>` block. Pulled out of `renderReportChunks`
+ *  so every chunk reuses it without duplicating string literals. */
+function sharedStyles(options: PdfExportOptions): string {
+  const pageSizeCss = options.pageSize === "a4" ? "A4" : "Letter";
+  return `
   @page { size: ${pageSizeCss}; margin: 0.5in; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
@@ -950,9 +871,117 @@ export async function renderReportHtml(
                                   color: #0f172a; line-height: 1.1; }
   .bucket-divider .bucket-count { font-size: 14pt; color: #64748b;
                                    margin-top: 0.15in; }
-</style></head>
-<body>
-${options.includeCoverPage ? coverPage(project) : ""}
-${bodySectionsHtml}
-</body></html>`;
+  `;
+}
+
+/**
+ * Build the report as an array of HTML chunks (Build #5.72.1 —
+ * chunked rendering). Each chunk is a complete `<html>` document
+ * that the worker pipes through one Puppeteer setContent →
+ * page.pdf cycle; the per-chunk PDFs are then merged with
+ * `pdf-lib`. This caps Chromium's working set per chunk, which
+ * lets us drop the previous 1000-photo hard cap entirely.
+ *
+ * Chunk strategy:
+ *   - Cover page is its own chunk when `options.includeCoverPage`.
+ *   - Plan-pages section is one chunk (rarely >10 plans).
+ *   - Metadata-table section is one chunk.
+ *   - Contact-sheets section is split into sub-chunks of
+ *     `PAGES_PER_CHUNK` pages each (~150 photos at perPage=6).
+ *     The body's overall `options.sectionOrder` is honoured —
+ *     sections appear in the merged PDF in that order.
+ *
+ * Empty sections are dropped before chunking so an over-filtered
+ * export doesn't produce orphan empty chunks.
+ */
+export async function renderReportChunks(
+  project: Project,
+  projectId: string,
+  log: FastifyBaseLogger,
+  options: PdfExportOptions
+): Promise<string[]> {
+  const selectedPhotos = selectPhotos(project, options);
+
+  // Fetch all images (photos + plans) in one parallel pass so chunks
+  // share a single read of R2 — moving fetch inside the per-chunk
+  // loop would multiply round trips by chunk count.
+  const planKeys = options.includeFloorPlanPages
+    ? project.floorPlans.map((p) => planImageKey(projectId, p.id))
+    : [];
+  const photoKeys = selectedPhotos.map((p) =>
+    p.thumbnailFilename
+      ? photoThumbKey(projectId, p.id)
+      : photoImageKey(projectId, p.id)
+  );
+  const allKeys = Array.from(new Set([...photoKeys, ...planKeys]));
+  const blobs = await fetchImagesParallel(allKeys, log);
+
+  const planLabelById = new Map(
+    project.floorPlans.map((p) => [p.id, p.label] as const)
+  );
+
+  const perPageResolved = options.perPage ?? options.photosPerPage ?? 6;
+
+  const contactSheetPages = options.groupByBucket
+    ? renderBucketedContactSheets(
+        selectedPhotos,
+        project.buckets,
+        perPageResolved,
+        blobs,
+        projectId,
+        planLabelById,
+        options
+      )
+    : renderUngroupedContactSheets(
+        selectedPhotos,
+        perPageResolved,
+        blobs,
+        projectId,
+        planLabelById,
+        options
+      );
+
+  const planPages = renderPlanPages(
+    project.floorPlans,
+    project.photos,
+    blobs,
+    projectId,
+    options
+  );
+
+  const metadataPage = options.includeMetadataTable
+    ? metadataTableHtml(selectedPhotos, planLabelById)
+    : "";
+
+  const styles = sharedStyles(options);
+  const chunks: string[] = [];
+
+  if (options.includeCoverPage) {
+    chunks.push(wrapHtml(coverPage(project), styles, project));
+  }
+
+  // Each `PdfSection` slot maps to an array of HTML chunks (could be
+  // empty when its underlying data is absent). The outer order
+  // honours `options.sectionOrder`; inside `contactSheets`, sub-
+  // chunks of `PAGES_PER_CHUNK` pages each cap per-chunk memory.
+  const sectionChunksByKey: Record<PdfSection, string[]> = {
+    plan:
+      planPages.length === 0
+        ? []
+        : [wrapHtml(planPages.join("\n"), styles, project)],
+    contactSheets: chunk(contactSheetPages, PAGES_PER_CHUNK).map((pages) =>
+      wrapHtml(pages.join("\n"), styles, project)
+    ),
+    metadataTable:
+      metadataPage.length === 0
+        ? []
+        : [wrapHtml(metadataPage, styles, project)],
+  };
+
+  for (const sectionKey of options.sectionOrder) {
+    const sectionChunks = sectionChunksByKey[sectionKey];
+    if (sectionChunks) chunks.push(...sectionChunks);
+  }
+
+  return chunks;
 }
