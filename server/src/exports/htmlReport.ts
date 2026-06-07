@@ -35,6 +35,7 @@ import type {
   DistressKind,
   DistressMark,
   FloorPlan,
+  PdfAnnotationOptions,
   PdfExportOptions,
   Photo,
   Project,
@@ -196,77 +197,152 @@ function coverPage(project: Project): string {
   </section>`;
 }
 
-function photoPage(
+/**
+ * iOS-parity contact-sheet primitives (Build #5.68.1).
+ *
+ * iOS's PDF export uses contact sheets as the primary photo-page
+ * format — N photos arranged in a grid with the
+ * `annotations` flags controlling what's rendered under each cell.
+ * This block replaces the per-photo full-page layout from #5.63.1
+ * and the rigid 1/2/4-up grid from #5.64.1.
+ *
+ * `perPage` is iOS-style flexible Int (1–12 supported); the grid
+ * dimensions are computed below so any value in that range produces
+ * a sensible layout. perPage=1 is still a single-tile "sheet" — the
+ * same code path renders it at full page size, just with one cell.
+ *
+ * The per-cell `annotationsHtml()` row mirrors iOS's
+ * `drawContactSheet` annotation order: caption, observation,
+ * primary tags, measurement, reviewer flag. Each line renders only
+ * when its flag is on AND the photo has a non-empty value for that
+ * field. iOS-default (`includeTags: true`, others false) reproduces
+ * the iOS engineer's at-a-glance contact sheet.
+ */
+
+/** Compute grid cols × rows for any perPage in the 1–12 range. */
+function gridDimensions(perPage: number): { cols: number; rows: number } {
+  if (perPage <= 1) return { cols: 1, rows: 1 };
+  if (perPage <= 3) return { cols: 1, rows: perPage };
+  if (perPage === 4) return { cols: 2, rows: 2 };
+  if (perPage <= 6) return { cols: 2, rows: Math.ceil(perPage / 2) };
+  if (perPage <= 9) return { cols: 3, rows: Math.ceil(perPage / 3) };
+  return { cols: 3, rows: Math.ceil(perPage / 3) }; // 10–12 → 3×4
+}
+
+/** The per-cell annotations row. Empty string when every requested
+ *  field is empty on the photo (renderer hides the row entirely). */
+function annotationsHtml(
+  photo: Photo,
+  annotations: PdfAnnotationOptions
+): string {
+  const lines: string[] = [];
+
+  if (annotations.includeCaption) {
+    const caption =
+      photo.userCaption?.trim() ||
+      photo.aiAnalysis?.captionDraft?.trim() ||
+      "";
+    if (caption) {
+      lines.push(`<div class="ann-line ann-caption">${escapeHtml(caption)}</div>`);
+    }
+  }
+
+  if (annotations.includeObservation) {
+    const observation =
+      photo.userObservation?.trim() ||
+      photo.aiAnalysis?.summaryObservation?.trim() ||
+      "";
+    if (observation) {
+      lines.push(`<div class="ann-line ann-observation">${escapeHtml(observation)}</div>`);
+    }
+  }
+
+  if (annotations.includeTags) {
+    const tagLabels = photo.tags
+      .filter((t) => t.parentTag == null)
+      .map((t) => t.label);
+    if (tagLabels.length > 0) {
+      lines.push(
+        `<div class="ann-line ann-tags">${tagLabels
+          .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
+          .join("")}</div>`
+      );
+    }
+  }
+
+  if (annotations.includeMeasurement) {
+    const measurement = photo.aiAnalysis?.measurementVisible?.trim();
+    if (measurement) {
+      lines.push(
+        `<div class="ann-line ann-measurement"><span class="ann-lbl">Measurement</span> ${escapeHtml(measurement)}</div>`
+      );
+    }
+  }
+
+  if (annotations.includeReviewerFlag) {
+    const flag = photo.aiAnalysis?.reviewerFlag?.trim();
+    if (flag) {
+      lines.push(
+        `<div class="ann-line ann-flag"><span class="ann-lbl">Flag</span> ${escapeHtml(flag)}</div>`
+      );
+    }
+  }
+
+  if (lines.length === 0) return "";
+  return `<div class="annotations">${lines.join("")}</div>`;
+}
+
+/** Single tile in the contact sheet: header → image → annotations. */
+function contactSheetTile(
   photo: Photo,
   thumb: ImageBlob | null,
-  planLabel: string | null
+  planLabel: string | null,
+  annotations: PdfAnnotationOptions
 ): string {
   const seq = `#${photo.sequenceNumber}`;
-  const takenAt = new Date(photo.timestamp).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-  const caption =
-    photo.userCaption?.trim() ||
-    photo.aiAnalysis?.captionDraft?.trim() ||
-    "";
-  const observation =
-    photo.userObservation?.trim() ||
-    photo.aiAnalysis?.summaryObservation?.trim() ||
-    "";
-  const tagList = photo.tags
-    .filter((t) => t.parentTag == null)
-    .map((t) => t.label);
-  const secondaries = photo.tags.filter((t) => t.parentTag != null);
-  const ai = photo.aiAnalysis;
-  return `<section class="page photo">
-    <header>
+  return `<div class="tile">
+    <div class="tile-header">
       <span class="seq">${escapeHtml(seq)}</span>
-      <span class="when">${escapeHtml(takenAt)}</span>
       ${planLabel ? `<span class="plan">${escapeHtml(planLabel)}</span>` : ""}
-    </header>
-    <div class="img">
+    </div>
+    <div class="tile-image">
       ${
         thumb
           ? `<img src="${thumb.dataUrl}" alt="${escapeHtml(seq)}">`
-          : `<div class="missing">(image pending sync)</div>`
+          : `<div class="missing">pending sync</div>`
       }
     </div>
-    <div class="meta">
-      ${caption ? `<div class="caption">${escapeHtml(caption)}</div>` : ""}
-      ${
-        observation
-          ? `<div class="observation">${escapeHtml(observation)}</div>`
-          : ""
-      }
-      ${
-        tagList.length > 0
-          ? `<div class="tags">
-              <span class="lbl">Tags</span>
-              ${tagList.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}
-            </div>`
-          : ""
-      }
-      ${
-        secondaries.length > 0
-          ? `<div class="tags secondary">
-              <span class="lbl">Secondary</span>
-              ${secondaries.map((t) => `<span class="tag">${escapeHtml(t.label)}</span>`).join("")}
-            </div>`
-          : ""
-      }
-      ${
-        ai
-          ? `<div class="aifields">
-              ${ai.recommendedUse ? `<div><span class="lbl">Recommended use</span> ${escapeHtml(ai.recommendedUse)}</div>` : ""}
-              ${ai.scalePresent ? `<div><span class="lbl">Scale</span> ${escapeHtml(ai.scalePresent)}</div>` : ""}
-              ${ai.measurementVisible ? `<div><span class="lbl">Measurement</span> ${escapeHtml(ai.measurementVisible)}</div>` : ""}
-              ${ai.reviewerFlag ? `<div><span class="lbl">Flag</span> ${escapeHtml(ai.reviewerFlag)}</div>` : ""}
-            </div>`
-          : ""
-      }
-    </div>
-  </section>`;
+    ${annotationsHtml(photo, annotations)}
+  </div>`;
+}
+
+/** One printed page containing up to `perPage` photo tiles. */
+function contactSheetPage(
+  photos: Photo[],
+  blobs: Map<string, ImageBlob | null>,
+  projectId: string,
+  planLabelById: Map<string, string>,
+  options: PdfExportOptions
+): string {
+  const { cols, rows } = gridDimensions(options.perPage);
+  const tilesHtml = photos
+    .map((p) => {
+      const tileKey = p.thumbnailFilename
+        ? photoThumbKey(projectId, p.id)
+        : photoImageKey(projectId, p.id);
+      const blob = blobs.get(tileKey) ?? null;
+      const planLabel = p.floorPlanID
+        ? planLabelById.get(p.floorPlanID) ?? null
+        : null;
+      return contactSheetTile(p, blob, planLabel, options.annotations);
+    })
+    .join("\n");
+  // Inline grid template so the same CSS handles any cols/rows
+  // combination computed by gridDimensions.
+  const style =
+    `grid-template-columns: repeat(${cols}, 1fr); ` +
+    `grid-template-rows: repeat(${rows}, 1fr);`;
+  return `<section class="page contact-sheet" style="${style}">${tilesHtml}</section>`;
 }
 
 /** A distress mark's `points` array is `[CGPoint]` from iOS, which
@@ -422,41 +498,16 @@ export async function renderReportHtml(
     project.floorPlans.map((p) => [p.id, p.label] as const)
   );
 
-  // Photos-per-page resolution (Build #5.67.1 iOS parity rollout):
-  // prefer the new `perPage` field, fall back to legacy
-  // `photosPerPage` for old jobs/clients, then to the iOS default.
-  // The renderer's CSS / layout work for 6+ photos per page lands in
-  // PR #5.68.1 (contact-sheet layout); for now we clamp to the 1/2/4
-  // grid the existing code understands.
-  const requestedPerPage = options.perPage ?? options.photosPerPage ?? 1;
-  const photosPerPageForRender =
-    requestedPerPage >= 4 ? 4 : requestedPerPage >= 2 ? 2 : 1;
-  const photoGroups = chunk(selectedPhotos, photosPerPageForRender);
+  // Photos per contact-sheet page (Build #5.68.1 — iOS-style
+  // flexible Int 1-12). Prefer the new `perPage`; fall back to legacy
+  // `photosPerPage` for jobs persisted before #5.67.1. `applyOptionDefaults`
+  // clamps to 1-12, so we don't re-validate here.
+  const perPageResolved = options.perPage ?? options.photosPerPage ?? 6;
+  const photoGroups = chunk(selectedPhotos, perPageResolved);
   const photoPagesHtml = photoGroups
-    .map((group) => {
-      const tiles = group
-        .map((p) => {
-          const tileKey = p.thumbnailFilename
-            ? photoThumbKey(projectId, p.id)
-            : photoImageKey(projectId, p.id);
-          const blob = blobs.get(tileKey) ?? null;
-          return photoPage(
-            p,
-            blob,
-            p.floorPlanID ? planLabelById.get(p.floorPlanID) ?? null : null
-          );
-        })
-        .join("\n");
-      // For 1-per-page we render the photoPage directly (already a
-      // <section class="page photo">). For 2/4-per-page we wrap a
-      // grid container so the tiles share one printed page.
-      // (PR #5.68.1 will replace this with a flexible contact-sheet
-      // layout matching iOS perPage Int — the clamped 1/2/4 above
-      // is the bridge.)
-      if (photosPerPageForRender === 1) return tiles;
-      const cls = photosPerPageForRender === 2 ? "photogrid-2" : "photogrid-4";
-      return `<section class="page photogrid ${cls}">${tiles}</section>`;
-    })
+    .map((group) =>
+      contactSheetPage(group, blobs, projectId, planLabelById, options)
+    )
     .join("\n");
 
   const planPagesHtml = options.includeFloorPlanPages
@@ -487,18 +538,6 @@ export async function renderReportHtml(
   .page { page-break-after: always; min-height: 10in; padding: 0; }
   .page:last-child { page-break-after: auto; }
 
-  /* Multi-photo grid layouts (Build #5.64.1). Tiles inside a grid
-     page reset their page-break since they share the printed page. */
-  .photogrid { display: grid; gap: 0.25in; min-height: 10in; }
-  .photogrid > .photo { page-break-after: avoid; min-height: 0; }
-  .photogrid-2 { grid-template-rows: 1fr 1fr; }
-  .photogrid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-  .photogrid .photo .img { height: auto; max-height: 3.5in; }
-  .photogrid-4 .photo .img { max-height: 2.2in; }
-  .photogrid .photo .aifields { display: none; }
-  .photogrid-4 .photo .observation { display: none; }
-  .photogrid-4 .photo .tags.secondary { display: none; }
-
   /* Cover */
   .cover { display: flex; flex-direction: column; min-height: 10in; }
   .cover h1 { font-size: 32pt; margin: 0 0 0.25in; }
@@ -510,30 +549,32 @@ export async function renderReportHtml(
   .cover .stat .l { font-size: 10pt; color: #64748b; text-transform: uppercase; }
   .cover .gen { font-size: 9pt; color: #94a3b8; margin-top: 0.5in; }
 
-  /* Photo pages */
-  .photo header { display: flex; gap: 0.25in; align-items: baseline;
-                  padding-bottom: 0.1in; border-bottom: 1px solid #e2e8f0;
-                  margin-bottom: 0.2in; }
-  .photo .seq { font-weight: 700; font-size: 14pt; color: #0f172a; }
-  .photo .when { color: #64748b; font-size: 10pt; }
-  .photo .plan { margin-left: auto; color: #2563eb; font-size: 10pt; }
-  .photo .img { display: flex; justify-content: center; height: 5in;
-                background: #f1f5f9; border: 1px solid #e2e8f0; }
-  .photo .img img { max-height: 100%; max-width: 100%; object-fit: contain; }
-  .photo .img .missing { display: flex; align-items: center;
-                         color: #94a3b8; font-size: 10pt; }
-  .photo .meta { margin-top: 0.2in; display: flex; flex-direction: column; gap: 0.1in; }
-  .photo .caption { font-weight: 600; font-size: 12pt; }
-  .photo .observation { color: #475569; }
-  .photo .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .photo .tags .lbl { font-size: 9pt; color: #64748b; text-transform: uppercase;
-                       letter-spacing: 0.04em; }
-  .photo .tags .tag { background: #e2e8f0; color: #0f172a;
-                      padding: 2px 8px; border-radius: 12px; font-size: 9.5pt; }
-  .photo .tags.secondary .tag { background: #f1f5f9; }
-  .photo .aifields { margin-top: 0.1in; font-size: 9.5pt; color: #334155;
-                     display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
-  .photo .aifields .lbl { font-size: 8.5pt; color: #64748b;
+  /* Contact sheet pages (Build #5.68.1 — iOS-parity layout).
+     Grid dimensions are inline-styled per-page from gridDimensions()
+     so any perPage 1-12 produces a sensible layout. */
+  .contact-sheet { display: grid; gap: 0.2in; min-height: 10in; }
+  .tile { display: flex; flex-direction: column; min-height: 0;
+          page-break-inside: avoid; }
+  .tile-header { display: flex; gap: 0.15in; align-items: baseline;
+                 font-size: 10pt; padding-bottom: 0.05in;
+                 border-bottom: 1px solid #e2e8f0; margin-bottom: 0.05in; }
+  .tile-header .seq { font-weight: 700; color: #0f172a; }
+  .tile-header .plan { margin-left: auto; color: #2563eb; font-size: 9pt; }
+  .tile-image { flex: 1 1 auto; display: flex; justify-content: center;
+                align-items: center; background: #f1f5f9;
+                border: 1px solid #e2e8f0; min-height: 0; }
+  .tile-image img { max-height: 100%; max-width: 100%; object-fit: contain; }
+  .tile-image .missing { color: #94a3b8; font-size: 9pt; }
+  .annotations { display: flex; flex-direction: column; gap: 2px;
+                 margin-top: 0.05in; font-size: 9pt; color: #334155; }
+  .annotations .ann-line { display: block; line-height: 1.25; }
+  .annotations .ann-caption { font-weight: 600; color: #0f172a; }
+  .annotations .ann-observation { color: #475569; }
+  .annotations .ann-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .annotations .ann-tags .tag { background: #e2e8f0; color: #0f172a;
+                                 padding: 1px 6px; border-radius: 10px;
+                                 font-size: 8pt; }
+  .annotations .ann-lbl { font-size: 8pt; color: #64748b;
                           text-transform: uppercase; letter-spacing: 0.04em;
                           margin-right: 4px; }
 
