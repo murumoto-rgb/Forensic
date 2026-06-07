@@ -518,6 +518,88 @@ function planPages(
   });
 }
 
+/**
+ * Metadata-table section (Build #5.70.1 — iOS parity).
+ *
+ * Mirrors iOS's `PDFExportOptions.includeMetadataTable` /
+ * `PDFExportService.drawMetadataTable`: one tabular page (or many
+ * if the photo set is long enough to overflow) listing every
+ * exported photo with key fields. Useful for the office reviewer
+ * who wants a one-glance index of what's in the report — sort by
+ * #, see the date range, scan tags without flipping through
+ * contact sheets.
+ *
+ * Render strategy: a single `<table>` with a sticky `<thead>` that
+ * Chromium repeats on every printed page via
+ * `display: table-header-group`. `page-break-inside: avoid` on
+ * each row keeps a row from being split mid-line at a page
+ * boundary.
+ *
+ * Columns mirror what iOS shows in `drawMetadataTable`:
+ *   - # (sequence number)
+ *   - Date (timestamp)
+ *   - Plan (label or "—" when un-located)
+ *   - Tags (comma-separated primary-tag labels)
+ *   - Caption (user caption, falling back to AI caption draft)
+ *   - Observation (user observation, falling back to AI summary)
+ */
+function metadataTableHtml(
+  photos: Photo[],
+  planLabelById: Map<string, string>
+): string {
+  if (photos.length === 0) return "";
+
+  const rows = photos
+    .map((p) => {
+      const seq = `${p.sequenceNumber}`;
+      const date = new Date(p.timestamp).toLocaleString("en-US", {
+        dateStyle: "short",
+        timeStyle: "short",
+      });
+      const planLabel = p.floorPlanID
+        ? planLabelById.get(p.floorPlanID) ?? "—"
+        : "—";
+      const tagLabels = p.tags
+        .filter((t) => t.parentTag == null)
+        .map((t) => t.label)
+        .join(", ");
+      const caption =
+        p.userCaption?.trim() ||
+        p.aiAnalysis?.captionDraft?.trim() ||
+        "";
+      const observation =
+        p.userObservation?.trim() ||
+        p.aiAnalysis?.summaryObservation?.trim() ||
+        "";
+      return `<tr>
+        <td class="col-seq">${escapeHtml(seq)}</td>
+        <td class="col-date">${escapeHtml(date)}</td>
+        <td class="col-plan">${escapeHtml(planLabel)}</td>
+        <td class="col-tags">${escapeHtml(tagLabels)}</td>
+        <td class="col-caption">${escapeHtml(caption)}</td>
+        <td class="col-observation">${escapeHtml(observation)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `<section class="page metadata-table">
+    <h2>Photo metadata</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-seq">#</th>
+          <th class="col-date">Date</th>
+          <th class="col-plan">Plan</th>
+          <th class="col-tags">Tags</th>
+          <th class="col-caption">Caption</th>
+          <th class="col-observation">Observation</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
 // ---------------------------------------------------------------------------
 // Top-level render
 // ---------------------------------------------------------------------------
@@ -676,10 +758,37 @@ export async function renderReportHtml(
                   font-size: 10pt; color: #334155; }
   .plan .legend .li { display: inline-flex; gap: 6px; align-items: center; }
   .plan .legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+  /* Metadata table (Build #5.70.1 — iOS parity).
+     thead with display:table-header-group tells Chromium to repeat
+     the header row on every printed page when the body overflows;
+     row-level page-break-inside:avoid keeps a row from being split
+     across a page boundary. */
+  .metadata-table h2 { font-size: 16pt; margin: 0 0 0.15in; }
+  .metadata-table table { width: 100%; border-collapse: collapse;
+                          font-size: 9pt; color: #1e293b; }
+  .metadata-table thead { display: table-header-group; }
+  .metadata-table th { text-align: left; padding: 4px 6px;
+                       background: #f1f5f9; border-bottom: 1px solid #cbd5e1;
+                       font-size: 8.5pt; text-transform: uppercase;
+                       letter-spacing: 0.04em; color: #475569;
+                       font-weight: 600; }
+  .metadata-table td { padding: 4px 6px; vertical-align: top;
+                       border-bottom: 1px solid #e2e8f0;
+                       word-break: break-word; }
+  .metadata-table tr { page-break-inside: avoid; }
+  .metadata-table .col-seq { width: 0.35in; font-family: ui-monospace, monospace;
+                              text-align: right; }
+  .metadata-table .col-date { width: 1.2in; white-space: nowrap; color: #64748b; }
+  .metadata-table .col-plan { width: 1.0in; color: #2563eb; }
+  .metadata-table .col-tags { width: 1.4in; }
+  .metadata-table .col-caption { font-weight: 600; }
+  .metadata-table .col-observation { color: #475569; }
 </style></head>
 <body>
 ${options.includeCoverPage ? coverPage(project) : ""}
 ${photoPagesHtml}
 ${planPagesHtml}
+${options.includeMetadataTable ? metadataTableHtml(selectedPhotos, planLabelById) : ""}
 </body></html>`;
 }
