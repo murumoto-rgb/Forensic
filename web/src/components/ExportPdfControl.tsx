@@ -1,23 +1,30 @@
 import { useEffect, useRef, useState } from "react";
-import type { PdfExportJob, PdfExportOptions } from "@forensic/shared";
+import type {
+  PdfExportJob,
+  PdfExportOptions,
+  PdfPlanMode,
+  PdfSection,
+} from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 
 /**
- * "Export PDF" button + options modal + status pill
- * (Build #5.62.1 / #5.63.1 / #5.64.1, plan item #3).
+ * "Export PDF" button + iOS-parity options modal + status pill
+ * (Build #5.62.1 / #5.63.1 / #5.64.1 / #5.73.1, plan item #3).
  *
- * Click → options modal → user picks page size + photo filter +
- * photos-per-page + include-flags → "Generate PDF" submits a job
- * with the chosen options. The component polls
- * `/v1/exports/:jobId` every 2 seconds until the job is done or
- * failed, then auto-triggers a hidden `<a>` click on the presigned
- * R2 URL so the PDF downloads without the user clicking a second
- * time.
+ * As of #5.73.1 (Path C #8/8) the modal exposes the same option
+ * surface iOS's `PDFExportOptionsView` does: page size, flexible
+ * `perPage` (1-12), section toggles + iOS-default ordering,
+ * per-plan multi-select, plan render mode, five annotation toggles,
+ * bucket grouping, plus the web-specific carryovers (includeCoverPage,
+ * includeTrashed). The legacy #5.64.1 fields (`photosPerPage`,
+ * `photoFilter`, `floorPlanId`, `includeFloorPlanPages`) are no
+ * longer in the wire shape — the server's `applyOptionDefaults` no
+ * longer needs them as a bridge.
  *
- * Defaults match the prior #5.63.1 behavior (all photos, 1 per
- * page, Letter, cover + plans included) so any user who hits
- * Generate PDF without changing options gets the same output the
- * previous build produced.
+ * Click → modal → "Generate PDF" submits a job. The component polls
+ * `/v1/exports/:jobId` every 2 s until done/failed; on done it
+ * auto-fires a hidden `<a>` click on the presigned R2 URL so the
+ * PDF downloads without a second user gesture.
  */
 
 interface FloorPlanSummary {
@@ -32,34 +39,25 @@ interface Props {
    *  because it consumes the same `requested_by` user row + leaves
    *  a permanent server-side artifact. */
   canExport: boolean;
-  /** For the "By floor plan" filter dropdown. Empty when the project
-   *  has no plans — the option hides automatically. */
+  /** For the per-plan multi-select. Empty when the project has no
+   *  plans — that section collapses out automatically. */
   floorPlans: FloorPlanSummary[];
 }
 
-// Until the modal rewrite in PR #5.73.1, the existing UI only knows
-// how to set the legacy fields (`photosPerPage`, `photoFilter`,
-// etc.). We still satisfy the iOS-parity `PdfExportOptions` shape
-// from #5.67.1 by filling the new fields with their iOS defaults,
-// which is what `applyOptionDefaults` on the server would produce
-// anyway. So the wire output is unchanged for now — the legacy
-// fields drive the renderer until PRs #5.68.1 — #5.71.1 plumb the
-// new fields through.
+/** iOS-parity defaults — match `DEFAULT_PDF_EXPORT_OPTIONS` on the
+ *  server (which itself matches iOS `PDFExportOptions.defaults`). */
 const DEFAULT_OPTIONS: PdfExportOptions = {
-  // Legacy fields the current modal sets.
+  // Layout
   pageSize: "letter",
-  photosPerPage: 1,
-  photoFilter: "all",
-  floorPlanId: null,
-  includeTrashed: false,
-  includeCoverPage: true,
-  includeFloorPlanPages: true,
-  // New iOS-parity fields — set to iOS defaults so the wire shape
-  // type-checks. Rewritten modal in PR #5.73.1 will let the user
-  // touch these.
   perPage: 6,
-  groupByBucket: false,
+  // Sections — iOS default order is [plan, contactSheets, metadataTable].
+  sectionOrder: ["plan", "contactSheets", "metadataTable"],
+  includeCoverPage: true,
   includeMetadataTable: false,
+  // Floor plans
+  planMode: "photoOnly",
+  selectedFloorIds: null, // null = all plans
+  // Annotations (tags-only matches iOS `AnnotationOptions.defaults`)
   annotations: {
     includeTags: true,
     includeCaption: false,
@@ -67,10 +65,25 @@ const DEFAULT_OPTIONS: PdfExportOptions = {
     includeMeasurement: false,
     includeReviewerFlag: false,
   },
-  sectionOrder: ["plan", "contactSheets", "metadataTable"],
-  selectedFloorIds: null,
-  planMode: "photoOnly",
+  // Filters
+  groupByBucket: false,
+  includeTrashed: false,
 };
+
+/** Reorder helper: rebuild `sectionOrder` from the include flags
+ *  while preserving the iOS canonical order. */
+const CANONICAL_SECTION_ORDER: PdfSection[] = [
+  "plan",
+  "contactSheets",
+  "metadataTable",
+];
+function sectionOrderFromFlags(flags: {
+  plan: boolean;
+  contactSheets: boolean;
+  metadataTable: boolean;
+}): PdfSection[] {
+  return CANONICAL_SECTION_ORDER.filter((s) => flags[s]);
+}
 
 type State =
   | { kind: "idle" }
@@ -82,18 +95,15 @@ type State =
 
 const POLL_MS = 2_000;
 
-export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
+export function ExportPdfControl({
+  projectId,
+  canExport,
+  floorPlans,
+}: Props) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [showModal, setShowModal] = useState(false);
-  const [options, setOptions] = useState<PdfExportOptions>(() => ({
-    ...DEFAULT_OPTIONS,
-    // If the project has exactly one plan and the user picks
-    // "By floor plan," pre-fill it so they don't have to.
-    floorPlanId: floorPlans.length === 1 ? floorPlans[0]!.id : null,
-  }));
+  const [options, setOptions] = useState<PdfExportOptions>(DEFAULT_OPTIONS);
   const pollRef = useRef<number | null>(null);
-  // Tracks the active job id so a slow setInterval callback can bail
-  // if the user clicked Reset / a new job started in the meantime.
   const activeJobIdRef = useRef<string | null>(null);
 
   function clearPoll() {
@@ -123,12 +133,6 @@ export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
           activeJobIdRef.current = null;
           if (res.downloadUrl) {
             setState({ kind: "done", job, downloadUrl: res.downloadUrl });
-            // Trigger the download by synthesizing an <a> click — no
-            // user prompt; browsers treat this as a same-gesture
-            // continuation of the original button click as long as
-            // we land within ~few seconds. If the gesture window has
-            // closed, the anchor stays in the DOM for the user to
-            // click "Download" manually.
             const a = document.createElement("a");
             a.href = res.downloadUrl;
             a.download = `${projectId}.pdf`;
@@ -153,9 +157,6 @@ export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
         }
       })
       .catch((e: unknown) => {
-        // A single poll failure isn't fatal — Render free-tier cold
-        // starts can drop a couple of requests before the worker
-        // wakes up. Keep polling; the interval will retry.
         if (e instanceof ApiError && e.status === 404) {
           clearPoll();
           activeJobIdRef.current = null;
@@ -190,8 +191,6 @@ export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
         activeJobIdRef.current = jobId;
         setState({ kind: "queued", job: res.job });
         pollRef.current = window.setInterval(() => poll(jobId), POLL_MS);
-        // Fire one immediate poll so the user sees "running" within
-        // a second or two if the worker grabs the job fast.
         poll(jobId);
       })
       .catch((e: unknown) => {
@@ -246,7 +245,9 @@ export function ExportPdfControl({ projectId, canExport, floorPlans }: Props) {
           {state.message}
         </span>
       )}
-      {(state.kind === "done" || state.kind === "failed" || state.kind === "error") && (
+      {(state.kind === "done" ||
+        state.kind === "failed" ||
+        state.kind === "error") && (
         <button
           type="button"
           onClick={reset}
@@ -290,6 +291,17 @@ interface ModalProps {
   onSubmit: () => void;
 }
 
+/** Common option values for the perPage select (matches iOS-supported
+ *  grid layouts from `gridDimensions` on the server). */
+const PER_PAGE_OPTIONS: number[] = [1, 2, 3, 4, 6, 8, 9, 12];
+
+const PLAN_MODE_LABELS: Record<PdfPlanMode, string> = {
+  photoOnly: "Photo pins only",
+  distressOnly: "Distress markers only",
+  photoAndDistressSeparate: "Photos + distress (separate pages)",
+  merged: "Photos + distress (merged)",
+};
+
 function ExportOptionsModal({
   options,
   onChange,
@@ -300,119 +312,311 @@ function ExportOptionsModal({
   function patch(p: Partial<PdfExportOptions>) {
     onChange({ ...options, ...p });
   }
+  function patchAnnotations(a: Partial<PdfExportOptions["annotations"]>) {
+    onChange({
+      ...options,
+      annotations: { ...options.annotations, ...a },
+    });
+  }
+
+  // Section toggles derive from the sectionOrder array. "Plan" /
+  // "Contact sheets" / "Metadata table" each are checked when their
+  // PdfSection appears in the array.
+  const sectionFlags = {
+    plan: options.sectionOrder.includes("plan"),
+    contactSheets: options.sectionOrder.includes("contactSheets"),
+    metadataTable: options.sectionOrder.includes("metadataTable"),
+  };
+  function toggleSection(s: PdfSection, on: boolean) {
+    const next = { ...sectionFlags, [s]: on };
+    onChange({
+      ...options,
+      sectionOrder: sectionOrderFromFlags(next),
+      // Keep `includeMetadataTable` in lockstep with its
+      // sectionOrder presence — the server reads `includeMetadataTable`
+      // for the boolean gate, sectionOrder for placement, so we set
+      // both consistently from the same checkbox.
+      ...(s === "metadataTable" ? { includeMetadataTable: on } : {}),
+    });
+  }
+
+  // Floor-plan filter: "All" vs "Specific". When Specific is picked
+  // with no plans checked, submit is disabled — that's a "select
+  // nothing" state we don't want silently submitted.
+  const floorFilterMode: "all" | "specific" =
+    options.selectedFloorIds === null ? "all" : "specific";
+  function setFloorFilterMode(mode: "all" | "specific") {
+    if (mode === "all") {
+      patch({ selectedFloorIds: null });
+    } else {
+      patch({ selectedFloorIds: [] });
+    }
+  }
+  function toggleFloorPlan(planId: string, on: boolean) {
+    const current = options.selectedFloorIds ?? [];
+    const next = on
+      ? Array.from(new Set([...current, planId]))
+      : current.filter((id) => id !== planId);
+    patch({ selectedFloorIds: next });
+  }
+
   const submitDisabled =
-    options.photoFilter === "byFloorPlan" && !options.floorPlanId;
+    floorFilterMode === "specific" &&
+    (options.selectedFloorIds?.length ?? 0) === 0;
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     >
-      <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
-        <h2 className="text-base font-semibold text-neutral-100">
+      <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl">
+        <h2 className="border-b border-neutral-800 px-6 py-4 text-base font-semibold text-neutral-100">
           Export PDF — options
         </h2>
 
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          Page size
-          <select
-            value={options.pageSize}
-            onChange={(e) =>
-              patch({ pageSize: e.target.value as PdfExportOptions["pageSize"] })
-            }
-            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
-          >
-            <option value="letter">Letter (8.5 × 11 in)</option>
-            <option value="a4">A4 (210 × 297 mm)</option>
-          </select>
-        </label>
+        <div className="flex flex-col gap-5 overflow-y-auto px-6 py-4">
+          {/* Layout */}
+          <fieldset className="flex flex-col gap-2">
+            <legend className="text-xs uppercase tracking-wide text-neutral-500">
+              Layout
+            </legend>
+            <label className="flex items-center justify-between gap-3 text-sm text-neutral-200">
+              Page size
+              <select
+                value={options.pageSize}
+                onChange={(e) =>
+                  patch({
+                    pageSize: e.target.value as PdfExportOptions["pageSize"],
+                  })
+                }
+                className="min-w-[10rem] rounded border border-neutral-700 bg-neutral-950 p-1.5 text-sm text-neutral-100"
+              >
+                <option value="letter">Letter (8.5 × 11 in)</option>
+                <option value="a4">A4 (210 × 297 mm)</option>
+              </select>
+            </label>
+            <label className="flex items-center justify-between gap-3 text-sm text-neutral-200">
+              Photos per page
+              <select
+                value={options.perPage}
+                onChange={(e) =>
+                  patch({ perPage: Number(e.target.value) })
+                }
+                className="min-w-[10rem] rounded border border-neutral-700 bg-neutral-950 p-1.5 text-sm text-neutral-100"
+              >
+                {PER_PAGE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </fieldset>
 
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          Photos per page
-          <select
-            value={options.photosPerPage}
-            onChange={(e) =>
-              patch({
-                photosPerPage: Number(e.target.value) as PdfExportOptions["photosPerPage"],
-              })
-            }
-            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
-          >
-            <option value={1}>1 (full size, with AI fields)</option>
-            <option value={2}>2 (stacked, contact-sheet feel)</option>
-            <option value={4}>4 (compact grid)</option>
-          </select>
-        </label>
+          {/* Sections */}
+          <fieldset className="flex flex-col gap-2 border-t border-neutral-800 pt-4">
+            <legend className="text-xs uppercase tracking-wide text-neutral-500">
+              Sections
+            </legend>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={options.includeCoverPage}
+                onChange={(e) => patch({ includeCoverPage: e.target.checked })}
+              />
+              Cover page (always first)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={sectionFlags.plan}
+                onChange={(e) => toggleSection("plan", e.target.checked)}
+              />
+              Floor plan pages
+            </label>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={sectionFlags.contactSheets}
+                onChange={(e) =>
+                  toggleSection("contactSheets", e.target.checked)
+                }
+              />
+              Contact sheets (photos)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={sectionFlags.metadataTable}
+                onChange={(e) =>
+                  toggleSection("metadataTable", e.target.checked)
+                }
+              />
+              Metadata table
+            </label>
+            <p className="mt-1 text-xs text-neutral-500">
+              Sections render in iOS-canonical order: floor plans →
+              contact sheets → metadata table.
+            </p>
+          </fieldset>
 
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          Photo filter
-          <select
-            value={options.photoFilter}
-            onChange={(e) =>
-              patch({
-                photoFilter: e.target.value as PdfExportOptions["photoFilter"],
-              })
-            }
-            className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
-          >
-            <option value="all">All photos</option>
-            <option value="favorites">Favorites only</option>
-            {floorPlans.length > 0 && (
-              <option value="byFloorPlan">By floor plan</option>
-            )}
-          </select>
-        </label>
+          {/* Floor plans (mode + which-plans) */}
+          {sectionFlags.plan && floorPlans.length > 0 && (
+            <fieldset className="flex flex-col gap-2 border-t border-neutral-800 pt-4">
+              <legend className="text-xs uppercase tracking-wide text-neutral-500">
+                Floor plans
+              </legend>
+              <label className="flex items-center justify-between gap-3 text-sm text-neutral-200">
+                Render mode
+                <select
+                  value={options.planMode}
+                  onChange={(e) =>
+                    patch({ planMode: e.target.value as PdfPlanMode })
+                  }
+                  className="min-w-[15rem] rounded border border-neutral-700 bg-neutral-950 p-1.5 text-sm text-neutral-100"
+                >
+                  {(Object.keys(PLAN_MODE_LABELS) as PdfPlanMode[]).map((m) => (
+                    <option key={m} value={m}>
+                      {PLAN_MODE_LABELS[m]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex flex-col gap-1 pt-2">
+                <span className="text-xs text-neutral-500">
+                  Which floor plans to include
+                </span>
+                <label className="flex items-center gap-2 text-sm text-neutral-200">
+                  <input
+                    type="radio"
+                    name="floorFilterMode"
+                    checked={floorFilterMode === "all"}
+                    onChange={() => setFloorFilterMode("all")}
+                  />
+                  All floor plans
+                </label>
+                <label className="flex items-center gap-2 text-sm text-neutral-200">
+                  <input
+                    type="radio"
+                    name="floorFilterMode"
+                    checked={floorFilterMode === "specific"}
+                    onChange={() => setFloorFilterMode("specific")}
+                  />
+                  Specific:
+                </label>
+                {floorFilterMode === "specific" && (
+                  <div className="ml-6 flex flex-col gap-1">
+                    {floorPlans.map((p) => (
+                      <label
+                        key={p.id}
+                        className="flex items-center gap-2 text-sm text-neutral-300"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={
+                            options.selectedFloorIds?.includes(p.id) ?? false
+                          }
+                          onChange={(e) =>
+                            toggleFloorPlan(p.id, e.target.checked)
+                          }
+                        />
+                        {p.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </fieldset>
+          )}
 
-        {options.photoFilter === "byFloorPlan" && floorPlans.length > 0 && (
-          <label className="flex flex-col gap-1 text-xs text-neutral-400">
-            Floor plan
-            <select
-              value={options.floorPlanId ?? ""}
-              onChange={(e) =>
-                patch({ floorPlanId: e.target.value || null })
-              }
-              className="rounded border border-neutral-700 bg-neutral-950 p-2 text-sm text-neutral-100"
-            >
-              <option value="">(pick one)</option>
-              {floorPlans.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+          {/* Annotations (per contact-sheet cell) */}
+          {sectionFlags.contactSheets && (
+            <fieldset className="flex flex-col gap-2 border-t border-neutral-800 pt-4">
+              <legend className="text-xs uppercase tracking-wide text-neutral-500">
+                Per-photo annotations
+              </legend>
+              <p className="text-xs text-neutral-500">
+                Shown under each contact-sheet cell.
+              </p>
+              <label className="flex items-center gap-2 text-sm text-neutral-200">
+                <input
+                  type="checkbox"
+                  checked={options.annotations.includeTags}
+                  onChange={(e) =>
+                    patchAnnotations({ includeTags: e.target.checked })
+                  }
+                />
+                Tags
+              </label>
+              <label className="flex items-center gap-2 text-sm text-neutral-200">
+                <input
+                  type="checkbox"
+                  checked={options.annotations.includeCaption}
+                  onChange={(e) =>
+                    patchAnnotations({ includeCaption: e.target.checked })
+                  }
+                />
+                Caption
+              </label>
+              <label className="flex items-center gap-2 text-sm text-neutral-200">
+                <input
+                  type="checkbox"
+                  checked={options.annotations.includeObservation}
+                  onChange={(e) =>
+                    patchAnnotations({ includeObservation: e.target.checked })
+                  }
+                />
+                Observation
+              </label>
+              <label className="flex items-center gap-2 text-sm text-neutral-200">
+                <input
+                  type="checkbox"
+                  checked={options.annotations.includeMeasurement}
+                  onChange={(e) =>
+                    patchAnnotations({ includeMeasurement: e.target.checked })
+                  }
+                />
+                Measurement
+              </label>
+              <label className="flex items-center gap-2 text-sm text-neutral-200">
+                <input
+                  type="checkbox"
+                  checked={options.annotations.includeReviewerFlag}
+                  onChange={(e) =>
+                    patchAnnotations({ includeReviewerFlag: e.target.checked })
+                  }
+                />
+                Reviewer flag
+              </label>
+            </fieldset>
+          )}
 
-        <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3 text-xs text-neutral-300">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={options.includeCoverPage}
-              onChange={(e) => patch({ includeCoverPage: e.target.checked })}
-            />
-            Include cover page
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={options.includeFloorPlanPages}
-              onChange={(e) =>
-                patch({ includeFloorPlanPages: e.target.checked })
-              }
-            />
-            Include floor-plan pages (with pin overlay)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={options.includeTrashed}
-              onChange={(e) => patch({ includeTrashed: e.target.checked })}
-            />
-            Include trashed photos
-          </label>
+          {/* Filters & grouping */}
+          <fieldset className="flex flex-col gap-2 border-t border-neutral-800 pt-4">
+            <legend className="text-xs uppercase tracking-wide text-neutral-500">
+              Filters
+            </legend>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={options.groupByBucket}
+                onChange={(e) => patch({ groupByBucket: e.target.checked })}
+              />
+              Group photos by bucket (with divider pages)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-neutral-200">
+              <input
+                type="checkbox"
+                checked={options.includeTrashed}
+                onChange={(e) => patch({ includeTrashed: e.target.checked })}
+              />
+              Include trashed photos
+            </label>
+          </fieldset>
         </div>
 
-        <div className="flex justify-end gap-3 pt-2">
+        <div className="flex justify-end gap-3 border-t border-neutral-800 px-6 py-4">
           <button
             type="button"
             onClick={onCancel}
@@ -427,7 +631,7 @@ function ExportOptionsModal({
             className="rounded border border-blue-500 bg-blue-600/80 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
             title={
               submitDisabled
-                ? "Pick a floor plan above first."
+                ? "Pick at least one floor plan, or switch to All."
                 : "Generate the PDF with these options."
             }
           >
