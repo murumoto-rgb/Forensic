@@ -83,7 +83,25 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
   const [pinsUnlocked, setPinsUnlocked] = useState(false);
   const [distressUnlocked, setDistressUnlocked] = useState(false);
   const [distressKind, setDistressKind] = useState<DistressKind>("outOfPlumbDoor");
-  const [bubbleScale, setBubbleScale] = useState(1);
+  // Persist bubble scale across navigation / reload so the user's
+  // last-chosen pin size sticks per browser. Build #5.103.1 makes
+  // this localStorage-backed; cross-device sync is a follow-on.
+  const BUBBLE_SCALE_KEY = "sitephoto.planBubbleScale";
+  const [bubbleScale, setBubbleScaleState] = useState<number>(() => {
+    if (typeof window === "undefined") return 1;
+    const raw = window.localStorage.getItem(BUBBLE_SCALE_KEY);
+    const parsed = raw == null ? NaN : Number.parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  });
+  const setBubbleScale: typeof setBubbleScaleState = (next) => {
+    setBubbleScaleState((cur) => {
+      const value = typeof next === "function" ? (next as (v: number) => number)(cur) : next;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(BUBBLE_SCALE_KEY, String(value));
+      }
+      return value;
+    });
+  };
   const BUBBLE_SCALE_MIN = 0.5;
   const BUBBLE_SCALE_MAX = 2.5;
   const BUBBLE_SCALE_STEP = 0.1;
