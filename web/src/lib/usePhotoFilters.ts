@@ -34,6 +34,10 @@ export interface PhotoFilterState {
   tagLabels: string[]; // AND
   favoritesOnly: boolean;
   needsReview: boolean;
+  /** Stricter than `needsReview` — only photos with concrete
+   *  validation errors or parse failures, ignoring the looser
+   *  `reviewerFlag` annotation. Mirrors iOS `validationIssuesOnly`. */
+  validationIssuesOnly: boolean;
   hasMeasurement: boolean;
   recommendedUses: string[]; // OR over `aiAnalysis.recommendedUse`
 }
@@ -47,6 +51,7 @@ export const DEFAULT_FILTER_STATE: PhotoFilterState = {
   tagLabels: [],
   favoritesOnly: false,
   needsReview: false,
+  validationIssuesOnly: false,
   hasMeasurement: false,
   recommendedUses: [],
 };
@@ -61,6 +66,7 @@ export function isFilterActive(state: PhotoFilterState): boolean {
     state.tagLabels.length > 0 ||
     state.favoritesOnly ||
     state.needsReview ||
+    state.validationIssuesOnly ||
     state.hasMeasurement ||
     state.recommendedUses.length > 0
   );
@@ -88,6 +94,15 @@ function needsReviewMatch(photo: Photo): boolean {
     a.validationErrors.length > 0 ||
     a.reviewerFlag.trim().length > 0
   );
+}
+
+/** Stricter version of `needsReviewMatch` — drops the looser
+ *  reviewerFlag check, so this only flags photos where the AI's
+ *  output itself was malformed. Used by the validation-only chip. */
+function validationIssueMatch(photo: Photo): boolean {
+  const a = photo.aiAnalysis;
+  if (!a) return false;
+  return a.parseFailed || a.validationErrors.length > 0;
 }
 
 function searchMatch(photo: Photo, q: string): boolean {
@@ -156,8 +171,10 @@ export function applyFilters(
     }
     // Favorites
     if (state.favoritesOnly && !photo.isFavorite) return false;
-    // Needs review
+    // Needs review (loose; also includes reviewerFlag)
     if (state.needsReview && !needsReviewMatch(photo)) return false;
+    // Validation issues only (strict; parse failures + validation errors)
+    if (state.validationIssuesOnly && !validationIssueMatch(photo)) return false;
     // Has measurement
     if (
       state.hasMeasurement &&
