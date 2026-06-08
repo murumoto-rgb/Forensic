@@ -113,6 +113,31 @@ export async function getObjectBytes(objectKey: string): Promise<Buffer> {
 }
 
 /**
+ * Fetch the body of an R2 object as a Node `Readable` stream. Lets
+ * callers pipe straight into archiver / a multipart upload without
+ * buffering the whole object in memory. Used by the folder export
+ * worker (Build #5.108.1) to keep memory flat regardless of how
+ * many concurrent fetches are in flight.
+ */
+export async function getObjectStream(
+  objectKey: string
+): Promise<import("node:stream").Readable> {
+  const resp = await r2.send(
+    new GetObjectCommand({
+      Bucket: r2Bucket,
+      Key: objectKey,
+    })
+  );
+  if (!resp.Body) {
+    throw new Error(`R2 GetObject returned no body for ${objectKey}`);
+  }
+  // S3 SDK v3 returns Body as a SmithyStream which on Node 22 is a
+  // native Readable. Cast through unknown because the TS declarations
+  // expose only the abstract SmithyMessageDecoderStream surface.
+  return resp.Body as unknown as import("node:stream").Readable;
+}
+
+/**
  * Server-side upload helper — pushes a buffer straight into R2. Used
  * by the PDF export worker (Build #5.62.1) to land the rendered PDF
  * without round-tripping through a presigned URL. Photo uploads from
@@ -161,6 +186,27 @@ export async function deleteObjects(objectKeys: string[]): Promise<void> {
         },
       })
     );
+  }
+}
+
+/**
+ * HEAD an object and return its ContentLength in bytes, or null if
+ * the object doesn't exist / the header is missing. Used by the
+ * folder export worker (Build #5.108.1) to learn the final zip
+ * size after the multipart upload completes — we stream bodies in
+ * so we don't track byte counts during the run.
+ */
+export async function getObjectSize(objectKey: string): Promise<number | null> {
+  try {
+    const resp = await r2.send(
+      new HeadObjectCommand({
+        Bucket: r2Bucket,
+        Key: objectKey,
+      })
+    );
+    return typeof resp.ContentLength === "number" ? resp.ContentLength : null;
+  } catch {
+    return null;
   }
 }
 
