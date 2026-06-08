@@ -91,6 +91,8 @@ interface JobRow {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  progress_done_chunks: number | null;
+  progress_total_chunks: number | null;
 }
 
 function rowToJob(row: JobRow): PdfExportJob {
@@ -103,6 +105,8 @@ function rowToJob(row: JobRow): PdfExportJob {
     createdAt: row.created_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    progressDoneChunks: row.progress_done_chunks ?? null,
+    progressTotalChunks: row.progress_total_chunks ?? null,
   };
 }
 

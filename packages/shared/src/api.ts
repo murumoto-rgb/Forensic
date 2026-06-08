@@ -328,6 +328,13 @@ export interface PdfExportJob {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** Chunks rendered so far (Build #5.75.1). Null before the worker
+   *  reports its first chunk, or for jobs persisted before this
+   *  field existed. */
+  progressDoneChunks: number | null;
+  /** Total chunks this render will produce. Null until the worker
+   *  has computed the chunk list. */
+  progressTotalChunks: number | null;
 }
 
 /** Paper size for the rendered PDF. iOS export defaults to letter
