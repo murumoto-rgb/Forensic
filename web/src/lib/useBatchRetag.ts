@@ -110,7 +110,16 @@ export function useBatchRetag(args: {
   }, []);
 
   const start = useCallback(
-    async (opts: BatchOptions) => {
+    /**
+     * Run a batch.
+     *
+     * When `photoIds` is provided, the batch is restricted to those
+     * photos only — used by the Photos-tab selection action bar.
+     * Order of iteration follows the project's existing `photos[]`
+     * order (not the order of `photoIds`), so check-pointing still
+     * stamps photos in stable manifest order.
+     */
+    async (opts: BatchOptions, photoIds?: readonly string[]) => {
       const project = projectRef.current;
       if (!project) {
         setState({
@@ -186,10 +195,20 @@ export function useBatchRetag(args: {
       // Build the candidate list. Skip-already-tagged matches iOS's
       // `skipAlreadyTagged` semantics: photos with at least one tag
       // are passed over.
+      //
+      // `photoIds`, when provided, restricts the scan to that subset.
+      // Photos not in the set are completely absent from the outcomes
+      // map (rather than marked "skipped" — the user didn't ask the
+      // batch to consider them, so reporting them as skipped would
+      // bloat the progress UI for big projects).
+      const restrictTo: Set<string> | null = photoIds
+        ? new Set(photoIds)
+        : null;
       const candidates: Photo[] = [];
       const initialOutcomes: Record<string, BatchPhotoOutcome> = {};
       let initialSkipped = 0;
       for (const photo of project.photos) {
+        if (restrictTo && !restrictTo.has(photo.id)) continue;
         if (opts.skipAlreadyTagged && photo.tags.length > 0) {
           initialOutcomes[photo.id] = { kind: "skipped", photoId: photo.id };
           initialSkipped += 1;
