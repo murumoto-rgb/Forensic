@@ -29,12 +29,17 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Puppeteer (Build #5.62.1) downloads Chromium at `pnpm install`
-      # time. Render persists `/opt/render/.cache` between builds, so
-      # pointing the Puppeteer cache there avoids re-downloading
-      # ~150 MB of Chromium on every deploy.
+      # Puppeteer Chromium cache (Build #5.74.1 — corrected from
+      # #5.62.1). MUST be inside `/opt/render/project/src/` because
+      # ONLY that path is packed into the runtime container image.
+      # `/opt/render/.cache/` (which #5.62.1 used) is the build cache
+      # — it persists across builds but is NOT available at runtime,
+      # which is why puppeteer.launch() couldn't find Chromium even
+      # though the build log showed a successful install. With the
+      # cache inside src, the build-time install survives into the
+      # runtime image.
       - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/.cache/puppeteer
+        value: /opt/render/project/src/.puppeteer-cache
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_PUBLISHABLE_KEY
