@@ -15,6 +15,7 @@ import {
 import { api, ApiError } from "../lib/api";
 import { tagPhotoWithValidation } from "../lib/tagPhotoFlow";
 import { useTagConfidenceThreshold } from "../lib/useTagConfidenceThreshold";
+import { PhotoMarkupCanvas } from "./PhotoMarkupCanvas";
 
 /**
  * Side / bottom docked photo preview panel.
@@ -121,6 +122,7 @@ export function PhotoPreviewPanel({
 
   const [url, setUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [markupOpen, setMarkupOpen] = useState(false);
   const [pending, setPending] = useState(false);
 
   // Responsive dock: re-check on resize so a window drag flips the
@@ -519,6 +521,47 @@ export function PhotoPreviewPanel({
             project={project}
             photo={photo}
             onPhotoUpdated={onPhotoUpdated}
+          />
+        )}
+
+        {/* Markup canvas trigger (Build #5.91.1). Opens a modal with
+            the photo on a Konva stage and a drawing overlay. */}
+        {onPhotoUpdated && (
+          <div className="rounded border border-neutral-800 bg-neutral-900/40 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs uppercase tracking-wide text-neutral-500">
+                Markup
+              </span>
+              {photo.markupOverlayFilename && (
+                <span className="rounded border border-green-700 bg-green-950/30 px-2 py-0.5 text-[11px] text-green-200">
+                  Overlay saved
+                </span>
+              )}
+            </div>
+            <p className="mb-2 text-xs text-neutral-400">
+              Draw on top of this photo. Stored as a transparent PNG
+              overlay round-trippable with iOS.
+            </p>
+            <button
+              type="button"
+              onClick={() => setMarkupOpen(true)}
+              className="rounded border border-blue-700 bg-blue-900/40 px-3 py-1.5 text-sm text-blue-100 hover:bg-blue-900/70"
+            >
+              {photo.markupOverlayFilename ? "Edit markup…" : "Add markup…"}
+            </button>
+          </div>
+        )}
+
+        {markupOpen && onPhotoUpdated && (
+          <PhotoMarkupCanvas
+            projectId={projectId}
+            project={project}
+            photo={photo}
+            onClose={() => setMarkupOpen(false)}
+            onPhotoUpdated={(next) => {
+              onPhotoUpdated(next);
+              setMarkupOpen(false);
+            }}
           />
         )}
 
