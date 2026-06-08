@@ -16,6 +16,7 @@ import { api, ApiError } from "../lib/api";
 import { tagPhotoWithValidation } from "../lib/tagPhotoFlow";
 import { useTagConfidenceThreshold } from "../lib/useTagConfidenceThreshold";
 import { PhotoMarkupCanvas } from "./PhotoMarkupCanvas";
+import { PhotoComparisonView } from "./PhotoComparisonView";
 
 /**
  * Side / bottom docked photo preview panel.
@@ -123,6 +124,7 @@ export function PhotoPreviewPanel({
   const [url, setUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [markupOpen, setMarkupOpen] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
   const [pending, setPending] = useState(false);
 
   // Responsive dock: re-check on resize so a window drag flips the
@@ -521,6 +523,42 @@ export function PhotoPreviewPanel({
             project={project}
             photo={photo}
             onPhotoUpdated={onPhotoUpdated}
+          />
+        )}
+
+        {/* Compare with reshoots (Build #5.102.1). Reachable only
+            when the photo is part of a multi-photo group. */}
+        {photo.groupID &&
+          project.photos.filter((p) => p.groupID === photo.groupID).length > 1 && (
+            <div className="rounded border border-neutral-800 bg-neutral-900/40 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wide text-neutral-500">
+                  Reshoots
+                </span>
+                <span className="text-[11px] text-neutral-400">
+                  {project.photos.filter((p) => p.groupID === photo.groupID).length} in this group
+                </span>
+              </div>
+              <p className="mb-2 text-xs text-neutral-400">
+                Before / after comparison carousel for the whole
+                reshoot chain. Mirrors iOS PhotoComparisonView.
+              </p>
+              <button
+                type="button"
+                onClick={() => setComparisonOpen(true)}
+                className="rounded border border-blue-700 bg-blue-900/40 px-3 py-1.5 text-sm text-blue-100 hover:bg-blue-900/70"
+              >
+                Compare with reshoots…
+              </button>
+            </div>
+          )}
+
+        {comparisonOpen && (
+          <PhotoComparisonView
+            projectId={projectId}
+            photos={project.photos}
+            selectedPhoto={photo}
+            onClose={() => setComparisonOpen(false)}
           />
         )}
 

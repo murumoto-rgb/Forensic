@@ -148,7 +148,27 @@ export function InfoTab({ manifest, canEdit }: Props) {
         pick a fix and stamp `projectGPS`.
       </p>
 
-      <div className="mt-6 rounded border border-red-900/40 bg-red-950/20 p-4">
+      <div className="mt-6 rounded border border-neutral-800 bg-neutral-900/40 p-4">
+        <div className="mb-2 text-sm font-medium text-neutral-200">
+          Tools
+        </div>
+        <button
+          type="button"
+          onClick={renumberByDate}
+          disabled={!canEdit || project.photos.length === 0}
+          className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Renumber photos by date
+        </button>
+        <p className="mt-2 text-xs text-neutral-500">
+          Sort all photos by capture timestamp ascending, then
+          reassign sequence numbers 1..N. Useful after importing a
+          backlog of photos that landed out of order. Mirrors iOS's
+          "Renumber by date" action.
+        </p>
+      </div>
+
+      <div className="mt-3 rounded border border-red-900/40 bg-red-950/20 p-4">
         <div className="mb-2 text-sm font-medium text-red-300">
           Danger zone
         </div>
@@ -168,4 +188,26 @@ export function InfoTab({ manifest, canEdit }: Props) {
       </div>
     </section>
   );
+
+  function renumberByDate() {
+    if (!project) return;
+    if (
+      !window.confirm(
+        `Renumber every photo in this project by capture date?\n\nReassigns sequence numbers 1..${project.photos.length} in ascending timestamp order. This change syncs to iOS on next pull.`
+      )
+    ) {
+      return;
+    }
+    const sorted = [...project.photos].sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+      return ta - tb;
+    });
+    const renumbered = sorted.map((p, i) => ({
+      ...p,
+      sequenceNumber: i + 1,
+    }));
+    manifest.save({ ...project, photos: renumbered });
+  }
 }
