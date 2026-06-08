@@ -138,6 +138,14 @@ export function PhotoFilterBar({ filters, project, total }: Props) {
           onToggle={() => patch({ needsReview: !state.needsReview })}
         />
         <ToggleChip
+          label="✗ Validation issues"
+          on={state.validationIssuesOnly}
+          onToggle={() =>
+            patch({ validationIssuesOnly: !state.validationIssuesOnly })
+          }
+          title="Photos where the AI's output failed to parse or violated the vocabulary — stricter than Needs review."
+        />
+        <ToggleChip
           label="📏 Measurement"
           on={state.hasMeasurement}
           onToggle={() => patch({ hasMeasurement: !state.hasMeasurement })}
@@ -234,12 +242,14 @@ interface ToggleChipProps {
   label: string;
   on: boolean;
   onToggle: () => void;
+  title?: string;
 }
-function ToggleChip({ label, on, onToggle }: ToggleChipProps) {
+function ToggleChip({ label, on, onToggle, title }: ToggleChipProps) {
   return (
     <button
       type="button"
       onClick={onToggle}
+      title={title}
       className={
         on
           ? "rounded border border-blue-500 bg-blue-950/40 px-2 py-1 text-xs text-blue-200"
