@@ -14,7 +14,13 @@
  *   - Same pattern works identically for iOS uploads and web reads.
  */
 
-import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  HeadObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectsCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "./env.js";
 
@@ -128,6 +134,34 @@ export async function putObjectBytes(args: {
       ContentLength: args.body.byteLength,
     })
   );
+}
+
+/**
+ * Batch-delete a set of objects from R2. Used by the permanent-
+ * delete project endpoint (Build #5.93.1) to reap every blob a
+ * project owned. Chunks at 1000 (the S3 / R2 DeleteObjects limit).
+ *
+ * Best-effort: per-object errors come back in the response's
+ * `Errors[]` array but we log + continue rather than throwing —
+ * the manifest row + files-table rows are deleted unconditionally,
+ * so a stray R2 blob is an unused-storage cost, not a correctness
+ * issue. The unused-blob reaper (separate concern) cleans those up.
+ */
+export async function deleteObjects(objectKeys: string[]): Promise<void> {
+  if (objectKeys.length === 0) return;
+  const CHUNK = 1000;
+  for (let i = 0; i < objectKeys.length; i += CHUNK) {
+    const chunk = objectKeys.slice(i, i + CHUNK);
+    await r2.send(
+      new DeleteObjectsCommand({
+        Bucket: r2Bucket,
+        Delete: {
+          Objects: chunk.map((Key) => ({ Key })),
+          Quiet: true,
+        },
+      })
+    );
+  }
 }
 
 /**

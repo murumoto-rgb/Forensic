@@ -162,14 +162,16 @@ export function ProjectListPage({ session }: Props) {
                   key={p.id}
                   project={p}
                   onRestored={reload}
+                  onPermanentlyDeleted={reload}
                 />
               ))}
             </ul>
           )}
           <p className="mt-2 text-xs text-neutral-600">
             Trashed projects are hidden from the active list and the
-            iOS app's main list. Permanent deletion ships in a later
-            PR.
+            iOS app's main list. Restore is reversible; "Delete
+            permanently" reaps storage + manifest and cannot be
+            undone.
           </p>
         </section>
       )}
@@ -184,12 +186,15 @@ export function ProjectListPage({ session }: Props) {
 function TrashedProjectRow({
   project,
   onRestored,
+  onPermanentlyDeleted,
 }: {
   project: ProjectListItem;
   onRestored: () => void;
+  onPermanentlyDeleted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   async function restore() {
     setBusy(true);
@@ -207,26 +212,94 @@ function TrashedProjectRow({
     }
   }
 
+  async function permanentlyDelete() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.hardDeleteProject(project.id);
+      onPermanentlyDeleted();
+    } catch (e: unknown) {
+      setError(
+        e instanceof ApiError
+          ? `${e.errorCode}: ${e.message}`
+          : "Delete failed"
+      );
+      setBusy(false);
+      setConfirmDelete(false);
+    }
+  }
+
   return (
-    <li className="flex items-center justify-between gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm text-neutral-300">{project.name}</div>
-        <div className="text-xs text-neutral-600">
-          Trashed at update {new Date(project.updatedAt).toLocaleString()}
+    <>
+      <li className="flex items-center justify-between gap-4 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm text-neutral-300">{project.name}</div>
+          <div className="text-xs text-neutral-600">
+            Trashed at update {new Date(project.updatedAt).toLocaleString()}
+          </div>
+          {error && (
+            <div className="mt-1 text-xs text-red-400">{error}</div>
+          )}
         </div>
-        {error && (
-          <div className="mt-1 text-xs text-red-400">{error}</div>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={restore}
-        disabled={busy}
-        className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-      >
-        {busy ? "Restoring…" : "Restore"}
-      </button>
-    </li>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={restore}
+            disabled={busy}
+            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            {busy ? "Restoring…" : "Restore"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            disabled={busy}
+            className="rounded border border-red-800 px-3 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+            title="Permanently delete — drops every photo, plan, and manifest row."
+          >
+            Delete permanently
+          </button>
+        </div>
+      </li>
+
+      {confirmDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+            <div className="text-sm text-neutral-100">
+              Permanently delete{" "}
+              <span className="font-semibold">{project.name}</span>?
+            </div>
+            <div className="text-xs text-neutral-400">
+              This drops the project row, every photo + floor plan
+              binary in storage, and the registry entries. Cannot be
+              undone. Restore (above) is reversible — this isn't.
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                disabled={busy}
+                className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={permanentlyDelete}
+                disabled={busy}
+                className="rounded border border-red-600 bg-red-700/40 px-4 py-1.5 text-sm text-red-100 hover:bg-red-700/60 disabled:opacity-50"
+              >
+                {busy ? "Deleting…" : "Delete permanently"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
