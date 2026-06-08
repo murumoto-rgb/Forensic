@@ -9,6 +9,7 @@ import { PhotoFilterBar } from "../PhotoFilterBar";
 import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import { SelectionActionBar } from "../SelectionActionBar";
 import { TrashSection } from "../TrashSection";
+import { BatchRetagControl } from "../BatchRetagControl";
 
 /**
  * Photos tab — filter bar + rich list + editor + select mode.
@@ -46,6 +47,15 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
   const [editorPhotoId, setEditorPhotoId] = useState<string | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  // Selection-scoped re-tag flow: clicking "Re-tag with AI" in the
+  // SelectionActionBar sets this to a snapshot of the selection,
+  // which mounts a BatchRetagControl scoped to those IDs with its
+  // modal auto-opened. Snapshotting (instead of streaming
+  // selectedIds in) means changing the selection mid-batch doesn't
+  // affect the in-flight run.
+  const [retagSelection, setRetagSelection] = useState<readonly string[] | null>(
+    null
+  );
 
   if (!project) return null;
 
@@ -187,8 +197,31 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
           onMoveToBucket={moveToBucket}
           onMoveToLevel={moveToLevel}
           onApplyTag={applyTag}
+          onRetagWithAI={
+            canEdit
+              ? () => setRetagSelection(Array.from(selectedIds))
+              : undefined
+          }
           onDelete={batchDelete}
           onClearSelection={() => setSelectedIds(new Set())}
+        />
+      )}
+
+      {retagSelection && (
+        <BatchRetagControl
+          projectId={projectId}
+          projectRef={manifest.projectRef}
+          revisionRef={manifest.revisionRef}
+          setProject={manifest.setProject}
+          setRevision={manifest.setRevision}
+          photoCount={retagSelection.length}
+          photoIds={retagSelection}
+          hideTriggerButton
+          initiallyOpen
+          onClose={() => setRetagSelection(null)}
+          // Remount whenever the snapshot changes so the next
+          // selection-scoped batch starts from a clean state.
+          key={retagSelection.join(",")}
         />
       )}
 

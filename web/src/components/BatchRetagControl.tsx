@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AITagPhotoModel, Project } from "@forensic/shared";
 import {
   useBatchRetag,
@@ -30,24 +30,61 @@ export function BatchRetagControl({
   setProject,
   setRevision,
   photoCount,
+  photoIds,
+  buttonLabel,
+  hideTriggerButton,
+  initiallyOpen,
+  onClose,
 }: {
   projectId: string;
   projectRef: MutableRefObject<Project | null>;
   revisionRef: MutableRefObject<string | null>;
   setProject: (p: Project) => void;
   setRevision: (r: string) => void;
+  /** Photos that COULD be tagged this run (e.g. project total, or
+   *  the size of the current selection). Disables the trigger
+   *  button when 0; modal still reads opts.skipAlreadyTagged so the
+   *  actual subset is a function of both. */
   photoCount: number;
+  /** Restrict the batch to these photo IDs. Omitted = whole project. */
+  photoIds?: readonly string[];
+  /** Override the trigger button label (default: "Re-tag all with AI"). */
+  buttonLabel?: string;
+  /** Hide the trigger button entirely — parent drives `initiallyOpen`. */
+  hideTriggerButton?: boolean;
+  /** Open the modal as soon as the component mounts. Used when this
+   *  control is rendered transiently in response to a selection-bar
+   *  click in PhotosTab. */
+  initiallyOpen?: boolean;
+  /** Fired when the user cancels the modal without starting OR
+   *  dismisses the progress panel. Lets a transient parent unmount
+   *  the control so the next trigger remounts cleanly. */
+  onClose?: () => void;
 }) {
-  const [showModal, setShowModal] = useState(false);
+  const [showModal, setShowModal] = useState(initiallyOpen ?? false);
   const prefs = useUserPrefs();
   // Read user prefs as the initial defaults; the modal still lets
   // the user override per-batch (the changes don't persist back to
   // prefs — that would feel surprising for a one-off override).
+  // Initial values capture prefs at mount, which is the right moment
+  // when `initiallyOpen` triggers a transient remount in PhotosTab.
   const [opts, setOpts] = useState<BatchOptions>({
     model: prefs.model,
     skipAlreadyTagged: true,
     concurrency: prefs.concurrency,
   });
+  const didInitialize = useRef(false);
+  useEffect(() => {
+    if (didInitialize.current) return;
+    didInitialize.current = true;
+    if (initiallyOpen) {
+      setOpts((cur) => ({
+        ...cur,
+        model: prefs.model,
+        concurrency: prefs.concurrency,
+      }));
+    }
+  }, [initiallyOpen, prefs.model, prefs.concurrency]);
   const { state, start, cancel, reset } = useBatchRetag({
     projectId,
     projectRef,
@@ -67,35 +104,40 @@ export function BatchRetagControl({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => {
-          reset();
-          // Refresh the per-batch defaults from current user prefs
-          // so a settings change between batches is honored without
-          // remounting the control.
-          setOpts({
-            model: prefs.model,
-            skipAlreadyTagged: opts.skipAlreadyTagged,
-            concurrency: prefs.concurrency,
-          });
-          setShowModal(true);
-        }}
-        disabled={photoCount === 0 || inFlight}
-        className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-        title="Run AI tagging across every photo in this project. Results land as pending suggestions to review on the floor-plan preview panel."
-      >
-        Re-tag all with AI
-      </button>
+      {!hideTriggerButton && (
+        <button
+          type="button"
+          onClick={() => {
+            reset();
+            // Refresh the per-batch defaults from current user prefs
+            // so a settings change between batches is honored without
+            // remounting the control.
+            setOpts({
+              model: prefs.model,
+              skipAlreadyTagged: opts.skipAlreadyTagged,
+              concurrency: prefs.concurrency,
+            });
+            setShowModal(true);
+          }}
+          disabled={photoCount === 0 || inFlight}
+          className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+          title="Run AI tagging. Results land as pending suggestions to review on the photo editor."
+        >
+          {buttonLabel ?? "Re-tag all with AI"}
+        </button>
+      )}
 
       {showModal && !inFlight && !finished && (
         <BatchOptionsModal
           opts={opts}
           setOpts={setOpts}
-          onCancel={() => setShowModal(false)}
+          onCancel={() => {
+            setShowModal(false);
+            onClose?.();
+          }}
           onStart={() => {
             setShowModal(false);
-            void start(opts);
+            void start(opts, photoIds);
           }}
         />
       )}
@@ -107,6 +149,7 @@ export function BatchRetagControl({
           onDismiss={() => {
             reset();
             setShowModal(false);
+            onClose?.();
           }}
         />
       )}

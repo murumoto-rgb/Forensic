@@ -165,19 +165,15 @@ list below mirrors the eight PRs in order:
 
 Follow-ons still tracked (Phase 4+):
 
-- **Full 3-level tag-selection picker UI on web.** Today web honors
-  whatever iOS set; the picker UI itself lands later.
-- **Re-tag-with-AI on a selection.** `useBatchRetag` doesn't accept
-  a photoIds filter yet; the AI tab's "skip-already-tagged" covers
-  the most-common "untagged only" workflow today.
+- ~~**Full 3-level tag-selection picker UI on web.**~~ — shipped Build #5.86.1.
+- ~~**Re-tag-with-AI on a selection.**~~ — shipped Build #5.88.1. `useBatchRetag.start()` accepts an optional `photoIds` filter; the Photos-tab `SelectionActionBar` exposes a "Re-tag with AI" button that mounts a transient `BatchRetagControl` scoped to the snapshot of `selectedIds`.
 - **Web file-upload "add photos".** Optional — feasible via the
   existing presigned-PUT endpoints; not in Path P scope.
 - **Web canvas markup drawing.** A non-PencilKit equivalent is a
   separate, large effort.
 - **Report branding.** Logos / colors / header-text payload lives in
   `app_config`; the upload + edit UI is its own PR.
-- **Drag-and-drop bucket reorder.** Today web uses ↑/↓ arrows
-  matching the iOS UX.
+- ~~**Drag-and-drop bucket reorder.**~~ — shipped Build #5.87.1.
 
 ## Update procedure
 

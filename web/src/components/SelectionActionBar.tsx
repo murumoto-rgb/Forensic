@@ -2,10 +2,11 @@ import { useState } from "react";
 import type { Bucket, FloorPlan } from "@forensic/shared";
 
 /**
- * Batch action bar (Build #5.82.1 — Path P #7/8).
+ * Batch action bar (Build #5.82.1 — Path P #7/8; "Re-tag with AI"
+ * added Build #5.88.1).
  *
- * Floats above the photo list when select mode is on. Surfaces four
- * actions iOS's `selectionActionRow` exposes:
+ * Floats above the photo list when select mode is on. Surfaces the
+ * same actions iOS's `selectionActionRow` exposes:
  *
  *   - Move to bucket — assigns `bucketID` on every selected photo
  *     (or clears it via the "— None —" sentinel).
@@ -14,14 +15,12 @@ import type { Bucket, FloorPlan } from "@forensic/shared";
  *     Floor Plan tab).
  *   - Apply tag — appends a confidence-1.0 tag to every selected
  *     photo, dedup'd case-insensitively against existing tags.
+ *   - Re-tag with AI — opens the same BatchRetagControl modal as
+ *     the AI tab, restricted to the selected photos. Hidden when
+ *     `onRetagWithAI` isn't provided (e.g. the user hasn't taken
+ *     the edit lock — same gating the AI tab uses).
  *   - Delete — soft-delete via `trashedAt = now`; the photo moves
- *     out of `photos` and into `trashedPhotos` (Trash UI in PR #8).
- *
- * Re-tag-with-AI on a selection is deferred — `useBatchRetag`
- * doesn't accept a photoIds filter yet, and bolting one on is a
- * bigger change than warrants this PR. Today the AI tab's
- * "skip-already-tagged" toggle gives an "untagged-only" axis that
- * covers most of the actual workflow.
+ *     out of `photos` and into `trashedPhotos`.
  */
 interface Props {
   count: number;
@@ -30,6 +29,7 @@ interface Props {
   onMoveToBucket: (bucketId: string | null) => void;
   onMoveToLevel: (floorPlanId: string | null) => void;
   onApplyTag: (label: string) => void;
+  onRetagWithAI?: () => void;
   onDelete: () => void;
   onClearSelection: () => void;
 }
@@ -41,6 +41,7 @@ export function SelectionActionBar({
   onMoveToBucket,
   onMoveToLevel,
   onApplyTag,
+  onRetagWithAI,
   onDelete,
   onClearSelection,
 }: Props) {
@@ -133,6 +134,17 @@ export function SelectionActionBar({
             Apply
           </button>
         </label>
+
+        {onRetagWithAI && (
+          <button
+            type="button"
+            onClick={onRetagWithAI}
+            className="rounded border border-blue-500 bg-blue-700/30 px-2 py-0.5 text-xs text-blue-100 hover:bg-blue-700/50"
+            title="Run AI tagging on the selected photos. Results land as pending suggestions."
+          >
+            Re-tag with AI
+          </button>
+        )}
 
         <button
           type="button"
