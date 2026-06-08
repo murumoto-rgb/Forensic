@@ -200,7 +200,7 @@ function parallelFetch<T>(
   return out;
 }
 
-const PHOTO_FETCH_CONCURRENCY = 4;
+const PHOTO_FETCH_CONCURRENCY = 12;
 
 /** Filter a name down to filesystem-safe characters; mirrors the
  *  iOS `safeFilename` helper. */
@@ -302,8 +302,13 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   }
 
   // Step 4: set up the archive + the R2 multipart upload sink.
+  //
+  // `store: true` skips deflate compression. JPEGs + HEICs barely
+  // compress (they're already entropy-encoded); deflate on top is
+  // pure CPU overhead. With store-mode the worker becomes purely
+  // network-bound, which is what we want.
   const objectKey = `${FOLDER_PREFIX}/${job.id}.zip`;
-  const archive = archiver("zip", { zlib: { level: 1 } }); // light compression — JPEGs barely shrink
+  const archive = archiver("zip", { store: true });
   const passthrough = new PassThrough();
   archive.pipe(passthrough);
 
@@ -498,12 +503,28 @@ async function addBucketToArchive(
   // Parallel fetch the bucket's photos, but append serially in
   // sequence-number order. The fetcher throws on a missing files
   // row so parallelFetch resolves null and we skip + log.
+  const fetchStart = Date.now();
+  let fetchedCount = 0;
+  let totalFetchMs = 0;
   const fetches = parallelFetch(
     photos,
     async (photo) => {
       const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
       if (!objectKey) throw new Error("no_files_row");
-      return getObjectBytes(objectKey);
+      const t0 = Date.now();
+      const bytes = await getObjectBytes(objectKey);
+      const elapsed = Date.now() - t0;
+      totalFetchMs += elapsed;
+      fetchedCount++;
+      // Surface slow R2 reads — typical should be <500ms; if we see
+      // multi-second fetches, R2 is the bottleneck not our code.
+      if (elapsed > 2000) {
+        log.warn(
+          { photoId: photo.id, objectKey, ms: elapsed, bytes: bytes.byteLength },
+          "folder export — slow R2 read"
+        );
+      }
+      return bytes;
     },
     PHOTO_FETCH_CONCURRENCY
   );
@@ -523,6 +544,17 @@ async function addBucketToArchive(
     }
     await progress.tick();
   }
+  const wallMs = Date.now() - fetchStart;
+  log.info(
+    {
+      folder: folderName,
+      photoCount: photos.length,
+      wallMs,
+      avgFetchMs: fetchedCount > 0 ? Math.round(totalFetchMs / fetchedCount) : 0,
+      concurrency: PHOTO_FETCH_CONCURRENCY,
+    },
+    "folder export — bucket batch done"
+  );
   const captions = captionsTextForBucket(project, photos);
   archive.append(captions, { name: `${folderName}/captions.txt` });
   bytesObserver(Buffer.byteLength(captions));
