@@ -1414,6 +1414,59 @@ final class ProjectStore {
         }
     }
 
+    /// Rename a project. Updates `project.name`, derives a fresh
+    /// `folderName` via `Project.makeFolderName`, moves the on-disk
+    /// folder to its new path (so the file layout doesn't drift from
+    /// the manifest), and saves. The save triggers the standard
+    /// SyncCoordinator push so the server (and web) sees the new
+    /// name on next pull.
+    ///
+    /// Trimmed-empty / unchanged names are a no-op — callers don't
+    /// need to guard.
+    @discardableResult
+    func renameProject(_ project: Project, to rawNewName: String) -> Project {
+        let trimmed = rawNewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != project.name else {
+            return project
+        }
+
+        var updated = project
+        updated.name = trimmed
+
+        // Recompute folder name from the new project name (keeps the
+        // human-readable on-disk layout consistent with the manifest).
+        let newFolderName = Project.makeFolderName(
+            id: updated.id,
+            name: trimmed,
+            createdAt: updated.createdAt
+        )
+        let oldFolderURL = projectURL(project)
+        updated.folderName = newFolderName
+
+        // Move the on-disk folder if it exists. This must happen
+        // before save so the manifest write lands in the new folder
+        // (otherwise we'd write to the old path then move it, which
+        // is racier).
+        let isDel = isDeleted(project)
+        let root = isDel ? deletedRoot : activeRoot
+        let newFolderURL = root.appending(path: newFolderName, directoryHint: .isDirectory)
+        if oldFolderURL != newFolderURL,
+           fileManager.fileExists(atPath: oldFolderURL.path()) {
+            do {
+                try fileManager.moveItem(at: oldFolderURL, to: newFolderURL)
+            } catch {
+                #if DEBUG
+                print("Rename folder move failed (\(error)) — falling back to in-place save.")
+                #endif
+                // Roll back the folderName change so save() writes to
+                // the old folder rather than scattering files.
+                updated.folderName = project.folderName
+            }
+        }
+
+        return save(updated)
+    }
+
     /// Restore a soft-deleted project — move its folder from "Deleted
     /// Projects" back to "Active Projects". Mirrors `delete(_:)`:
     /// flips `isDeleted` back to false and saves so the server's

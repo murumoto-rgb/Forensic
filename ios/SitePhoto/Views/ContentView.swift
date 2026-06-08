@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var showingNew = false
     @State private var pendingDelete: Project?
     @State private var pendingPermanentDelete: Project?
+    @State private var pendingRename: Project?
+    @State private var renameDraft: String = ""
     @State private var showingSettings = false
 
     var body: some View {
@@ -28,10 +30,21 @@ struct ContentView: View {
                                 NavigationLink(value: project) {
                                     ProjectRow(project: project)
                                 }
-                            }
-                            .onDelete { indexSet in
-                                for i in indexSet {
-                                    pendingDelete = store.activeProjects[i]
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        pendingDelete = project
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .swipeActions(edge: .leading) {
+                                    Button {
+                                        renameDraft = project.name
+                                        pendingRename = project
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
                                 }
                             }
                         }
@@ -128,6 +141,28 @@ struct ContentView: View {
                 }
             } message: { project in
                 Text("\"\(project.name)\" and all its photos will be permanently removed from iCloud. This cannot be undone.")
+            }
+            .alert(
+                "Rename project",
+                isPresented: Binding(
+                    get: { pendingRename != nil },
+                    set: { if !$0 { pendingRename = nil } }
+                )
+            ) {
+                TextField("Project name", text: $renameDraft)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                Button("Save") {
+                    if let project = pendingRename {
+                        store.renameProject(project, to: renameDraft)
+                    }
+                    pendingRename = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingRename = nil
+                }
+            } message: {
+                Text("Enter a new name for this project.")
             }
             .onChange(of: path.isEmpty) { _, isEmpty in
                 withAnimation(.easeInOut(duration: 0.25)) {
