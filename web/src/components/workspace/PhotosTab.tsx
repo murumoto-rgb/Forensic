@@ -1,35 +1,55 @@
 import { useState } from "react";
+import type { Photo } from "@forensic/shared";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
-import { PhotoGrid } from "../PhotoGrid";
+import { PhotoList } from "../PhotoList";
 import { PhotoLightbox } from "../PhotoLightbox";
 
 /**
- * Photos tab — thin shell around the existing thumbnail grid +
- * lightbox in Build #5.76.1 (Path P #1/8). The rich list rows, the
- * filter bar, the in-row editing, and select mode all land in
- * subsequent PRs of this series; this PR keeps the existing
- * behaviour intact while it lives inside a tab.
+ * Photos tab — rich list of photo rows (Build #5.77.1 — Path P #2/8).
+ *
+ * As of this PR the tab shows one `PhotoListRow` card per photo —
+ * thumbnail + sequence number + badges + timestamp + location +
+ * bucket + tag chips + favorite/tag/locate/overflow action stack.
+ * Card layout is a responsive grid that auto-fills as many columns
+ * as the viewport allows (`minmax(380px, 1fr)`).
+ *
+ * Click a thumbnail → opens the lightbox. The favorite-toggle on
+ * each row writes through the shared manifest hook so the change
+ * is persisted. Tag / relocate / overflow actions are stubbed and
+ * land in later PRs of the parity series.
  */
 interface Props {
   projectId: string;
   manifest: ProjectManifestHook;
-  /** Reserved — will gate inline editing affordances added in
-   *  later PRs. The current PR has no editable surface in this
-   *  tab; the grid + lightbox are read-only. */
   canEdit: boolean;
 }
 
-export function PhotosTab({ projectId, manifest }: Props) {
+export function PhotosTab({ projectId, manifest, canEdit }: Props) {
   const project = manifest.project;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   if (!project) return null;
 
+  function updatePhoto(next: Photo) {
+    if (!project) return;
+    const idx = project.photos.findIndex((p) => p.id === next.id);
+    if (idx < 0) return;
+    const nextPhotos = [...project.photos];
+    nextPhotos[idx] = next;
+    manifest.save({ ...project, photos: nextPhotos });
+  }
+
   return (
     <>
-      <PhotoGrid
+      <div className="mb-3 text-sm text-neutral-400">
+        Photos · {project.photos.length}
+      </div>
+      <PhotoList
         projectId={projectId}
+        project={project}
         photos={project.photos}
-        onSelect={(idx) => setLightboxIndex(idx)}
+        canEdit={canEdit}
+        onOpen={(idx) => setLightboxIndex(idx)}
+        onPhotoUpdated={updatePhoto}
       />
       {lightboxIndex !== null && (
         <PhotoLightbox
