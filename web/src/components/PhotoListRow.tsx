@@ -10,10 +10,11 @@ import { PhotoThumbnail } from "./PhotoThumbnail";
  * chips), action stack at the far right (favorite, tag, locate,
  * overflow).
  *
- * In this PR only the favorite-toggle and click-to-open-lightbox
- * are wired; the tag / locate / overflow buttons are stubs
- * (rendered, disabled). Tag editing lands in PR #4, batch
- * relocate / reshoot in later PRs.
+ * Build #5.79.1 (Path P #4/8) wires the tag-editor and overflow
+ * action buttons to `onOpenEditor`, which the parent uses to
+ * open the docked `PhotoPreviewPanel` in editor mode. Relocate
+ * still routes to a stub (the relocate flow uses the plan canvas;
+ * see `FloorPlanTab` for the pin-drag UI).
  */
 interface Props {
   projectId: string;
@@ -24,6 +25,7 @@ interface Props {
   threshold: number;
   canEdit: boolean;
   onOpen: () => void;
+  onOpenEditor: () => void;
   onToggleFavorite: () => void;
 }
 
@@ -58,6 +60,7 @@ export function PhotoListRow({
   threshold,
   canEdit,
   onOpen,
+  onOpenEditor,
   onToggleFavorite,
 }: Props) {
   // Resolve floor-plan label for the "location" line. iOS treats
@@ -82,21 +85,15 @@ export function PhotoListRow({
   const visibleTags = [...photo.tags]
     .filter((t) => t.confidence >= threshold)
     .sort((a, b) => {
-      // Primaries (no parentTag) come before secondaries.
       const ap = a.parentTag == null ? 0 : 1;
       const bp = b.parentTag == null ? 0 : 1;
       return ap - bp || a.label.localeCompare(b.label);
     });
 
-  // AI-pending count.
   const pendingCount = photo.pendingSuggestions.filter(
     (s) => s.source === "claude"
   ).length;
 
-  // Needs-review heuristic — mirrors iOS:
-  //   - reviewerFlag is non-empty, OR
-  //   - parseFailed, OR
-  //   - any validationErrors.
   const needsReview =
     photo.aiAnalysis != null &&
     (photo.aiAnalysis.reviewerFlag.trim().length > 0 ||
@@ -249,27 +246,27 @@ export function PhotoListRow({
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded p-1 text-neutral-600"
-          title="Tag editor — coming in PR #4 of the parity series"
-          aria-label="Edit tags"
+          onClick={onOpenEditor}
+          className="rounded p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+          title="Edit tags, caption, observation, bucket, rotation"
+          aria-label="Edit photo"
         >
           🏷
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded p-1 text-neutral-600"
-          title="Relocate — coming in PR #4 of the parity series"
+          onClick={onOpenEditor}
+          className="rounded p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+          title="Open editor (placement is on the Floor Plan tab)"
           aria-label="Relocate"
         >
           📍
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded p-1 text-neutral-600"
-          title="More — coming in later PRs"
+          onClick={onOpenEditor}
+          className="rounded p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+          title="More: open the photo editor"
           aria-label="More"
         >
           ⋯

@@ -6,18 +6,22 @@ import { usePhotoFilters } from "../../lib/usePhotoFilters";
 import { PhotoList } from "../PhotoList";
 import { PhotoLightbox } from "../PhotoLightbox";
 import { PhotoFilterBar } from "../PhotoFilterBar";
+import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 
 /**
- * Photos tab — rich list of rows + filter bar + search.
+ * Photos tab — filter bar + rich list + editor sheet.
  *
- * Build #5.78.1 (Path P #3/8) adds the filter chip bar above the
- * list. State lives in `usePhotoFilters`; the list itself remains
- * a pure render of whatever subset the filter accepts. The
- * lightbox opens against the FILTERED set so prev/next stays
- * inside the user's current scope.
+ * Build #5.79.1 (Path P #4/8) wires the editor: the row's tag /
+ * locate / overflow buttons now open the docked `PhotoPreviewPanel`
+ * in edit mode against the clicked photo. The panel's inline
+ * `PhotoEditorSection` lets you edit caption, observation, bucket,
+ * rotation, favorite, and the tag chips directly; the existing
+ * AI re-tag / accept-suggestion / AI-viewer machinery is reused.
  *
- * Tag / relocate / overflow per-row stubs and the editor sheet
- * still land in PR #4.
+ * Click-through model:
+ *   - thumbnail   → lightbox (full-screen, prev/next)
+ *   - 🏷 / 📍 / ⋯  → editor panel (docked, full editing surface)
+ *   - ★/☆ row btn  → immediate favorite toggle (no panel)
  */
 interface Props {
   projectId: string;
@@ -34,6 +38,7 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
     threshold
   );
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [editorPhotoId, setEditorPhotoId] = useState<string | null>(null);
   if (!project) return null;
 
   function updatePhoto(next: Photo) {
@@ -58,6 +63,7 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
         photos={filters.filtered}
         canEdit={canEdit}
         onOpen={(idx) => setLightboxIndex(idx)}
+        onOpenEditor={(photo) => setEditorPhotoId(photo.id)}
         onPhotoUpdated={updatePhoto}
       />
       {lightboxIndex !== null && (
@@ -66,6 +72,17 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
           photos={filters.filtered}
           startIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
+        />
+      )}
+      {editorPhotoId && (
+        <PhotoPreviewPanel
+          projectId={projectId}
+          project={project}
+          photos={filters.filtered}
+          selectedPhotoId={editorPhotoId}
+          onSelectPhoto={(id) => setEditorPhotoId(id)}
+          onPhotoUpdated={canEdit ? updatePhoto : undefined}
+          onClose={() => setEditorPhotoId(null)}
         />
       )}
     </>
