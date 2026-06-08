@@ -179,6 +179,69 @@ export interface GetProjectExportResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Client-side folder export manifest (Build #5.110.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Server response for the manifest endpoint that powers the
+ * browser-side ZIP build. The browser uses this to download
+ * photos directly from R2 and assemble a ZIP locally — taking
+ * the streaming / CPU work off the Render dyno entirely.
+ */
+export interface FolderExportManifestPhoto {
+  id: string;
+  /** R2 presigned-GET URL (15 min TTL — long enough for slow connections). */
+  presignedUrl: string;
+  /** Filename to use inside the ZIP (`<Project name> - <seq> - <date>.<ext>`). */
+  filename: string;
+  /** Bucket id, or null when unbucketed. */
+  bucketId: string | null;
+  sequenceNumber: number;
+  timestamp: string;
+  userCaption: string | null;
+  userObservation: string | null;
+  aiSummary: string | null;
+  tags: string[];
+}
+
+export interface FolderExportManifestPlan {
+  id: string;
+  presignedUrl: string;
+  filename: string;
+  label: string;
+  pixelsPerFoot: number;
+  calibrationDistanceFeet: number;
+  northDeg: number;
+  distressMarkerCount: number;
+}
+
+export interface FolderExportManifestBucket {
+  id: string;
+  name: string;
+  /** `01 Foundation`, `02 Framing`, …, `99 Unbucketed` for null. */
+  folderName: string;
+}
+
+export interface FolderExportManifest {
+  projectName: string;
+  buckets: FolderExportManifestBucket[];
+  /** Bucket entry to use for photos whose `bucketId` doesn't match
+   *  any of the above (typically `99 Unbucketed`). */
+  unbucketedFolderName: string;
+  photos: FolderExportManifestPhoto[];
+  plans: FolderExportManifestPlan[];
+  /** Total bytes the browser is about to download. Useful for an
+   *  "estimated 1.5 GB; ~3 min on a 50 Mbit/s connection" pre-flight. */
+  totalSizeBytes: number;
+  /** ISO timestamp the manifest was generated. */
+  computedAt: string;
+}
+
+export interface GetFolderExportManifestResponse {
+  manifest: FolderExportManifest;
+}
+
+// ---------------------------------------------------------------------------
 // Per-user preferences (Build #5.95.1)
 // ---------------------------------------------------------------------------
 
