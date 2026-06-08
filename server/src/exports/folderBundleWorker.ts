@@ -220,11 +220,23 @@ function waitForEntry(archive: archiver.Archiver): Promise<void> {
  * ~512KB of socket bookkeeping vs the previous ~96MB of buffered
  * Buffers at concurrency 12 which OOM'd Render free tier (#5.107.1).
  *
- * Free tier still has a ~512MB envelope, so we keep this modest;
- * the dominant memory cost is the multipart-upload's in-flight
- * part buffer (5MB default) and archiver's pending entry header.
+ * Bumped DOWN to 3 in #5.109.1 after seeing SIGTERMs (not OOM)
+ * mid-export on free tier. With concurrency 3 + streaming, at most
+ * 3 R2 connections open at once and one body streams through the
+ * archive. Memory footprint should sit well under Render's
+ * eviction threshold.
+ *
+ * For projects > 200 photos on Render free tier, even this may not
+ * finish reliably — the export runtime exceeds free tier's CPU
+ * budget. Render Starter ($7/mo) gives dedicated CPU + no
+ * auto-spin-down, which is the right fit for production export
+ * workloads.
  */
-const PHOTO_FETCH_CONCURRENCY = 8;
+const PHOTO_FETCH_CONCURRENCY = 3;
+
+/** Log heap + RSS every N photos so we can correlate memory growth
+ *  with progress in Render logs. */
+const MEMORY_LOG_EVERY = 10;
 
 /** Filter a name down to filesystem-safe characters; mirrors the
  *  iOS `safeFilename` helper. */
@@ -562,6 +574,24 @@ async function addBucketToArchive(
       );
     }
     await progress.tick();
+    // Periodic memory snapshot so we can correlate growth with
+    // progress when investigating SIGTERMs on resource-constrained
+    // tiers.
+    if ((i + 1) % MEMORY_LOG_EVERY === 0) {
+      const m = process.memoryUsage();
+      log.info(
+        {
+          folder: folderName,
+          processed: i + 1,
+          total: photos.length,
+          rssMb: Math.round(m.rss / 1024 / 1024),
+          heapUsedMb: Math.round(m.heapUsed / 1024 / 1024),
+          heapTotalMb: Math.round(m.heapTotal / 1024 / 1024),
+          externalMb: Math.round(m.external / 1024 / 1024),
+        },
+        "folder export — memory snapshot"
+      );
+    }
   }
   const wallMs = Date.now() - fetchStart;
   log.info(
