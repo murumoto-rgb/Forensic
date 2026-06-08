@@ -1,9 +1,8 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
-import { api, ApiError } from "../../lib/api";
 import { ExportPdfControl } from "../ExportPdfControl";
 import { FolderExportControl } from "../FolderExportControl";
+import { CsvExportControl } from "../CsvExportControl";
 
 /**
  * Export tab — home for the three export modes. Each card kicks off
@@ -77,7 +76,7 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
             observation, caption, measurement, and reviewer flag.
             Opens directly in Excel / Google Sheets.
           </p>
-          <CsvExportInline
+          <CsvExportControl
             projectId={projectId}
             canExport={canEdit}
             photoCount={photoCount}
@@ -108,52 +107,3 @@ function Card({
   );
 }
 
-/** Minimal inline CSV trigger — full options modal lands in PR #3. */
-function CsvExportInline({
-  projectId,
-  canExport,
-  photoCount,
-}: {
-  projectId: string;
-  canExport: boolean;
-  photoCount: number;
-}) {
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-
-  async function go() {
-    setSubmitting(true);
-    setMessage(null);
-    try {
-      const resp = await api.createProjectExport(projectId, {
-        kind: "csv",
-        options: { onlyAnalyzed: true, minConfidence: 0.5 },
-      });
-      setMessage(`Queued — see Exports page (${resp.export.id.slice(0, 8)}…).`);
-    } catch (e: unknown) {
-      setMessage(
-        e instanceof ApiError
-          ? `${e.errorCode}: ${e.message}`
-          : "Failed to enqueue CSV"
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={go}
-        disabled={!canExport || photoCount === 0 || submitting}
-        className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {submitting ? "Queuing…" : "Export CSV"}
-      </button>
-      {message && (
-        <div className="mt-2 text-xs text-neutral-400">{message}</div>
-      )}
-    </>
-  );
-}
