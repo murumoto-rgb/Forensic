@@ -1,22 +1,23 @@
 import { useState } from "react";
 import type { Photo } from "@forensic/shared";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
+import { useTagConfidenceThreshold } from "../../lib/useTagConfidenceThreshold";
+import { usePhotoFilters } from "../../lib/usePhotoFilters";
 import { PhotoList } from "../PhotoList";
 import { PhotoLightbox } from "../PhotoLightbox";
+import { PhotoFilterBar } from "../PhotoFilterBar";
 
 /**
- * Photos tab — rich list of photo rows (Build #5.77.1 — Path P #2/8).
+ * Photos tab — rich list of rows + filter bar + search.
  *
- * As of this PR the tab shows one `PhotoListRow` card per photo —
- * thumbnail + sequence number + badges + timestamp + location +
- * bucket + tag chips + favorite/tag/locate/overflow action stack.
- * Card layout is a responsive grid that auto-fills as many columns
- * as the viewport allows (`minmax(380px, 1fr)`).
+ * Build #5.78.1 (Path P #3/8) adds the filter chip bar above the
+ * list. State lives in `usePhotoFilters`; the list itself remains
+ * a pure render of whatever subset the filter accepts. The
+ * lightbox opens against the FILTERED set so prev/next stays
+ * inside the user's current scope.
  *
- * Click a thumbnail → opens the lightbox. The favorite-toggle on
- * each row writes through the shared manifest hook so the change
- * is persisted. Tag / relocate / overflow actions are stubbed and
- * land in later PRs of the parity series.
+ * Tag / relocate / overflow per-row stubs and the editor sheet
+ * still land in PR #4.
  */
 interface Props {
   projectId: string;
@@ -26,6 +27,12 @@ interface Props {
 
 export function PhotosTab({ projectId, manifest, canEdit }: Props) {
   const project = manifest.project;
+  const [threshold] = useTagConfidenceThreshold();
+  const filters = usePhotoFilters(
+    project?.photos ?? [],
+    project ?? ({ photos: [], buckets: [], floorPlans: [] } as never),
+    threshold
+  );
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   if (!project) return null;
 
@@ -40,13 +47,15 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
 
   return (
     <>
-      <div className="mb-3 text-sm text-neutral-400">
-        Photos · {project.photos.length}
-      </div>
+      <PhotoFilterBar
+        filters={filters}
+        project={project}
+        total={project.photos.length}
+      />
       <PhotoList
         projectId={projectId}
         project={project}
-        photos={project.photos}
+        photos={filters.filtered}
         canEdit={canEdit}
         onOpen={(idx) => setLightboxIndex(idx)}
         onPhotoUpdated={updatePhoto}
@@ -54,7 +63,7 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
       {lightboxIndex !== null && (
         <PhotoLightbox
           projectId={projectId}
-          photos={project.photos}
+          photos={filters.filtered}
           startIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
