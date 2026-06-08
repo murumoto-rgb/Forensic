@@ -37,6 +37,10 @@ import type {
   CreatePdfExportResponse,
   GetPdfExportResponse,
   PdfExportOptions,
+  UploadUrlRequest,
+  UploadUrlResponse,
+  CommitUploadRequest,
+  CommitUploadResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -233,6 +237,31 @@ export const api = {
     request<PutManifestResponse>(`/v1/projects/${projectId}/restore`, {
       method: "POST",
     }),
+  /**
+   * Request a presigned PUT URL for a photo/plan/markup binary.
+   * Caller uploads the file directly to R2, then calls
+   * `commitUpload` to record the row.
+   */
+  requestUploadUrl: (
+    projectId: string,
+    req: UploadUrlRequest
+  ): Promise<UploadUrlResponse> =>
+    request<UploadUrlResponse>(
+      `/v1/projects/${projectId}/files/upload-url`,
+      { method: "POST", body: JSON.stringify(req) }
+    ),
+  /**
+   * Record a completed upload in the server's `files` registry.
+   * Server HEADs R2 to confirm the bytes landed before persisting.
+   */
+  commitUpload: (
+    projectId: string,
+    req: CommitUploadRequest
+  ): Promise<CommitUploadResponse> =>
+    request<CommitUploadResponse>(
+      `/v1/projects/${projectId}/files/commit`,
+      { method: "POST", body: JSON.stringify(req) }
+    ),
   /**
    * Forward an AI-tagging request through the team-server proxy
    * (Build #5.37.1). Server fetches the photo bytes from R2 by
