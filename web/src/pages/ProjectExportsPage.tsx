@@ -183,7 +183,19 @@ function ExportRow({
               {humanBytes(exp.sizeBytes)}
             </>
           )}
+          {(exp.status === "running" || exp.status === "queued") && (
+            <>
+              {" · "}
+              <RunningElapsed exp={exp} />
+            </>
+          )}
         </div>
+        {exp.status === "running" &&
+          exp.progressDone != null &&
+          exp.progressTotal != null &&
+          exp.progressTotal > 0 && (
+            <ProgressBar done={exp.progressDone} total={exp.progressTotal} />
+          )}
         {exp.errorMessage && (
           <div className="mt-1 text-xs text-red-300">{exp.errorMessage}</div>
         )}
@@ -226,6 +238,44 @@ function kindLabel(kind: ProjectExport["kind"]): string {
     case "csv":
       return "AI Analysis CSV";
   }
+}
+
+function ProgressBar({ done, total }: { done: number; total: number }) {
+  const pct = Math.round((done / total) * 100);
+  return (
+    <div className="mt-1.5 max-w-md">
+      <div className="mb-0.5 flex items-center justify-between text-[11px] text-neutral-400">
+        <span>
+          {done.toLocaleString()} / {total.toLocaleString()}
+        </span>
+        <span className="font-mono">{pct}%</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded bg-neutral-800">
+        <div
+          className="h-full bg-blue-500 transition-all duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Tiny live-updating "Running for Nm Ns" pill. Re-renders every
+ *  second via a state tick so the elapsed counter feels alive even
+ *  between the 3-second list polls. */
+function RunningElapsed({ exp }: { exp: ProjectExport }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const startMs = exp.startedAt
+    ? new Date(exp.startedAt).getTime()
+    : new Date(exp.createdAt).getTime();
+  const elapsedSec = Math.max(0, Math.floor((now - startMs) / 1000));
+  const m = Math.floor(elapsedSec / 60);
+  const s = elapsedSec % 60;
+  return <span>Running {m}m {s}s</span>;
 }
 
 function StatusPill({ status }: { status: ProjectExport["status"] }) {

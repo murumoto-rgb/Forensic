@@ -56,6 +56,8 @@ interface ExportRow {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  progress_done: number | null;
+  progress_total: number | null;
 }
 
 async function claimNextJob(log: FastifyBaseLogger): Promise<ExportRow | null> {
@@ -109,6 +111,96 @@ async function markDone(jobId: string, objectKey: string, sizeBytes: number): Pr
     })
     .eq("id", jobId);
 }
+
+/** Progress writer — batched. Folder + CSV workers write
+ *  `progress_done` + `progress_total` so the Exports page can show
+ *  a live counter. Throttled to one write per ~5 items to avoid
+ *  hammering Postgres on big projects. */
+class ProgressWriter {
+  private done = 0;
+  private lastFlushed = 0;
+  private readonly flushEvery: number;
+  constructor(
+    private jobId: string,
+    private total: number,
+    flushEvery = 5
+  ) {
+    this.flushEvery = flushEvery;
+  }
+  async setTotal(): Promise<void> {
+    await supabaseAdmin
+      .from("project_exports")
+      .update({ progress_total: this.total, progress_done: 0 })
+      .eq("id", this.jobId);
+  }
+  async tick(): Promise<void> {
+    this.done += 1;
+    if (this.done - this.lastFlushed >= this.flushEvery || this.done === this.total) {
+      this.lastFlushed = this.done;
+      await supabaseAdmin
+        .from("project_exports")
+        .update({ progress_done: this.done })
+        .eq("id", this.jobId);
+    }
+  }
+}
+
+/**
+ * Bounded-concurrency fetcher. Returns an array of promises in the
+ * same order as the input. At most `concurrency` fetches in flight
+ * at once. Each promise resolves with the fetched buffer or null on
+ * error so the caller can skip-and-continue without rejecting the
+ * whole batch.
+ *
+ * Critical pattern: parallel FETCH (network-bound), serial APPEND
+ * (CPU + stream backpressure). Caller awaits each promise in order
+ * and `archive.append()`s the buffer; that gives us I/O parallelism
+ * without ballooning the PassThrough buffer.
+ */
+function parallelFetch<T>(
+  items: readonly T[],
+  fetcher: (item: T) => Promise<Buffer>,
+  concurrency: number
+): Promise<Buffer | null>[] {
+  const out: Promise<Buffer | null>[] = new Array(items.length);
+  let nextToStart = 0;
+  let inFlight = 0;
+  const resolvers: Array<(b: Buffer | null) => void> = new Array(items.length);
+
+  for (let i = 0; i < items.length; i++) {
+    out[i] = new Promise<Buffer | null>((resolve) => {
+      resolvers[i] = resolve;
+    });
+  }
+
+  function kick(): void {
+    while (inFlight < concurrency && nextToStart < items.length) {
+      const i = nextToStart++;
+      inFlight++;
+      const item = items[i];
+      if (item === undefined) {
+        resolvers[i]!(null);
+        inFlight--;
+        continue;
+      }
+      fetcher(item)
+        .then((buf) => {
+          resolvers[i]!(buf);
+        })
+        .catch(() => {
+          resolvers[i]!(null);
+        })
+        .finally(() => {
+          inFlight--;
+          kick();
+        });
+    }
+  }
+  kick();
+  return out;
+}
+
+const PHOTO_FETCH_CONCURRENCY = 4;
 
 /** Filter a name down to filesystem-safe characters; mirrors the
  *  iOS `safeFilename` helper. */
@@ -230,10 +322,16 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
     totalBytes += n;
   };
 
+  // Initialize progress tracking — the user sees X / Y in the
+  // Exports page as photos are pulled.
+  const totalItems = photos.length + project.floorPlans.length;
+  const progress = new ProgressWriter(job.id, totalItems);
+  await progress.setTotal();
+
   // Step 4a: floor plans — `00 Floor Plans/` folder at the top.
   // iOS export today skips plans; the user asked for them on web.
   if (project.floorPlans.length > 0) {
-    await addFloorPlansToArchive(archive, project, log, bytesObserver);
+    await addFloorPlansToArchive(archive, project, log, bytesObserver, progress);
   }
 
   // Step 5: walk each bucket folder.
@@ -248,7 +346,8 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       photosInBucket.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      bytesObserver
+      bytesObserver,
+      progress
     );
   }
   // Unbucketed.
@@ -261,13 +360,19 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       unbucketed.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      bytesObserver
+      bytesObserver,
+      progress
     );
   }
 
-  archive.finalize().catch((err) => {
-    log.error({ err, jobId: job.id }, "folder export — archive finalize failed");
-  });
+  // Properly chain finalize → upload close. archive.finalize()
+  // returns a Promise that resolves once every entry has been
+  // flushed into the stream; PassThrough then emits 'end' which
+  // lib-storage's Upload sees as the trigger to close the multipart.
+  // Previously the worker swallowed finalize errors and only awaited
+  // the upload — if finalize threw without piping 'end', the upload
+  // hung forever. Now we await both, surfacing any finalize error.
+  await archive.finalize();
   await uploadPromise;
 
   await markDone(job.id, objectKey, totalBytes);
@@ -281,11 +386,11 @@ async function addFloorPlansToArchive(
   archive: archiver.Archiver,
   project: Project,
   log: FastifyBaseLogger,
-  bytesObserver: (n: number) => void
+  bytesObserver: (n: number) => void,
+  progress: ProgressWriter
 ): Promise<void> {
   const folder = "00 Floor Plans";
-  // Query files table for plan binaries (same lookup pattern as
-  // photos — handles UUID case-sensitivity in R2 keys).
+  // Look up plan binaries (case-safe; mirrors photo lookup).
   const planIds = project.floorPlans.map((p) => p.id);
   const { data: fileRows, error: filesErr } = await supabaseAdmin
     .from("files")
@@ -305,7 +410,7 @@ async function addFloorPlansToArchive(
     keyByPlanIdLower.set(r.photo_id.toLowerCase(), r.object_key);
   }
 
-  // Plan metadata sidecar — calibration values + label + north + sortOrder.
+  // Sidecar with calibration values.
   const lines: string[] = [];
   lines.push(`# ${project.name} — floor plans`);
   lines.push(`# Generated ${new Date().toISOString()}`);
@@ -314,38 +419,45 @@ async function addFloorPlansToArchive(
     lines.push(`## Plan ${idx + 1} — ${plan.label}`);
     lines.push(`pixelsPerFoot: ${plan.pixelsPerFoot}`);
     lines.push(`calibrationDistanceFeet: ${plan.calibrationDistanceFeet}`);
-    lines.push(
-      `anchorPixel: (${plan.anchorPixelX}, ${plan.anchorPixelY})`
-    );
+    lines.push(`anchorPixel: (${plan.anchorPixelX}, ${plan.anchorPixelY})`);
     lines.push(
       `anchorLocalFeet: (${plan.anchorLocalXFeet}, ${plan.anchorLocalYFeet})`
     );
     lines.push(`northDeg: ${plan.northDeg}`);
     lines.push(`distress markers: ${plan.distress.length}`);
     lines.push("");
+  }
 
-    const objectKey = keyByPlanIdLower.get(plan.id.toLowerCase());
-    if (!objectKey) {
-      log.warn(
-        { planId: plan.id },
-        "folder export — no files row for plan; skipping binary"
-      );
-      continue;
-    }
-    try {
-      const bytes = await getObjectBytes(objectKey);
+  // Parallel fetch (concurrency-bounded) of every plan binary; serial
+  // append into the archive in array order.
+  const fetches = parallelFetch(
+    project.floorPlans,
+    async (plan) => {
+      const objectKey = keyByPlanIdLower.get(plan.id.toLowerCase());
+      if (!objectKey) {
+        log.warn(
+          { planId: plan.id },
+          "folder export — no files row for plan; skipping binary"
+        );
+        throw new Error("no_files_row");
+      }
+      return getObjectBytes(objectKey);
+    },
+    PHOTO_FETCH_CONCURRENCY
+  );
+
+  for (let i = 0; i < project.floorPlans.length; i++) {
+    const plan = project.floorPlans[i]!;
+    const bytes = await fetches[i]!;
+    if (bytes) {
       const ext = plan.imageFilename.split(".").pop() ?? "png";
       const safeLabel = safeName(plan.label);
       archive.append(bytes, {
-        name: `${folder}/${String(idx + 1).padStart(2, "0")} ${safeLabel}.${ext}`,
+        name: `${folder}/${String(i + 1).padStart(2, "0")} ${safeLabel}.${ext}`,
       });
       bytesObserver(bytes.byteLength);
-    } catch (err) {
-      log.warn(
-        { err, planId: plan.id, objectKey },
-        "folder export — R2 read failed for plan; skipping binary"
-      );
     }
+    await progress.tick();
   }
 
   const metadata = lines.join("\n");
@@ -359,13 +471,11 @@ async function addBucketToArchive(
   project: Project,
   photos: Photo[],
   log: FastifyBaseLogger,
-  bytesObserver: (n: number) => void
+  bytesObserver: (n: number) => void,
+  progress: ProgressWriter
 ): Promise<void> {
-  // Look up the actual R2 object_key for each photo from the
-  // `files` table — iOS may store UUIDs as uppercase in the path
-  // while the manifest carries them as the canonical lowercase
-  // form, and R2 keys are case-sensitive. Querying the table is
-  // the only safe way to get the real key.
+  // Look up the actual R2 object_key for each photo (case-safe;
+  // see comment in addFloorPlansToArchive).
   const photoIds = photos.map((p) => p.id);
   const { data: fileRows, error: filesErr } = await supabaseAdmin
     .from("files")
@@ -385,26 +495,33 @@ async function addBucketToArchive(
     keyByPhotoIdLower.set(r.photo_id.toLowerCase(), r.object_key);
   }
 
-  for (const photo of photos) {
-    const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
-    if (!objectKey) {
-      log.warn(
-        { photoId: photo.id, projectId: project.id },
-        "folder export — no files row for photo (probably not uploaded yet); skipping"
-      );
-      continue;
-    }
-    try {
-      const bytes = await getObjectBytes(objectKey);
+  // Parallel fetch the bucket's photos, but append serially in
+  // sequence-number order. The fetcher throws on a missing files
+  // row so parallelFetch resolves null and we skip + log.
+  const fetches = parallelFetch(
+    photos,
+    async (photo) => {
+      const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
+      if (!objectKey) throw new Error("no_files_row");
+      return getObjectBytes(objectKey);
+    },
+    PHOTO_FETCH_CONCURRENCY
+  );
+
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i]!;
+    const bytes = await fetches[i]!;
+    if (bytes) {
       const filename = photoFilename(project, photo);
       archive.append(bytes, { name: `${folderName}/${filename}` });
       bytesObserver(bytes.byteLength);
-    } catch (err) {
+    } else {
       log.warn(
-        { err, photoId: photo.id, objectKey },
-        "folder export — R2 read failed; skipping photo"
+        { photoId: photo.id, projectId: project.id },
+        "folder export — photo skipped (no files row OR R2 read failed)"
       );
     }
+    await progress.tick();
   }
   const captions = captionsTextForBucket(project, photos);
   archive.append(captions, { name: `${folderName}/captions.txt` });
