@@ -143,6 +143,13 @@ export interface ProjectExport {
   objectKey: string | null;
   /** Size of the rendered artifact in bytes (populated on done). */
   sizeBytes: number | null;
+  /** Optional progress counters populated by the folder + CSV
+   *  workers (Build #5.106.1). For folder bundles, `progressDone`
+   *  is the count of photos pulled from R2 so far;
+   *  `progressTotal` is the full candidate set. Both null on
+   *  exports created before progress tracking shipped. */
+  progressDone: number | null;
+  progressTotal: number | null;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;

@@ -38,6 +38,8 @@ interface ExportRow {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  progress_done: number | null;
+  progress_total: number | null;
 }
 
 async function claimNextJob(log: FastifyBaseLogger): Promise<ExportRow | null> {

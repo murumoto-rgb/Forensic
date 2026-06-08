@@ -45,6 +45,8 @@ interface ExportRow {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  progress_done: number | null;
+  progress_total: number | null;
 }
 
 function rowToProjectExport(row: ExportRow): ProjectExport {
@@ -55,6 +57,8 @@ function rowToProjectExport(row: ExportRow): ProjectExport {
     status: row.status,
     objectKey: row.object_key,
     sizeBytes: row.size_bytes,
+    progressDone: row.progress_done ?? null,
+    progressTotal: row.progress_total ?? null,
     errorMessage: row.error_message,
     createdAt: row.created_at,
     startedAt: row.started_at,
