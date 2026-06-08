@@ -194,13 +194,22 @@ function WorkspaceHeader({ session, manifest }: WorkspaceHeaderProps) {
       <div className="flex flex-col items-end gap-2 text-right">
         <span className="text-xs text-neutral-500">{session.user.email}</span>
         <SaveStatusPill status={manifest.status} />
-        <button
-          type="button"
-          onClick={() => signOutLocal()}
-          className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-        >
-          Sign out
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/settings"
+            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+            title="Account + AI preferences + diagnostics"
+          >
+            ⚙
+          </Link>
+          <button
+            type="button"
+            onClick={() => signOutLocal()}
+            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+          >
+            Sign out
+          </button>
+        </div>
       </div>
     </header>
   );
