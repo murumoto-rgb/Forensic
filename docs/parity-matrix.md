@@ -108,9 +108,72 @@ one-line reason here; CI does not enforce parity for these rows.
 - **Camera capture (iOS-only)** — web users are typically on
   desktops / tablets without a forensic-grade camera + lens setup.
   Web equivalent is "upload from disk".
+- **48 MP capture + level overlay (iOS-only)** — Apple AVFoundation
+  hardware features.
+- **One-shot GPS capture (iOS-only)** — device location. Web does
+  manual address entry only; forward-geocoding the typed string
+  remains iOS-only.
+- **Forward-geocoding the project address (iOS-only)** — uses Apple
+  MapKit; web stores the literal string and iOS picks a fix on
+  next sync if the user wants one.
 - **PencilKit markup drawing (iOS-only)** — Apple PencilKit is iOS /
   iPadOS only. Web shows existing markup as a read-only PNG overlay
   on top of the photo.
+- **Voice dictation, alternate app icon, accent color (iOS-only)** —
+  iOS UIKit / SwiftUI affordances with no web equivalent.
+
+## Path P (web ↔ iOS parity series) — closed 2026-06-08
+
+The Path P series (PRs #110–#117, Builds #5.76.1 → #5.83.1) closed
+the per-project workflow gap between iOS and web. As of Build
+#5.83.1 the web Forensic project workspace has parity with iOS
+for everything except hardware-bound captures and PencilKit; the
+list below mirrors the eight PRs in order:
+
+- **#1 (#5.76.1):** Tabbed `ProjectWorkspacePage` shell + shared
+  `useProjectManifest` hook. Six tabs: Photos / Floor Plan / AI /
+  Buckets / Export / Info. Single manifest + single edit lock
+  shared across all tabs.
+- **#2 (#5.77.1):** Rich photo list rows — thumbnail + #N + group
+  glyph + AI-pending / Review / Measurement badges + timestamp +
+  location label + bucket dot + caption preview + tag chips +
+  action stack. Responsive `auto-fill, minmax(380px, 1fr)` grid.
+- **#3 (#5.78.1):** Filter chip bar — plan / placed / date / bucket
+  (OR) / tag (AND, threshold-aware) / favorites / needs-review /
+  has-measurement / recommended-use (OR) / search. Header reads
+  "Photos · N · M shown".
+- **#4 (#5.79.1):** Per-photo editor — caption, observation, bucket,
+  rotation, favorite, and direct tag chip add/remove. Inline inside
+  `PhotoPreviewPanel` so floor-plan and Photos-tab share the same
+  editor surface.
+- **#5 (#5.80.1):** Bucket CRUD — create / rename / recolor / reorder
+  (↑/↓ swap `sortOrder`) / delete (with affected-photo confirm).
+- **#6 (#5.81.1):** Project AI config — AI notes (`aiInstructions`),
+  job vocabulary (`aiExtraVocabulary.primaries` JSON editor), tag-
+  selection summary, "Clear AI tags" (± analysis) project-wide.
+- **#7 (#5.82.1):** Select mode + batch actions — Move to bucket,
+  Move to level, Apply tag, Delete (soft-delete to trash). Select
+  toggle gated on edit lock; Select all selects only the currently-
+  filtered subset.
+- **#8 (#5.83.1):** Trash management (Restore / Delete permanently /
+  Empty trash) on the Photos tab + editable `projectAddress` on
+  the Info tab.
+
+Follow-ons still tracked (Phase 4+):
+
+- **Full 3-level tag-selection picker UI on web.** Today web honors
+  whatever iOS set; the picker UI itself lands later.
+- **Re-tag-with-AI on a selection.** `useBatchRetag` doesn't accept
+  a photoIds filter yet; the AI tab's "skip-already-tagged" covers
+  the most-common "untagged only" workflow today.
+- **Web file-upload "add photos".** Optional — feasible via the
+  existing presigned-PUT endpoints; not in Path P scope.
+- **Web canvas markup drawing.** A non-PencilKit equivalent is a
+  separate, large effort.
+- **Report branding.** Logos / colors / header-text payload lives in
+  `app_config`; the upload + edit UI is its own PR.
+- **Drag-and-drop bucket reorder.** Today web uses ↑/↓ arrows
+  matching the iOS UX.
 
 ## Update procedure
 
