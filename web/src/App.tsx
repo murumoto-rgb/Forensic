@@ -5,8 +5,7 @@ import { supabase } from "./lib/supabase";
 import { identifyUser, resetUser } from "./lib/observability";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
-import { ProjectDetailPage } from "./pages/ProjectDetailPage";
-import { ProjectPlanPage } from "./pages/ProjectPlanPage";
+import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
 import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
@@ -62,12 +61,8 @@ export function App() {
           element={session ? <ProjectListPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route
-          path="/projects/:id"
-          element={session ? <ProjectDetailPage session={session} /> : <Navigate to="/" replace />}
-        />
-        <Route
-          path="/projects/:id/plan"
-          element={session ? <ProjectPlanPage session={session} /> : <Navigate to="/" replace />}
+          path="/projects/:id/*"
+          element={session ? <ProjectWorkspacePage session={session} /> : <Navigate to="/" replace />}
         />
         <Route
           path="/admin/tag-library"
