@@ -48,6 +48,7 @@ import type {
   CreateProjectExportResponse,
   ListProjectExportsResponse,
   GetProjectExportResponse,
+  GetUserStorageStatusResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -363,6 +364,13 @@ export const api = {
    */
   getUserPrefs: () =>
     request<GetUserPrefsResponse>("/v1/me/prefs"),
+  /**
+   * Aggregated cloud-storage status for the calling user. Powers
+   * the Settings page Storage card. 30-second browser cache lives
+   * in the StorageStatusCard component, not here.
+   */
+  getUserStorageStatus: () =>
+    request<GetUserStorageStatusResponse>("/v1/me/storage"),
   /**
    * Persist UI preferences. `expectedRevision` echoes the value
    * returned by the most recent GET — pass `""` (or `null`) for the

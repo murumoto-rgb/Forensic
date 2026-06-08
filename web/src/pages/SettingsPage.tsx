@@ -4,6 +4,7 @@ import type { Session } from "@supabase/supabase-js";
 import { signOutLocal, supabase } from "../lib/supabase";
 import { useUserPrefs } from "../lib/useUserPrefs";
 import { buildInfo } from "../lib/buildInfo";
+import { StorageStatusCard } from "../components/StorageStatusCard";
 
 /**
  * Settings page (Build #5.85.1).
@@ -48,6 +49,7 @@ export function SettingsPage({ session }: Props) {
         <AccountSection session={session} />
         <AIPreferencesSection prefs={prefs} />
         <TeamConfigSection />
+        <StorageStatusCard />
         <DiagnosticsSection />
       </div>
     </div>

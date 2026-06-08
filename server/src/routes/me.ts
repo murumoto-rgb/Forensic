@@ -16,6 +16,7 @@ import {
   UserPrefsSchema,
   type GetUserPrefsResponse,
   type PutUserPrefsResponse,
+  type GetUserStorageStatusResponse,
   type ApiError,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
@@ -139,4 +140,78 @@ export const meRoute: FastifyPluginAsync = async (app) => {
     );
     return { revision: newRevision };
   });
+
+  // -----------------------------------------------------------------
+  // GET /v1/me/storage — aggregated cloud-storage usage for the
+  // calling user.
+  //
+  // Walks: projects table (count + manifest jsonb digests for photo
+  // / floor plan counts) + files table (sum of size_bytes). Per-kind
+  // breakdown lets the UI render a stacked bar showing how much
+  // photos vs. plans vs. markups vs. exports consume.
+  // -----------------------------------------------------------------
+  app.get<{ Reply: GetUserStorageStatusResponse | ApiError }>(
+    "/v1/me/storage",
+    async (request, reply) => {
+      const userId = request.user.id;
+
+      // 1) Project counts + manifest digests.
+      const { data: projectRows, error: projErr } = await supabaseAdmin
+        .from("projects")
+        .select("manifest")
+        .eq("owner_id", userId);
+      if (projErr) {
+        request.log.error({ err: projErr, userId }, "storage — projects read failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+
+      let activeProjectCount = 0;
+      let photoCount = 0;
+      let floorPlanCount = 0;
+      for (const row of projectRows ?? []) {
+        const manifest = (row as { manifest: { isDeleted?: boolean; photos?: unknown[]; floorPlans?: unknown[] } }).manifest;
+        if (manifest.isDeleted !== true) activeProjectCount += 1;
+        photoCount += Array.isArray(manifest.photos) ? manifest.photos.length : 0;
+        floorPlanCount += Array.isArray(manifest.floorPlans) ? manifest.floorPlans.length : 0;
+      }
+      const projectCount = projectRows?.length ?? 0;
+
+      // 2) Files table — aggregate by kind for the calling user's
+      // projects. Postgres GROUP BY would be cleaner but supabase-js
+      // doesn't expose SUM via the REST layer easily; the file row
+      // count is bounded by photos*kinds + plans so a JS-side
+      // aggregation is fine.
+      const { data: fileRows, error: fileErr } = await supabaseAdmin
+        .from("files")
+        .select("kind, size_bytes, projects!inner(owner_id)")
+        .eq("projects.owner_id", userId);
+      if (fileErr) {
+        request.log.error({ err: fileErr, userId }, "storage — files read failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+
+      let totalBlobBytes = 0;
+      const blobBytesByKind: Record<string, number> = {};
+      for (const row of fileRows ?? []) {
+        const r = row as { kind: string; size_bytes: number | null };
+        const bytes = r.size_bytes ?? 0;
+        totalBlobBytes += bytes;
+        blobBytesByKind[r.kind] = (blobBytesByKind[r.kind] ?? 0) + bytes;
+      }
+
+      return {
+        status: {
+          projectCount,
+          activeProjectCount,
+          photoCount,
+          floorPlanCount,
+          totalBlobBytes,
+          blobBytesByKind,
+        },
+        computedAt: new Date().toISOString(),
+      };
+    }
+  );
 };
