@@ -178,6 +178,15 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     "pdf worker — pre-render"
   );
 
+  // Publish total chunk count + reset done counter (Build #5.75.1)
+  // so the web client can render "chunk 0 of N" right away. Errors
+  // here don't fail the render — progress is best-effort cosmetic.
+  await supabaseAdmin
+    .from("pdf_export_jobs")
+    .update({ progress_total_chunks: chunks.length, progress_done_chunks: 0 })
+    .eq("id", job.id)
+    .then(undefined, () => {});
+
   // Browser-recycle cadence (Build #5.74.4). Keep RSS bounded by
   // tearing down + relaunching the Chrome process every N chunks.
   // 4 keeps overhead low (relaunch costs ~1 s) while preventing
@@ -207,6 +216,14 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
         },
         "pdf worker — chunk done"
       );
+      // Best-effort progress update (Build #5.75.1) — the web poll
+      // reads this to render "chunk N of M". Failure here is
+      // cosmetic, never fails the render.
+      await supabaseAdmin
+        .from("pdf_export_jobs")
+        .update({ progress_done_chunks: i + 1 })
+        .eq("id", job.id)
+        .then(undefined, () => {});
     } finally {
       await page.close().catch(() => {});
     }

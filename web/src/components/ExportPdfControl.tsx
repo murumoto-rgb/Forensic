@@ -93,7 +93,41 @@ type State =
   | { kind: "failed"; job: PdfExportJob; message: string }
   | { kind: "error"; message: string };
 
+/** A placeholder job for optimistic UI before the server responds /
+ *  for a resumed job we don't have full details on yet. */
+function makePendingJob(projectId: string, id: string): PdfExportJob {
+  return {
+    id,
+    projectId,
+    status: "queued",
+    pdfObjectKey: null,
+    errorMessage: null,
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    completedAt: null,
+    progressDoneChunks: null,
+    progressTotalChunks: null,
+  };
+}
+
+/** Human-readable progress string from a job's chunk counters. */
+function progressLabel(job: PdfExportJob): string {
+  const done = job.progressDoneChunks;
+  const total = job.progressTotalChunks;
+  if (total != null && total > 0 && done != null) {
+    const pct = Math.round((done / total) * 100);
+    return `Rendering… ${done} / ${total} (${pct}%)`;
+  }
+  return "Rendering…";
+}
+
 const POLL_MS = 2_000;
+
+/** localStorage key for the in-flight job id, scoped per project so
+ *  two project tabs don't clobber each other (Build #5.75.1). */
+function activeJobStorageKey(projectId: string): string {
+  return `forensic.pdfExport.activeJob.${projectId}`;
+}
 
 export function ExportPdfControl({
   projectId,
@@ -113,9 +147,53 @@ export function ExportPdfControl({
     }
   }
 
+  // Persist / clear the active job id so a refresh or navigate-away
+  // can resume polling the same render (Build #5.75.1). The render
+  // keeps running server-side regardless; this just lets the UI
+  // reconnect to it and surface the download when it's ready.
+  function rememberActiveJob(jobId: string) {
+    try {
+      window.localStorage.setItem(activeJobStorageKey(projectId), jobId);
+    } catch {
+      // Private-mode / storage-disabled — degrade to in-memory only.
+    }
+  }
+  function forgetActiveJob() {
+    try {
+      window.localStorage.removeItem(activeJobStorageKey(projectId));
+    } catch {
+      /* ignore */
+    }
+  }
+
   useEffect(() => {
     return () => clearPoll();
   }, []);
+
+  // On mount, resume any in-flight job persisted for this project.
+  // Picks up a render the user started before refreshing / leaving.
+  useEffect(() => {
+    let resumedJobId: string | null = null;
+    try {
+      resumedJobId = window.localStorage.getItem(
+        activeJobStorageKey(projectId)
+      );
+    } catch {
+      resumedJobId = null;
+    }
+    if (!resumedJobId) return;
+    activeJobIdRef.current = resumedJobId;
+    setState({
+      kind: "running",
+      job: makePendingJob(projectId, resumedJobId),
+    });
+    pollRef.current = window.setInterval(
+      () => poll(resumedJobId!),
+      POLL_MS
+    );
+    poll(resumedJobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   function poll(jobId: string) {
     if (activeJobIdRef.current !== jobId) return;
@@ -131,6 +209,7 @@ export function ExportPdfControl({
         } else if (job.status === "done") {
           clearPoll();
           activeJobIdRef.current = null;
+          forgetActiveJob();
           if (res.downloadUrl) {
             setState({ kind: "done", job, downloadUrl: res.downloadUrl });
             const a = document.createElement("a");
@@ -149,6 +228,7 @@ export function ExportPdfControl({
         } else if (job.status === "failed") {
           clearPoll();
           activeJobIdRef.current = null;
+          forgetActiveJob();
           setState({
             kind: "failed",
             job,
@@ -160,6 +240,7 @@ export function ExportPdfControl({
         if (e instanceof ApiError && e.status === 404) {
           clearPoll();
           activeJobIdRef.current = null;
+          forgetActiveJob();
           setState({
             kind: "error",
             message: "Export job disappeared from the server.",
@@ -171,24 +252,13 @@ export function ExportPdfControl({
   function start(opts: PdfExportOptions) {
     setShowModal(false);
     clearPoll();
-    setState({
-      kind: "queued",
-      job: {
-        id: "(pending)",
-        projectId,
-        status: "queued",
-        pdfObjectKey: null,
-        errorMessage: null,
-        createdAt: new Date().toISOString(),
-        startedAt: null,
-        completedAt: null,
-      },
-    });
+    setState({ kind: "queued", job: makePendingJob(projectId, "(pending)") });
     api
       .createPdfExport(projectId, opts)
       .then((res) => {
         const jobId = res.job.id;
         activeJobIdRef.current = jobId;
+        rememberActiveJob(jobId);
         setState({ kind: "queued", job: res.job });
         pollRef.current = window.setInterval(() => poll(jobId), POLL_MS);
         poll(jobId);
@@ -207,6 +277,7 @@ export function ExportPdfControl({
   function reset() {
     clearPoll();
     activeJobIdRef.current = null;
+    forgetActiveJob();
     setState({ kind: "idle" });
   }
 
@@ -215,10 +286,16 @@ export function ExportPdfControl({
   return (
     <div className="flex items-center gap-2">
       {state.kind === "queued" && (
-        <span className="text-xs text-neutral-400">Queued…</span>
+        <span className="flex items-center gap-1.5 text-xs text-neutral-400">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          Queued…
+        </span>
       )}
       {state.kind === "running" && (
-        <span className="text-xs text-neutral-400">Rendering…</span>
+        <span className="flex items-center gap-1.5 text-xs text-neutral-300">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          {progressLabel(state.job)}
+        </span>
       )}
       {state.kind === "done" && (
         <a
