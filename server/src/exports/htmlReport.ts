@@ -99,6 +99,18 @@ async function resolveFileObjectKeysByPhotoId(
   const result = new Map<string, string>();
   if (ids.length === 0) return result;
 
+  // UUID case-preservation map (Build #5.74.3 — same bug
+  // `routes/photos.ts` fixed in #5.21.1). iOS manifests store photo
+  // IDs in UPPERCASE (`A5F6E276-…`); Postgres `uuid` columns
+  // normalize to lowercase (`a5f6e276-…`) when read back. The DB
+  // comparison itself is case-insensitive — the IN clause finds the
+  // rows fine. But if we keyed the result Map by `row.photo_id` (the
+  // DB's lowercase value), every later `.get(photo.id)` lookup would
+  // miss because `photo.id` is uppercase. So we resolve back to the
+  // caller's original casing for every match.
+  const requestedByLower = new Map<string, string>();
+  for (const id of ids) requestedByLower.set(id.toLowerCase(), id);
+
   // Sub-batch the IN-clause same way routes/photos.ts does so we
   // don't blow PostgREST's URL length cap on large projects.
   const SUB_BATCH = 100;
@@ -128,10 +140,15 @@ async function resolveFileObjectKeysByPhotoId(
     }>) {
       const rowPriority = kindPriority.get(row.kind);
       if (rowPriority == null) continue;
-      const existing = chosenPriority.get(row.photo_id);
+      // Resolve back to the caller's original-case id. Fall back to
+      // the DB value if somehow not in the request set (shouldn't
+      // happen since we only queried ids the caller passed).
+      const photoId =
+        requestedByLower.get(row.photo_id.toLowerCase()) ?? row.photo_id;
+      const existing = chosenPriority.get(photoId);
       if (existing == null || rowPriority < existing) {
-        result.set(row.photo_id, row.object_key);
-        chosenPriority.set(row.photo_id, rowPriority);
+        result.set(photoId, row.object_key);
+        chosenPriority.set(photoId, rowPriority);
       }
     }
   }
