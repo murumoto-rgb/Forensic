@@ -9,6 +9,7 @@ import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
 import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
 import { AdminReportBrandingPage } from "./pages/AdminReportBrandingPage";
+import { ProjectExportsPage } from "./pages/ProjectExportsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
 
@@ -77,6 +78,10 @@ export function App() {
         <Route
           path="/admin/report-branding"
           element={session ? <AdminReportBrandingPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/projects/:id/exports"
+          element={session ? <ProjectExportsPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route
           path="/settings"
