@@ -1,6 +1,10 @@
 import { useRef, useState } from "react";
 import type { FloorPlan, Photo, Project } from "@forensic/shared";
 import { uploadFile } from "../lib/uploadFile";
+import {
+  FloorPlanCalibrationSheet,
+  type CalibrationResult,
+} from "./FloorPlanCalibrationSheet";
 
 /**
  * Floor plan management (Build #5.89.1).
@@ -42,6 +46,11 @@ export function FloorPlanManager({
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Two-step flow: file picker selects a File → calibration sheet
+  // opens with it → on Save the file uploads + a FloorPlan struct
+  // lands with real calibration. Cancel from the sheet discards
+  // the file entirely.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
 
   const plans = project.floorPlans;
 
@@ -69,37 +78,49 @@ export function FloorPlanManager({
     fileInputRef.current?.click();
   }
 
-  async function onAddFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+  function onAddFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setAddError("Floor plan must be an image.");
+      return;
+    }
+    setPendingFile(file);
+  }
+
+  /**
+   * Called by the calibration sheet on Save. Uploads the binary,
+   * then writes a FloorPlan struct with the user-defined origin,
+   * scale, label, and north heading.
+   */
+  async function commitCalibration(result: CalibrationResult) {
+    if (!pendingFile) return;
     setAdding(true);
     setAddError(null);
     try {
       const planId = crypto.randomUUID();
-      const ext = filenameExtension(file.name) ?? "jpg";
+      const ext = filenameExtension(pendingFile.name) ?? "jpg";
       await uploadFile({
         projectId: project.id,
         photoId: planId,
         kind: "plan",
-        file,
-        contentType: file.type || "image/jpeg",
+        file: pendingFile,
+        contentType: pendingFile.type || "image/jpeg",
       });
-      // Defaults match iOS `FloorPlan.init`: a 50 px/ft scale and a
-      // zero anchor are reasonable starting points; the user tunes
-      // calibration on iOS where the pinch + tap UI lives.
-      const baseLabel = file.name.replace(/\.[^.]+$/, "");
       const newPlan: FloorPlan = {
         id: planId,
-        label: baseLabel || `Plan ${plans.length + 1}`,
+        label: result.label,
         imageFilename: `${planId}.${ext}`,
-        pixelsPerFoot: 50,
-        calibrationDistanceFeet: 10,
-        anchorPixelX: 0,
-        anchorPixelY: 0,
+        pixelsPerFoot: result.pixelsPerFoot,
+        calibrationDistanceFeet: result.calibrationDistanceFeet,
+        anchorPixelX: result.anchorPixelX,
+        anchorPixelY: result.anchorPixelY,
+        // The anchor's local-coord frame starts at (0,0); pin
+        // placements + distress marks reference the anchor as origin.
         anchorLocalXFeet: 0,
         anchorLocalYFeet: 0,
-        northDeg: 0,
+        northDeg: result.northDeg,
         distress: [],
       };
       onProjectChanged({
@@ -108,6 +129,7 @@ export function FloorPlanManager({
         // Auto-activate the first plan if none was set.
         activeFloorPlanID: project.activeFloorPlanID ?? planId,
       });
+      setPendingFile(null);
     } catch (err: unknown) {
       setAddError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -244,14 +266,26 @@ export function FloorPlanManager({
             );
           })}
           <p className="px-1 text-[11px] text-neutral-600">
-            Web upload uses placeholder calibration (50 px/ft, zero
-            anchor, north up). Tune scale / anchor / north on iOS
-            where the pinch + tap UI lives.
+            New plans walk through an origin + scale calibration
+            sheet on upload (Build #5.94.1). Tweaking calibration on
+            an existing plan still happens on iOS — the canvas-edit
+            UI lives there.
           </p>
         </ul>
       )}
 
       {/* End of inline disclosure block */}
+
+      {pendingFile && (
+        <FloorPlanCalibrationSheet
+          file={pendingFile}
+          defaultLabel={
+            pendingFile.name.replace(/\.[^.]+$/, "") || `Plan ${plans.length + 1}`
+          }
+          onCancel={() => setPendingFile(null)}
+          onConfirm={(result) => void commitCalibration(result)}
+        />
+      )}
 
       {confirmDelete && (
         <div
