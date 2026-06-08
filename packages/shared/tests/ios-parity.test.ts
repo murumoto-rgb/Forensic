@@ -278,6 +278,10 @@ describe("iOS ↔ shared TS parity contract", () => {
       "InvestigationContext",
       "TagLibrary",
       "AIRulesTemplate",
+      // Build #5.92.1 — team-wide report-branding overrides. iOS-side
+      // struct lives under the same name but isn't part of the manifest
+      // fixture; same scoping rationale as TagLibrary etc.
+      "ReportBranding",
     ]);
     for (const n of APP_CONFIG_STRUCTS) tsStructNames.delete(n);
 

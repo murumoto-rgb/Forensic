@@ -219,6 +219,13 @@ export const AIRulesTemplateSchema = z.object({
   text: z.string(),
 });
 
+export const ReportBrandingSchema = z.object({
+  titleOverride: nullable(z.string()),
+  subtitleOverride: nullable(z.string()),
+  footerOverride: nullable(z.string()),
+  logoStoragePath: nullable(z.string()),
+});
+
 /**
  * Dispatch map: each `AppConfigKey` paired with the zod schema for
  * its value. Server's PUT route uses this to validate the incoming
@@ -234,6 +241,9 @@ export const AppConfigValueSchemaByKey = {
   // else writes them).
   tagLibraryDefault: TagLibrarySchema,
   aiRulesTemplateDefault: AIRulesTemplateSchema,
+  // Build #5.92.1: team-wide PDF export branding overrides. Both
+  // iOS and web reads at render time.
+  reportBranding: ReportBrandingSchema,
 } as const;
 
 export const ProjectSchema = z.object({

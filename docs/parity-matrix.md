@@ -89,7 +89,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | **Export** | | | | |
 | PDF export (authoritative, multi-floor) | ✅ | 📋 Phase 4 | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer (preview-grade) |
 | Folder export (one dir per bucket) | ✅ | 📋 Phase 4 | n/a | |
-| Report branding | ✅ | 📋 Phase 4 | `ReportBranding` | |
+| Report branding | ✅ | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. |
 | **Collaboration** | | | | |
 | Multi-user project access | 📋 Phase 1 | 📋 Phase 1 | `manifest.access[]` | Supabase RLS |
 | Checkout / edit lock | 📋 Phase 5 | 📋 Phase 5 | `manifest.lock` | Heartbeat-based, 10-min timeout |
@@ -169,8 +169,7 @@ Follow-ons still tracked (Phase 4+):
 - ~~**Re-tag-with-AI on a selection.**~~ — shipped Build #5.88.1. `useBatchRetag.start()` accepts an optional `photoIds` filter; the Photos-tab `SelectionActionBar` exposes a "Re-tag with AI" button that mounts a transient `BatchRetagControl` scoped to the snapshot of `selectedIds`.
 - ~~**Web file-upload "add photos".**~~ — shipped Build #5.90.1. Photos tab "+ Add photos" + Floor Plan tab "+ Add plan", both via existing presigned-PUT endpoints.
 - ~~**Web canvas markup drawing.**~~ — shipped Build #5.91.1 via Konva. The PencilKit stroke data side (`markupDrawingFilename`) stays iOS-only.
-- **Report branding.** Logos / colors / header-text payload lives in
-  `app_config`; the upload + edit UI is its own PR.
+- ~~**Report branding.**~~ — shipped Build #5.92.1. New `app_config.reportBranding` key + admin editor at `/admin/report-branding`. iOS-side struct + read-at-render-time integration is a follow-on iOS-only PR.
 - ~~**Drag-and-drop bucket reorder.**~~ — shipped Build #5.87.1.
 
 ## Update procedure

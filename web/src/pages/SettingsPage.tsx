@@ -253,11 +253,13 @@ function TeamConfigSection() {
         >
           AI rules template →
         </Link>
+        <Link
+          to="/admin/report-branding"
+          className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800"
+        >
+          Report branding →
+        </Link>
       </div>
-      <p className="mt-3 text-xs text-neutral-600">
-        Report branding (logos, colors, header text) lands in a later
-        PR.
-      </p>
     </Card>
   );
 }
