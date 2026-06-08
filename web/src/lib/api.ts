@@ -49,6 +49,7 @@ import type {
   ListProjectExportsResponse,
   GetProjectExportResponse,
   GetUserStorageStatusResponse,
+  GetFolderExportManifestResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -480,6 +481,13 @@ export const api = {
   /** Single export with status + download URL when done. */
   getProjectExport: (exportId: string) =>
     request<GetProjectExportResponse>(`/v1/exports/v2/${exportId}`),
+  /** Client-side folder-export manifest (Build #5.110.1).
+   *  Returns presigned R2 URLs the browser uses to build the ZIP
+   *  locally — no streaming server work. */
+  getFolderExportManifest: (projectId: string) =>
+    request<GetFolderExportManifestResponse>(
+      `/v1/projects/${projectId}/folder-export-manifest`
+    ),
   /** Delete an export — drops the row + reaps the R2 blob. */
   deleteProjectExport: async (exportId: string): Promise<void> => {
     const { data } = await supabase.auth.getSession();

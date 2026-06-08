@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 import { ExportPdfControl } from "../ExportPdfControl";
 import { FolderExportControl } from "../FolderExportControl";
+import { FolderExportClient } from "../FolderExportClient";
 import { CsvExportControl } from "../CsvExportControl";
 
 /**
@@ -61,13 +62,33 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
           <p className="mb-3 text-xs text-neutral-500">
             One subfolder per bucket. Photos copied in full
             resolution with EXIF preserved bit-for-bit + a
-            captions.txt per folder. Matches iOS.
+            captions.txt per folder. The browser fetches photos
+            directly from R2 and zips them locally — no server
+            dyno involved. Keep the tab open while it runs.
           </p>
-          <FolderExportControl
+          <FolderExportClient
             projectId={projectId}
             canExport={canEdit}
             photoCount={photoCount}
           />
+          <details className="mt-3 text-[11px] text-neutral-600">
+            <summary className="cursor-pointer hover:text-neutral-400">
+              Use server-side export instead
+            </summary>
+            <div className="mt-2">
+              Older flow — server builds the ZIP and you download
+              from the Exports page when ready. Slower and limited
+              by server memory; only worth it if you need the bundle
+              to survive closing this tab.
+              <div className="mt-2">
+                <FolderExportControl
+                  projectId={projectId}
+                  canExport={canEdit}
+                  photoCount={photoCount}
+                />
+              </div>
+            </div>
+          </details>
         </Card>
 
         <Card title="AI Analysis CSV" emoji="📊">
