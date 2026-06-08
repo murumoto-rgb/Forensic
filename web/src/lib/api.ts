@@ -44,6 +44,10 @@ import type {
   GetUserPrefsResponse,
   PutUserPrefsRequest,
   PutUserPrefsResponse,
+  CreateProjectExportRequest,
+  CreateProjectExportResponse,
+  ListProjectExportsResponse,
+  GetProjectExportResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -437,6 +441,51 @@ export const api = {
    *  a short-lived presigned R2 URL the browser can hit directly. */
   getPdfExport: (jobId: string) =>
     request<GetPdfExportResponse>(`/v1/exports/${jobId}`),
+  // -------------------- Unified Exports (Build #5.97.1) ------------
+  /** Enqueue a folder-bucket or AI-analysis-CSV export. PDF kind is
+   *  accepted too but PDF jobs still run through the legacy
+   *  `pdf_export_jobs` queue (PR #2 keeps using `createPdfExport`
+   *  for PDFs; folder + csv use this endpoint). */
+  createProjectExport: (
+    projectId: string,
+    req: CreateProjectExportRequest
+  ) =>
+    request<CreateProjectExportResponse>(
+      `/v1/projects/${projectId}/exports`,
+      { method: "POST", body: JSON.stringify(req) }
+    ),
+  /** List every export for the project, newest first. */
+  listProjectExports: (projectId: string) =>
+    request<ListProjectExportsResponse>(
+      `/v1/projects/${projectId}/exports`
+    ),
+  /** Single export with status + download URL when done. */
+  getProjectExport: (exportId: string) =>
+    request<GetProjectExportResponse>(`/v1/exports/v2/${exportId}`),
+  /** Delete an export — drops the row + reaps the R2 blob. */
+  deleteProjectExport: async (exportId: string): Promise<void> => {
+    const { data } = await supabase.auth.getSession();
+    const jwt = data.session?.access_token;
+    const resp = await fetch(
+      `${env.API_URL}/v1/exports/v2/${exportId}`,
+      {
+        method: "DELETE",
+        headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+      }
+    );
+    if (resp.status === 204) return;
+    let body: { error?: string; message?: string } | null = null;
+    try {
+      body = (await resp.json()) as { error?: string; message?: string };
+    } catch {
+      // 5xx may not be JSON
+    }
+    throw new ApiError(
+      resp.status,
+      body?.error ?? "unknown",
+      body?.message ?? `HTTP ${resp.status}`
+    );
+  },
 };
 
 // Re-export for callers that need the wire types.

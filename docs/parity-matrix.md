@@ -90,7 +90,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Render existing markup overlay | ✅ | ✅ Build #5.91.1 | `Photo.markupOverlayFilename` | Round-trippable: web saves the same PNG iOS does and vice versa. |
 | **Export** | | | | |
 | PDF export (authoritative, multi-floor) | ✅ | 📋 Phase 4 | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer (preview-grade) |
-| Folder export (one dir per bucket) | ✅ | 📋 Phase 4 | n/a | |
+| Folder export (one dir per bucket) | ✅ | ✅ Build #5.98.1 | server-side ZIP via `project_exports` table | Web Folder-by-Bucket + AI Analysis CSV both land here (Round 3 PR #2). Streamed `archiver` ZIP, EXIF preserved bit-for-bit. Folder structure matches iOS (`01 Bucket/...`, `99 Unbucketed/...` + per-folder captions.txt). Persistent listing at `/projects/:id/exports` with Download + Delete. |
 | Report branding | ✅ | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. |
 | **Collaboration** | | | | |
 | Multi-user project access | 📋 Phase 1 | 📋 Phase 1 | `manifest.access[]` | Supabase RLS |
