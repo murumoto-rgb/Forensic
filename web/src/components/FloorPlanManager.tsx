@@ -72,6 +72,22 @@ export function FloorPlanManager({
     onProjectChanged({ ...project, activeFloorPlanID: planId });
   }
 
+  /**
+   * Move a plan up or down in the array. The manifest stores plans
+   * in array order — both iOS and web rely on that order for the
+   * picker chip row. No new sortOrder field, so no schema change.
+   */
+  function move(planId: string, direction: "up" | "down") {
+    if (!canEdit) return;
+    const idx = plans.findIndex((p) => p.id === planId);
+    if (idx === -1) return;
+    const swap = direction === "up" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= plans.length) return;
+    const updated = [...plans];
+    [updated[idx], updated[swap]] = [updated[swap]!, updated[idx]!];
+    onProjectChanged({ ...project, floorPlans: updated });
+  }
+
   function openAddPicker() {
     if (!canEdit || adding) return;
     setAddError(null);
@@ -215,7 +231,7 @@ export function FloorPlanManager({
 
       {open && (
         <ul className="mt-2 flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/30 p-2">
-          {plans.map((plan) => {
+          {plans.map((plan, idx) => {
             const photoCount = project.photos.filter(
               (p) => p.floorPlanID === plan.id
             ).length;
@@ -225,6 +241,28 @@ export function FloorPlanManager({
                 key={plan.id}
                 className="flex flex-wrap items-center gap-2 rounded border border-neutral-800 p-2"
               >
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => move(plan.id, "up")}
+                    disabled={!canEdit || idx === 0}
+                    className="rounded border border-neutral-700 px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Move up"
+                    aria-label="Move plan up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(plan.id, "down")}
+                    disabled={!canEdit || idx === plans.length - 1}
+                    className="rounded border border-neutral-700 px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Move down"
+                    aria-label="Move plan down"
+                  >
+                    ↓
+                  </button>
+                </div>
                 <input
                   type="text"
                   defaultValue={plan.label}
