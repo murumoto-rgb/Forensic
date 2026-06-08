@@ -24,9 +24,15 @@ interface Props {
   project: Project;
   photos: Photo[];
   canEdit: boolean;
+  /** Select-mode controls — passed straight to each row. The list
+   *  doesn't own the selection state (it lives one level up in the
+   *  Photos tab so the action bar can read it). */
+  selectMode: boolean;
+  selectedIds: Set<string>;
   onOpen: (index: number) => void;
   onOpenEditor: (photo: Photo) => void;
   onPhotoUpdated: (next: Photo) => void;
+  onToggleSelected: (photoId: string) => void;
 }
 
 type UrlsState =
@@ -39,9 +45,12 @@ export function PhotoList({
   project,
   photos,
   canEdit,
+  selectMode,
+  selectedIds,
   onOpen,
   onOpenEditor,
   onPhotoUpdated,
+  onToggleSelected,
 }: Props) {
   const [urlsState, setUrlsState] = useState<UrlsState>({ kind: "loading" });
   const [threshold] = useTagConfidenceThreshold();
@@ -111,11 +120,14 @@ export function PhotoList({
           batchLoading={urlsState.kind === "loading"}
           threshold={threshold}
           canEdit={canEdit}
+          selectMode={selectMode}
+          selected={selectedIds.has(photo.id)}
           onOpen={() => onOpen(idx)}
           onOpenEditor={() => onOpenEditor(photo)}
           onToggleFavorite={() =>
             onPhotoUpdated({ ...photo, isFavorite: !photo.isFavorite })
           }
+          onToggleSelected={() => onToggleSelected(photo.id)}
         />
       ))}
     </div>
