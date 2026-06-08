@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "@forensic/shared";
 import {
   DEFAULT_FILTER_STATE,
@@ -8,17 +8,23 @@ import {
 } from "../lib/usePhotoFilters";
 
 /**
- * Photo filter chip bar (Build #5.78.1 — Path P #3/8).
+ * Photo filter chip bar (Build #5.78.1 — Path P #3/8;
+ * consolidated #5.112.1).
  *
- * One control surface for every per-photo filter axis: plan,
- * placed, date, bucket, tag, favorites, needs-review, has-
- * measurement, recommended-use, plus a search box and a Clear All
- * chip. Mirrors iOS `tagFilterBar` shape — chips with quick toggles
- * and dropdowns for multi-select axes.
+ * One control surface for every per-photo filter axis. Layout
+ * after #5.112.1:
  *
- * The bar is presentational; all state lives in `usePhotoFilters`
- * and is passed in via `filters`. The bar dispatches via
- * `filters.setState` / `filters.patch`.
+ *   row 1: header + search + clear
+ *   row 2: single-select dropdowns (plan / placed / date) +
+ *          toggle chips (favorites / needs-review / validation /
+ *          measurement) + multi-select popovers (bucket / tag /
+ *          use) — each popover trigger shows a count badge and
+ *          opens a search-+-checkboxes overlay.
+ *
+ * The popovers eliminate the previous wall-of-chips behaviour for
+ * projects with many distinct tags. Selected items show as small
+ * removable pills next to each popover trigger so the active
+ * state stays visible without expanding the panel.
  */
 interface Props {
   filters: PhotoFiltersHook;
@@ -62,6 +68,26 @@ export function PhotoFilterBar({ filters, project, total }: Props) {
     patch({ [key]: next } as Partial<PhotoFilterState>);
   }
 
+  // Bucket options include the UNBUCKETED sentinel + each project
+  // bucket. Render with the bucket's colour swatch when present.
+  const bucketPopoverOptions = useMemo(() => {
+    const out: Array<{ value: string; label: string; colorHex?: string }> = [];
+    out.push({ value: UNBUCKETED, label: "No bucket" });
+    for (const b of project.buckets) {
+      out.push({ value: b.id, label: b.name, colorHex: b.colorHex });
+    }
+    return out;
+  }, [project.buckets]);
+
+  function bucketLabelFromValue(value: string): string {
+    if (value === UNBUCKETED) return "No bucket";
+    return project.buckets.find((b) => b.id === value)?.name ?? value;
+  }
+  function bucketColor(value: string): string | undefined {
+    if (value === UNBUCKETED) return undefined;
+    return project.buckets.find((b) => b.id === value)?.colorHex;
+  }
+
   return (
     <div className="mb-3 flex flex-col gap-2">
       {/* Top row: header + search + clear */}
@@ -90,7 +116,8 @@ export function PhotoFilterBar({ filters, project, total }: Props) {
         )}
       </div>
 
-      {/* Chip row */}
+      {/* Single chip row — all dropdowns, toggles, and popovers
+          collapse into one wrapping line. */}
       <div className="flex flex-wrap items-center gap-2">
         <SelectChip
           label="Plan"
@@ -150,65 +177,64 @@ export function PhotoFilterBar({ filters, project, total }: Props) {
           on={state.hasMeasurement}
           onToggle={() => patch({ hasMeasurement: !state.hasMeasurement })}
         />
-      </div>
 
-      {/* Bucket multi-select (OR) */}
-      {(project.buckets.length > 0 || true) && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-            Bucket (OR):
-          </span>
-          <MultiChip
-            label="No bucket"
-            on={state.bucketIds.includes(UNBUCKETED)}
-            onToggle={() => toggleArrayMember("bucketIds", UNBUCKETED)}
+        {/* Bucket multi-select (OR). Inline popover trigger + active
+            pills shown as removable chips. */}
+        <MultiSelectChip
+          label="Bucket"
+          modeLabel="OR"
+          options={bucketPopoverOptions}
+          selected={state.bucketIds}
+          onToggle={(v) => toggleArrayMember("bucketIds", v)}
+          onClear={() => patch({ bucketIds: [] })}
+        />
+        {state.bucketIds.map((v) => (
+          <RemovablePill
+            key={v}
+            label={bucketLabelFromValue(v)}
+            colorHex={bucketColor(v)}
+            onRemove={() => toggleArrayMember("bucketIds", v)}
           />
-          {project.buckets.map((b) => (
-            <MultiChip
-              key={b.id}
-              label={b.name}
-              colorHex={b.colorHex}
-              on={state.bucketIds.includes(b.id)}
-              onToggle={() => toggleArrayMember("bucketIds", b.id)}
-            />
-          ))}
-        </div>
-      )}
+        ))}
 
-      {/* Tag multi-select (AND) — only show when there are tags
-          to pick from to avoid an empty row of nothing. */}
-      {tagOptions.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-            Tag (AND):
-          </span>
-          {tagOptions.map((label) => (
-            <MultiChip
-              key={label}
-              label={label}
-              on={state.tagLabels.includes(label)}
-              onToggle={() => toggleArrayMember("tagLabels", label)}
-            />
-          ))}
-        </div>
-      )}
+        {/* Tag multi-select (AND). Same shape as bucket. */}
+        {tagOptions.length > 0 && (
+          <MultiSelectChip
+            label="Tag"
+            modeLabel="AND"
+            options={tagOptions.map((t) => ({ value: t, label: t }))}
+            selected={state.tagLabels}
+            onToggle={(v) => toggleArrayMember("tagLabels", v)}
+            onClear={() => patch({ tagLabels: [] })}
+          />
+        )}
+        {state.tagLabels.map((v) => (
+          <RemovablePill
+            key={v}
+            label={v}
+            onRemove={() => toggleArrayMember("tagLabels", v)}
+          />
+        ))}
 
-      {/* Recommended-use multi-select (OR) — only when data has any */}
-      {useOptions.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-            Use (OR):
-          </span>
-          {useOptions.map((u) => (
-            <MultiChip
-              key={u}
-              label={u}
-              on={state.recommendedUses.includes(u)}
-              onToggle={() => toggleArrayMember("recommendedUses", u)}
-            />
-          ))}
-        </div>
-      )}
+        {/* Recommended-use multi-select (OR). */}
+        {useOptions.length > 0 && (
+          <MultiSelectChip
+            label="Use"
+            modeLabel="OR"
+            options={useOptions.map((u) => ({ value: u, label: u }))}
+            selected={state.recommendedUses}
+            onToggle={(v) => toggleArrayMember("recommendedUses", v)}
+            onClear={() => patch({ recommendedUses: [] })}
+          />
+        )}
+        {state.recommendedUses.map((v) => (
+          <RemovablePill
+            key={v}
+            label={v}
+            onRemove={() => toggleArrayMember("recommendedUses", v)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -261,22 +287,161 @@ function ToggleChip({ label, on, onToggle, title }: ToggleChipProps) {
   );
 }
 
-interface MultiChipProps {
+interface MultiSelectChipProps {
   label: string;
-  on: boolean;
-  onToggle: () => void;
-  colorHex?: string;
+  /** Tiny suffix shown after the label, e.g. "AND" / "OR". */
+  modeLabel: string;
+  options: Array<{ value: string; label: string; colorHex?: string }>;
+  selected: string[];
+  onToggle: (value: string) => void;
+  onClear: () => void;
 }
-function MultiChip({ label, on, onToggle, colorHex }: MultiChipProps) {
+
+/**
+ * Multi-select popover trigger. Renders as a single chip-sized
+ * button; clicking opens an absolute-positioned panel with a
+ * search box and checkbox list. Click-outside closes.
+ */
+function MultiSelectChip({
+  label,
+  modeLabel,
+  options,
+  selected,
+  onToggle,
+  onClear,
+}: MultiSelectChipProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Click outside to close.
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      const w = wrapperRef.current;
+      if (w && !w.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  }, [options, query]);
+
+  const hasSelection = selected.length > 0;
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={
+          hasSelection
+            ? "flex items-center gap-1 rounded border border-blue-500 bg-blue-950/40 px-2 py-1 text-xs text-blue-200"
+            : "flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/40 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+        }
+      >
+        <span className="text-neutral-500">{label}</span>
+        <span className="text-[10px] text-neutral-500">({modeLabel})</span>
+        {hasSelection && (
+          <span className="rounded bg-blue-600/70 px-1.5 text-[10px] font-medium text-white">
+            {selected.length}
+          </span>
+        )}
+        <span className="text-neutral-500">▾</span>
+      </button>
+
+      {open && (
+        <div
+          className="absolute left-0 top-full z-30 mt-1 w-64 rounded border border-neutral-700 bg-neutral-950 p-2 shadow-xl"
+          role="dialog"
+        >
+          <input
+            type="search"
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Filter ${label.toLowerCase()}s…`}
+            className="mb-2 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 placeholder:text-neutral-500"
+          />
+          <ul className="max-h-64 overflow-y-auto">
+            {filtered.length === 0 && (
+              <li className="px-2 py-1 text-xs text-neutral-500">No matches.</li>
+            )}
+            {filtered.map((o) => {
+              const on = selected.includes(o.value);
+              return (
+                <li key={o.value}>
+                  <button
+                    type="button"
+                    onClick={() => onToggle(o.value)}
+                    className={
+                      "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-800 " +
+                      (on ? "text-blue-200" : "text-neutral-300")
+                    }
+                  >
+                    <span
+                      className={
+                        on
+                          ? "inline-block h-3 w-3 rounded border border-blue-500 bg-blue-500 text-[10px] leading-3 text-white"
+                          : "inline-block h-3 w-3 rounded border border-neutral-600"
+                      }
+                      aria-hidden
+                    >
+                      {on ? "✓" : ""}
+                    </span>
+                    {o.colorHex && (
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: o.colorHex }}
+                      />
+                    )}
+                    <span className="flex-1">{o.label}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-2 flex items-center justify-between border-t border-neutral-800 pt-2 text-[11px]">
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={selected.length === 0}
+              className="text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear ({selected.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="text-neutral-400 hover:text-neutral-200"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface RemovablePillProps {
+  label: string;
+  colorHex?: string;
+  onRemove: () => void;
+}
+function RemovablePill({ label, colorHex, onRemove }: RemovablePillProps) {
   return (
     <button
       type="button"
-      onClick={onToggle}
-      className={
-        on
-          ? "flex items-center gap-1 rounded border border-blue-500 bg-blue-950/40 px-2 py-1 text-xs text-blue-200"
-          : "flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-      }
+      onClick={onRemove}
+      className="flex items-center gap-1 rounded border border-blue-500/60 bg-blue-950/30 px-2 py-1 text-xs text-blue-200 hover:bg-blue-950/60"
+      title={`Remove "${label}" filter`}
     >
       {colorHex && (
         <span
@@ -284,7 +449,8 @@ function MultiChip({ label, on, onToggle, colorHex }: MultiChipProps) {
           style={{ background: colorHex }}
         />
       )}
-      {label}
+      <span>{label}</span>
+      <span className="text-blue-300/80">×</span>
     </button>
   );
 }
