@@ -33,6 +33,7 @@ import { appConfigRoute } from "./routes/appConfig.js";
 import { locksRoute } from "./routes/locks.js";
 import { exportsRoute } from "./routes/exports.js";
 import { startPdfExportWorker } from "./exports/pdfWorker.js";
+import { ensureChromium } from "./exports/ensureChromium.js";
 
 async function main() {
   const app = Fastify({
@@ -104,10 +105,18 @@ async function main() {
     app.log.info(
       `Forensic server listening on port ${env.PORT} (${env.NODE_ENV})`
     );
-    // PDF export worker (Build #5.62.1) starts AFTER the HTTP listener
-    // so a Puppeteer launch hiccup can't keep the server from binding
-    // the port (and never showing up as "Ready" on Render).
-    startPdfExportWorker(app.log);
+    // Chromium readiness (Build #5.74.1) runs AFTER the listener
+    // binds so `/healthz` stays up even during the ~30s install on
+    // a cold cache. The PDF worker waits on this promise before its
+    // first tick — kicks off as soon as Chromium is in place.
+    void ensureChromium(app.log)
+      .then(() => {
+        startPdfExportWorker(app.log);
+      })
+      .catch((err) => {
+        app.log.error({ err }, "chromium boot failed; PDF export disabled");
+        captureException(err);
+      });
   } catch (err) {
     app.log.error(err);
     process.exit(1);

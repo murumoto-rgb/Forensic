@@ -9,6 +9,12 @@ build/
 coverage/
 *.tsbuildinfo
 
+# Puppeteer Chromium cache (Build #5.74.1). On Render this lives at
+# /opt/render/project/src/.puppeteer-cache so the build-time install
+# survives into the runtime container; locally it lands inside a
+# dev's repo too if they ever launch the worker.
+.puppeteer-cache/
+
 # OS / editor
 .DS_Store
 .vscode/
