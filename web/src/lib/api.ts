@@ -138,6 +138,13 @@ export interface ProjectListResponse {
   projects: ProjectListItem[];
 }
 
+export interface ListProjectsOptions {
+  /** When true, returns trashed (soft-deleted) projects instead of
+   *  active ones. Default false — list omits trashed projects, same
+   *  as before this option existed. */
+  trashed?: boolean;
+}
+
 export type { Project, GetManifestResponse, PhotoUrlResponse };
 
 // Match the server's MAX_BATCH_PHOTO_IDS in routes/photos.ts. Anything
@@ -149,7 +156,10 @@ export const api = {
     request<{ status: string; serverManifestSchemaVersion: number }>(
       "/healthz"
     ),
-  listProjects: () => request<ProjectListResponse>("/v1/projects"),
+  listProjects: (opts: ListProjectsOptions = {}) =>
+    request<ProjectListResponse>(
+      `/v1/projects${opts.trashed ? "?trashed=true" : ""}`
+    ),
   getProject: (id: string) =>
     request<GetManifestResponse>(`/v1/projects/${id}`),
   getPhotoImageUrl: (projectId: string, photoId: string) =>
@@ -208,11 +218,20 @@ export const api = {
   putProject: (
     projectId: string,
     project: Project,
-    expectedRevision: string
+    expectedRevision: string | null
   ) =>
     request<PutManifestResponse>(`/v1/projects/${projectId}`, {
       method: "PUT",
       body: JSON.stringify({ project, expectedRevision }),
+    }),
+  /**
+   * Restore a trashed project. Server reads the manifest, flips
+   * `isDeleted` back to false, and returns the new revision.
+   * No body. 404 if the project doesn't exist or isn't owned.
+   */
+  restoreProject: (projectId: string) =>
+    request<PutManifestResponse>(`/v1/projects/${projectId}/restore`, {
+      method: "POST",
     }),
   /**
    * Forward an AI-tagging request through the team-server proxy
