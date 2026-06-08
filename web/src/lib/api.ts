@@ -357,6 +357,16 @@ export const api = {
       throw e;
     }
   },
+  getAIPromptTemplatesConfig: async (): Promise<GetAppConfigResponse<"aiPromptTemplates"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"aiPromptTemplates">>(
+        "/v1/config/aiPromptTemplates"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
   /**
    * Load the calling user's UI preferences from the server. Returns
    * a default-shaped payload + empty revision when the user has

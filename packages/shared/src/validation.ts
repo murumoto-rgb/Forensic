@@ -226,6 +226,16 @@ export const ReportBrandingSchema = z.object({
   logoStoragePath: nullable(z.string()),
 });
 
+export const AIPromptTemplateSchema = z.object({
+  id: uuid,
+  name: z.string(),
+  prompt: z.string(),
+});
+
+export const AIPromptTemplateLibrarySchema = z.object({
+  templates: z.array(AIPromptTemplateSchema),
+});
+
 export const UserPrefsSchema = z.object({
   aiModel: nullable(z.string()),
   tagConfidenceThreshold: nullable(z.number().min(0).max(1)),
@@ -272,6 +282,9 @@ export const AppConfigValueSchemaByKey = {
   // Build #5.92.1: team-wide PDF export branding overrides. Both
   // iOS and web reads at render time.
   reportBranding: ReportBrandingSchema,
+  // Build #5.104.1: saved AI prompt templates. Web admin today;
+  // iOS picker / manager integration is a follow-on iOS PR.
+  aiPromptTemplates: AIPromptTemplateLibrarySchema,
 } as const;
 
 export const ProjectSchema = z.object({

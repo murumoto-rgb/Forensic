@@ -261,6 +261,12 @@ function TeamConfigSection() {
         >
           Report branding →
         </Link>
+        <Link
+          to="/admin/ai-prompt-templates"
+          className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800"
+        >
+          AI prompt templates →
+        </Link>
       </div>
     </Card>
   );
