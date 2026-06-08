@@ -50,7 +50,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Soft-delete / restore project | ✅ | ✅ (Build #5.84.1) | `Project.isDeleted` (bool, default false), `POST /v1/projects/:id/restore` | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`. Web list filters trashed rows out of the active section and shows them in a collapsible "Trashed projects" section with a Restore button per row. Info tab's "Move to trash" sets `isDeleted=true` and navigates back to the list. Permanent deletion still pending — server endpoint not yet built. |
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
-| Import floor plan (PDF / image) | ✅ | 📋 Phase 3 PR-C | `FloorPlan.imageFilename` | |
+| Import floor plan (PDF / image) | ✅ | ✅ Build #5.90.1 (image only) | `FloorPlan.imageFilename` | Web "+ Add plan" button in FloorPlanManager — single-file picker (`image/*`). PDF import remains iOS-only (uses Apple PDFKit). Web upload uses placeholder calibration (50 px/ft, zero anchor, north 0); user tunes on iOS. |
 | iPhone uploads plan image binary to R2 | ✅ Build #5.9.1 | n/a | n/a | PhotoSyncer extended to iterate `project.floorPlans` alongside photos; same iOS → R2 direct upload pattern. Plan binaries fill in the floor plan canvas backgrounds on web. |
 | Calibrate scale | ✅ | 📋 Phase 3 PR-C | `FloorPlan.pixelsPerFoot` | |
 | Set north heading | ✅ | 📋 Phase 3 PR-C | `FloorPlan.northDeg` | |
@@ -58,7 +58,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Rename / remove plans | ✅ | ✅ Build #5.89.1 | `FloorPlan.label`, `Project.floorPlans[]`, `Project.activeFloorPlanID` | Collapsible "Manage plans · N" disclosure above the picker chips; per-row label input (commit on blur), Set active, Remove (confirm + photo-impact preview; nulls `floorPlanID` + `planPixelX/Y` on photos that referenced the removed plan; falls back to the first remaining plan as active). Adding a brand-new plan ships with the file-upload PR. |
 | **Photos** | | | | |
 | Capture photo with camera | ✅ | ❌ | n/a | Web is desktop / tablet; capture is iOS-only |
-| Import from photo library | ✅ | 📋 Phase 2 | n/a | Web equivalent: upload from disk |
+| Import from photo library | ✅ | ✅ Build #5.90.1 | uses `POST /v1/projects/:id/files/upload-url` + commit | Web "+ Add photos" button on Photos tab — file picker (multi-select, `image/*`), 3-way concurrency, no client-side thumb generation (server falls back to `kind=photo` on thumb endpoint). Photos appended to manifest after all uploads finish. |
 | Place photo on plan (drag) | ✅ | 📋 Phase 3 | `Photo.planPixelX/Y`, `Photo.localXFeet/Y` | Same pixel coordinates both platforms |
 | Re-locate photo | ✅ | 📋 Phase 3 | same as above | |
 | Soft-delete / restore photo | ✅ | 📋 Phase 2 | `Project.trashedPhotos`, `Photo.trashedAt` | |
@@ -167,8 +167,7 @@ Follow-ons still tracked (Phase 4+):
 
 - ~~**Full 3-level tag-selection picker UI on web.**~~ — shipped Build #5.86.1.
 - ~~**Re-tag-with-AI on a selection.**~~ — shipped Build #5.88.1. `useBatchRetag.start()` accepts an optional `photoIds` filter; the Photos-tab `SelectionActionBar` exposes a "Re-tag with AI" button that mounts a transient `BatchRetagControl` scoped to the snapshot of `selectedIds`.
-- **Web file-upload "add photos".** Optional — feasible via the
-  existing presigned-PUT endpoints; not in Path P scope.
+- ~~**Web file-upload "add photos".**~~ — shipped Build #5.90.1. Photos tab "+ Add photos" + Floor Plan tab "+ Add plan", both via existing presigned-PUT endpoints.
 - **Web canvas markup drawing.** A non-PencilKit equivalent is a
   separate, large effort.
 - **Report branding.** Logos / colors / header-text payload lives in

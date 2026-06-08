@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FloorPlan, Photo, Project } from "@forensic/shared";
+import { uploadFile } from "../lib/uploadFile";
 
 /**
  * Floor plan management (Build #5.89.1).
@@ -38,6 +39,9 @@ export function FloorPlanManager({
     plan: FloorPlan;
     affectedPhotos: number;
   } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const plans = project.floorPlans;
 
@@ -57,6 +61,58 @@ export function FloorPlanManager({
     if (!canEdit) return;
     if (project.activeFloorPlanID === planId) return;
     onProjectChanged({ ...project, activeFloorPlanID: planId });
+  }
+
+  function openAddPicker() {
+    if (!canEdit || adding) return;
+    setAddError(null);
+    fileInputRef.current?.click();
+  }
+
+  async function onAddFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.currentTarget.files?.[0];
+    e.currentTarget.value = "";
+    if (!file) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      const planId = crypto.randomUUID();
+      const ext = filenameExtension(file.name) ?? "jpg";
+      await uploadFile({
+        projectId: project.id,
+        photoId: planId,
+        kind: "plan",
+        file,
+        contentType: file.type || "image/jpeg",
+      });
+      // Defaults match iOS `FloorPlan.init`: a 50 px/ft scale and a
+      // zero anchor are reasonable starting points; the user tunes
+      // calibration on iOS where the pinch + tap UI lives.
+      const baseLabel = file.name.replace(/\.[^.]+$/, "");
+      const newPlan: FloorPlan = {
+        id: planId,
+        label: baseLabel || `Plan ${plans.length + 1}`,
+        imageFilename: `${planId}.${ext}`,
+        pixelsPerFoot: 50,
+        calibrationDistanceFeet: 10,
+        anchorPixelX: 0,
+        anchorPixelY: 0,
+        anchorLocalXFeet: 0,
+        anchorLocalYFeet: 0,
+        northDeg: 0,
+        distress: [],
+      };
+      onProjectChanged({
+        ...project,
+        floorPlans: [...plans, newPlan],
+        // Auto-activate the first plan if none was set.
+        activeFloorPlanID: project.activeFloorPlanID ?? planId,
+      });
+    } catch (err: unknown) {
+      setAddError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setAdding(false);
+    }
   }
 
   function previewRemove(plan: FloorPlan) {
@@ -91,18 +147,49 @@ export function FloorPlanManager({
     setConfirmDelete(null);
   }
 
-  if (plans.length === 0) return null;
+  // When there are zero plans, the FloorPlanTab's empty-state
+  // placeholder is the primary affordance. We still need a way to
+  // upload the first plan from web, so render the "+ Add" button
+  // (and only that) here.
+  const isEmpty = plans.length === 0;
 
   return (
     <div className="mb-3">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 text-xs text-neutral-400 hover:text-neutral-200"
-      >
-        <span>{open ? "▾" : "▸"}</span>
-        <span>Manage plans · {plans.length}</span>
-      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={onAddFileChosen}
+        className="hidden"
+      />
+      <div className="flex items-center gap-2">
+        {!isEmpty && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="flex items-center gap-2 text-xs text-neutral-400 hover:text-neutral-200"
+          >
+            <span>{open ? "▾" : "▸"}</span>
+            <span>Manage plans · {plans.length}</span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={openAddPicker}
+          disabled={!canEdit || adding}
+          className="rounded border border-blue-700 bg-blue-900/40 px-2 py-0.5 text-xs text-blue-100 hover:bg-blue-900/60 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {adding ? "Uploading…" : "+ Add plan"}
+        </button>
+        {addError && <span className="text-xs text-red-400">{addError}</span>}
+      </div>
+      {isEmpty && (
+        <p className="mt-2 text-xs text-neutral-500">
+          No floor plans yet. Use "+ Add plan" to upload one — the
+          canvas activates as soon as a plan lands. Tune the
+          calibration / north / anchor on iOS.
+        </p>
+      )}
 
       {open && (
         <ul className="mt-2 flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/30 p-2">
@@ -157,11 +244,14 @@ export function FloorPlanManager({
             );
           })}
           <p className="px-1 text-[11px] text-neutral-600">
-            Adding a brand-new floor plan ships with the web file-upload
-            PR. Today plans are uploaded from iOS.
+            Web upload uses placeholder calibration (50 px/ft, zero
+            anchor, north up). Tune scale / anchor / north on iOS
+            where the pinch + tap UI lives.
           </p>
         </ul>
       )}
+
+      {/* End of inline disclosure block */}
 
       {confirmDelete && (
         <div
@@ -202,4 +292,10 @@ export function FloorPlanManager({
       )}
     </div>
   );
+}
+
+function filenameExtension(name: string): string | null {
+  const dot = name.lastIndexOf(".");
+  if (dot < 0 || dot === name.length - 1) return null;
+  return name.slice(dot + 1).toLowerCase();
 }

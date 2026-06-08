@@ -10,6 +10,7 @@ import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import { SelectionActionBar } from "../SelectionActionBar";
 import { TrashSection } from "../TrashSection";
 import { BatchRetagControl } from "../BatchRetagControl";
+import { AddPhotosControl } from "../AddPhotosControl";
 
 /**
  * Photos tab — filter bar + rich list + editor + select mode.
@@ -141,6 +142,13 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
     <>
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          {!selectMode && (
+            <AddPhotosControl
+              project={project}
+              canEdit={canEdit}
+              onProjectChanged={(next) => manifest.save(next)}
+            />
+          )}
           {selectMode ? (
             <>
               <button

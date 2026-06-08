@@ -320,10 +320,11 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
 
   if (project.floorPlans.length === 0) {
     return (
-      <div className="rounded border border-dashed border-neutral-800 p-10 text-center text-sm text-neutral-500">
-        This project has no floor plans yet. Add one from the iPhone
-        and it'll appear here.
-      </div>
+      <FloorPlanManager
+        project={project}
+        canEdit={canEdit}
+        onProjectChanged={(next) => manifest.save(next)}
+      />
     );
   }
 
