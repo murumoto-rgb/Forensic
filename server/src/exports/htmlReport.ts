@@ -43,6 +43,7 @@ import type {
   Photo,
   Project,
 } from "@forensic/shared";
+import { supabaseAdmin } from "../supabase.js";
 import { getObjectBytes } from "../r2.js";
 
 /**
@@ -74,17 +75,67 @@ const DISTRESS_LABELS: Record<DistressKind, string> = {
   crackFloor: "Crack in floor",
 };
 
-/** Object key conventions match `buildObjectKey` in r2.ts — the
- *  PDF worker reads from the same paths the iOS uploader writes
- *  to. */
-function photoThumbKey(projectId: string, photoId: string): string {
-  return `${projectId}/${photoId}/thumb`;
-}
-function photoImageKey(projectId: string, photoId: string): string {
-  return `${projectId}/${photoId}/photo`;
-}
-function planImageKey(projectId: string, planId: string): string {
-  return `${projectId}/${planId}/plan`;
+/**
+ * R2 object-key resolution (Build #5.74.2).
+ *
+ * The renderer used to compute object keys deterministically as
+ * `${projectId}/${photoId}/thumb` (etc.), but iOS doesn't always
+ * upload a separate `thumb` row — historically only `kind=photo`
+ * was uploaded, and the existing `routes/photos.ts` falls back from
+ * thumb → photo via a `files`-table lookup. Mimicking that lookup
+ * here makes the PDF worker pull whichever object actually exists
+ * in R2 instead of guessing.
+ *
+ * `kindPreference` lists kinds in priority order. For photos that's
+ * `['thumb', 'photo']` — prefer the smaller binary, fall back to
+ * the full image. For plans it's `['plan']` — there's no alternate.
+ */
+async function resolveFileObjectKeysByPhotoId(
+  projectId: string,
+  ids: string[],
+  kindPreference: string[],
+  log: FastifyBaseLogger
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (ids.length === 0) return result;
+
+  // Sub-batch the IN-clause same way routes/photos.ts does so we
+  // don't blow PostgREST's URL length cap on large projects.
+  const SUB_BATCH = 100;
+  // priority: lower index in kindPreference wins.
+  const kindPriority = new Map(kindPreference.map((k, i) => [k, i]));
+  const chosenPriority = new Map<string, number>();
+
+  for (let i = 0; i < ids.length; i += SUB_BATCH) {
+    const chunk = ids.slice(i, i + SUB_BATCH);
+    const { data, error } = await supabaseAdmin
+      .from("files")
+      .select("photo_id, kind, object_key")
+      .eq("project_id", projectId)
+      .in("photo_id", chunk)
+      .in("kind", kindPreference);
+    if (error) {
+      log.error(
+        { err: error, projectId, chunkSize: chunk.length },
+        "pdf renderer — files lookup failed"
+      );
+      continue;
+    }
+    for (const row of (data ?? []) as Array<{
+      photo_id: string;
+      kind: string;
+      object_key: string;
+    }>) {
+      const rowPriority = kindPriority.get(row.kind);
+      if (rowPriority == null) continue;
+      const existing = chosenPriority.get(row.photo_id);
+      if (existing == null || rowPriority < existing) {
+        result.set(row.photo_id, row.object_key);
+        chosenPriority.set(row.photo_id, rowPriority);
+      }
+    }
+  }
+  return result;
 }
 
 function escapeHtml(s: string): string {
@@ -326,18 +377,14 @@ function contactSheetTile(
 /** One printed page containing up to `perPage` photo tiles. */
 function contactSheetPage(
   photos: Photo[],
-  blobs: Map<string, ImageBlob | null>,
-  projectId: string,
+  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
 ): string {
   const { cols, rows } = gridDimensions(options.perPage);
   const tilesHtml = photos
     .map((p) => {
-      const tileKey = p.thumbnailFilename
-        ? photoThumbKey(projectId, p.id)
-        : photoImageKey(projectId, p.id);
-      const blob = blobs.get(tileKey) ?? null;
+      const blob = photoBlobsByPhotoId.get(p.id) ?? null;
       const planLabel = p.floorPlanID
         ? planLabelById.get(p.floorPlanID) ?? null
         : null;
@@ -541,13 +588,12 @@ function planPages(
 function renderUngroupedContactSheets(
   selectedPhotos: Photo[],
   perPage: number,
-  blobs: Map<string, ImageBlob | null>,
-  projectId: string,
+  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
 ): string[] {
   return chunk(selectedPhotos, perPage).map((group) =>
-    contactSheetPage(group, blobs, projectId, planLabelById, options)
+    contactSheetPage(group, photoBlobsByPhotoId, planLabelById, options)
   );
 }
 
@@ -555,8 +601,7 @@ function renderBucketedContactSheets(
   selectedPhotos: Photo[],
   buckets: Bucket[],
   perPage: number,
-  blobs: Map<string, ImageBlob | null>,
-  projectId: string,
+  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
 ): string[] {
@@ -584,7 +629,7 @@ function renderBucketedContactSheets(
     pages.push(bucketDividerHtml(bucket, photos.length));
     for (const sheet of chunk(photos, perPage)) {
       pages.push(
-        contactSheetPage(sheet, blobs, projectId, planLabelById, options)
+        contactSheetPage(sheet, photoBlobsByPhotoId, planLabelById, options)
       );
     }
   }
@@ -618,8 +663,7 @@ function bucketDividerHtml(
 function renderPlanPages(
   floorPlans: FloorPlan[],
   allPhotos: Photo[],
-  blobs: Map<string, ImageBlob | null>,
-  projectId: string,
+  planBlobsByPlanId: Map<string, ImageBlob | null>,
   options: PdfExportOptions
 ): string[] {
   if (floorPlans.length === 0) return [];
@@ -629,8 +673,7 @@ function renderPlanPages(
   // we keep both working.
   if (options.includeFloorPlanPages === false) return [];
   return floorPlans.map((plan) => {
-    const key = planImageKey(projectId, plan.id);
-    const blob = blobs.get(key) ?? null;
+    const blob = planBlobsByPlanId.get(plan.id) ?? null;
     // The plan still shows ALL its pins (not just the filtered
     // selection) — engineers want the unfiltered spatial picture
     // even when they exported a subset.
@@ -902,19 +945,60 @@ export async function renderReportChunks(
 ): Promise<string[]> {
   const selectedPhotos = selectPhotos(project, options);
 
-  // Fetch all images (photos + plans) in one parallel pass so chunks
-  // share a single read of R2 — moving fetch inside the per-chunk
-  // loop would multiply round trips by chunk count.
-  const planKeys = options.includeFloorPlanPages
-    ? project.floorPlans.map((p) => planImageKey(projectId, p.id))
-    : [];
-  const photoKeys = selectedPhotos.map((p) =>
-    p.thumbnailFilename
-      ? photoThumbKey(projectId, p.id)
-      : photoImageKey(projectId, p.id)
+  // Resolve the actual R2 object key per photo/plan via the `files`
+  // table — iOS only uploads `kind=photo` rows (no separate thumb),
+  // so the renderer can't assume thumbs exist (Build #5.74.2). Same
+  // fallback logic the existing `routes/photos.ts` endpoint uses:
+  // prefer thumb, fall back to photo. Plans use `kind=plan`.
+  const photoIds = selectedPhotos.map((p) => p.id);
+  const planIds = project.floorPlans.map((p) => p.id);
+  const [photoKeyByPhotoId, planKeyByPlanId] = await Promise.all([
+    resolveFileObjectKeysByPhotoId(
+      projectId,
+      photoIds,
+      ["thumb", "photo"],
+      log
+    ),
+    resolveFileObjectKeysByPhotoId(projectId, planIds, ["plan"], log),
+  ]);
+
+  // Fetch all binaries in one parallel pass so chunks share a single
+  // read of R2 — moving fetch inside the per-chunk loop would
+  // multiply round trips by chunk count.
+  const allKeys = Array.from(
+    new Set([
+      ...Array.from(photoKeyByPhotoId.values()),
+      ...Array.from(planKeyByPlanId.values()),
+    ])
   );
-  const allKeys = Array.from(new Set([...photoKeys, ...planKeys]));
-  const blobs = await fetchImagesParallel(allKeys, log);
+  const blobsByKey = await fetchImagesParallel(allKeys, log);
+  log.info(
+    {
+      projectId,
+      photoCount: selectedPhotos.length,
+      photosResolved: photoKeyByPhotoId.size,
+      planCount: project.floorPlans.length,
+      plansResolved: planKeyByPlanId.size,
+      blobsFetched: Array.from(blobsByKey.values()).filter((b) => b != null)
+        .length,
+    },
+    "pdf renderer — image resolution complete"
+  );
+
+  // Convert "by R2 key" → "by photo/plan id" maps the page renderers
+  // expect. A photo missing from `photoKeyByPhotoId` (no file row) or
+  // whose blob fetch failed lands as a null in the map → tile shows
+  // the "(pending sync)" placeholder.
+  const photoBlobsByPhotoId = new Map<string, ImageBlob | null>();
+  for (const photo of selectedPhotos) {
+    const key = photoKeyByPhotoId.get(photo.id);
+    photoBlobsByPhotoId.set(photo.id, key ? blobsByKey.get(key) ?? null : null);
+  }
+  const planBlobsByPlanId = new Map<string, ImageBlob | null>();
+  for (const plan of project.floorPlans) {
+    const key = planKeyByPlanId.get(plan.id);
+    planBlobsByPlanId.set(plan.id, key ? blobsByKey.get(key) ?? null : null);
+  }
 
   const planLabelById = new Map(
     project.floorPlans.map((p) => [p.id, p.label] as const)
@@ -927,16 +1011,14 @@ export async function renderReportChunks(
         selectedPhotos,
         project.buckets,
         perPageResolved,
-        blobs,
-        projectId,
+        photoBlobsByPhotoId,
         planLabelById,
         options
       )
     : renderUngroupedContactSheets(
         selectedPhotos,
         perPageResolved,
-        blobs,
-        projectId,
+        photoBlobsByPhotoId,
         planLabelById,
         options
       );
@@ -944,8 +1026,7 @@ export async function renderReportChunks(
   const planPages = renderPlanPages(
     project.floorPlans,
     project.photos,
-    blobs,
-    projectId,
+    planBlobsByPlanId,
     options
   );
 
