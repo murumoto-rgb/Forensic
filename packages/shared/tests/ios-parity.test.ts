@@ -286,6 +286,12 @@ describe("iOS ↔ shared TS parity contract", () => {
       // equivalents live in UserDefaults). Out of the manifest /
       // app_config struct surface entirely.
       "UserPrefs",
+      // Build #5.97.1 — project-exports persistence layer. Options
+      // structs are wire-only; iOS-side equivalents live in
+      // FolderExportRunner / AIAnalysisCSVExportRunner Swift state.
+      "FolderExportOptions",
+      "AiAnalysisCsvOptions",
+      "CreateProjectExport",
     ]);
     for (const n of APP_CONFIG_STRUCTS) tsStructNames.delete(n);
 

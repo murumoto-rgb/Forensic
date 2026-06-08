@@ -32,8 +32,11 @@ import { aiTagRoute } from "./routes/aiTag.js";
 import { appConfigRoute } from "./routes/appConfig.js";
 import { locksRoute } from "./routes/locks.js";
 import { exportsRoute } from "./routes/exports.js";
+import { projectExportsRoute } from "./routes/projectExports.js";
 import { meRoute } from "./routes/me.js";
 import { startPdfExportWorker } from "./exports/pdfWorker.js";
+import { startFolderExportWorker } from "./exports/folderBundleWorker.js";
+import { startCsvExportWorker } from "./exports/csvWorker.js";
 import { ensureChromium } from "./exports/ensureChromium.js";
 
 async function main() {
@@ -83,6 +86,7 @@ async function main() {
   await app.register(appConfigRoute);
   await app.register(locksRoute);
   await app.register(exportsRoute);
+  await app.register(projectExportsRoute);
   await app.register(meRoute);
 
   // Error handler — captures non-4xx exceptions into Sentry then
@@ -119,6 +123,10 @@ async function main() {
         app.log.error({ err }, "chromium boot failed; PDF export disabled");
         captureException(err);
       });
+    // Folder + CSV export workers don't need Chromium; start them
+    // immediately. Each has its own atomic-claim polling loop.
+    startFolderExportWorker(app.log);
+    startCsvExportWorker(app.log);
   } catch (err) {
     app.log.error(err);
     process.exit(1);
