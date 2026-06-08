@@ -25,6 +25,7 @@ interface Props {
   photos: Photo[];
   canEdit: boolean;
   onOpen: (index: number) => void;
+  onOpenEditor: (photo: Photo) => void;
   onPhotoUpdated: (next: Photo) => void;
 }
 
@@ -39,6 +40,7 @@ export function PhotoList({
   photos,
   canEdit,
   onOpen,
+  onOpenEditor,
   onPhotoUpdated,
 }: Props) {
   const [urlsState, setUrlsState] = useState<UrlsState>({ kind: "loading" });
@@ -110,6 +112,7 @@ export function PhotoList({
           threshold={threshold}
           canEdit={canEdit}
           onOpen={() => onOpen(idx)}
+          onOpenEditor={() => onOpenEditor(photo)}
           onToggleFavorite={() =>
             onPhotoUpdated({ ...photo, isFavorite: !photo.isFavorite })
           }
