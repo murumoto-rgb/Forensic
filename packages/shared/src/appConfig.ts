@@ -76,6 +76,27 @@ export interface AIRulesTemplate {
 }
 
 // ---------------------------------------------------------------------------
+// AI prompt templates — named, switchable prompt bodies (Build #5.104.1).
+// ---------------------------------------------------------------------------
+
+/** One saved prompt template — name + body. iOS Swift mirror lives
+ *  under `AIPromptTemplate.swift` (a follow-on iOS PR plumbs this
+ *  app_config key through `AppConfigSyncer`). */
+export interface AIPromptTemplate {
+  /** UUID. */
+  id: string;
+  /** Display name shown in the picker. */
+  name: string;
+  /** Prompt body — same shape `Project.aiInstructions` holds. */
+  prompt: string;
+}
+
+/** Team-wide library of prompt templates. */
+export interface AIPromptTemplateLibrary {
+  templates: AIPromptTemplate[];
+}
+
+// ---------------------------------------------------------------------------
 // Report branding — team-wide overrides for PDF export header / footer.
 // ---------------------------------------------------------------------------
 
@@ -117,7 +138,8 @@ export type AppConfigKey =
   | "aiRulesTemplate"
   | "tagLibraryDefault"
   | "aiRulesTemplateDefault"
-  | "reportBranding";
+  | "reportBranding"
+  | "aiPromptTemplates";
 
 /**
  * Map from `AppConfigKey` to the value shape stored under that key.
@@ -152,4 +174,8 @@ export interface AppConfigValueByKey {
   /** Editable from web Admin → Report branding; iOS reads it at
    *  PDF render time. */
   reportBranding: ReportBranding;
+  /** Saved AI prompt templates (team-wide). Web Admin →
+   *  AI Prompt Templates editor today; an iOS-side picker /
+   *  manager sync ships in a follow-on. */
+  aiPromptTemplates: AIPromptTemplateLibrary;
 }
