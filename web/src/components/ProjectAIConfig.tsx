@@ -4,6 +4,7 @@ import type {
   ProjectExtraVocabulary,
   ProjectTagSelection,
 } from "@forensic/shared";
+import { ProjectTagSelectionPicker } from "./ProjectTagSelectionPicker";
 
 /**
  * Project AI configuration (Build #5.81.1 — Path P #6/8).
@@ -50,6 +51,7 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
     affected: number;
     alsoAnalysis: boolean;
   } | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Reset local drafts if the project changes underneath us (e.g.
   // another tab edits the manifest and the shared hook re-renders).
@@ -173,33 +175,49 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
         )}
       </section>
 
-      {/* Tag selection summary */}
+      {/* Tag selection summary + picker */}
       <section className="rounded border border-neutral-800 bg-neutral-900/40 p-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-xs uppercase tracking-wide text-neutral-500">
             Tag selection
           </span>
-          {project.tagSelection && (
+          <div className="flex gap-2">
             <button
               type="button"
-              onClick={clearTagSelection}
+              onClick={() => setPickerOpen(true)}
               disabled={!canEdit}
-              className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              className="rounded border border-blue-700 bg-blue-900/40 px-2 py-0.5 text-xs text-blue-100 hover:bg-blue-900/60 disabled:opacity-50"
             >
-              Clear selection
+              {project.tagSelection ? "Edit selection…" : "Set selection…"}
             </button>
-          )}
+            {project.tagSelection && (
+              <button
+                type="button"
+                onClick={clearTagSelection}
+                disabled={!canEdit}
+                className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
-        <p className="mb-2 text-xs text-neutral-400">
+        <p className="text-xs text-neutral-400">
           Three-level context → primary → secondary scope for AI
           tagging. {selectionSummary}
         </p>
-        <p className="text-xs text-neutral-500">
-          Full picker UI lands in a follow-on PR. Use the iOS app's
-          tag-selection sheet today; the manifest field round-trips
-          to web (this tab will respect whatever iOS set).
-        </p>
       </section>
+
+      {pickerOpen && (
+        <ProjectTagSelectionPicker
+          project={project}
+          canEdit={canEdit}
+          onClose={() => setPickerOpen(false)}
+          onCommit={(next) =>
+            onProjectChanged({ ...project, tagSelection: next })
+          }
+        />
+      )}
 
       {/* Clear AI tags */}
       <section className="rounded border border-neutral-800 bg-neutral-900/40 p-3">

@@ -70,7 +70,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Hierarchical tags (primary / secondary) | ✅ | 📋 Phase 2 | `Tag.parentTag` | |
 | Tag confidence threshold | ✅ | 📋 Phase 2 | `Tag.confidence` | |
 | Buckets (project-scoped categories) | ✅ | 📋 Phase 2 | `Project.buckets[]`, `Photo.bucketID` | |
-| Per-project tag selection | ✅ | 📋 Phase 4 | `Project.tagSelection` | |
+| Per-project tag selection | ✅ | ✅ Build #5.86.1 | `Project.tagSelection` | Three-column context → primary → secondary picker. Reads canonical library via `GET /v1/config/tagLibrary`; commit writes `tagSelection` through standard manifest PUT. Empty draft commits as `null` (means "use entire library"). |
 | Per-project extra vocabulary | ✅ | 📋 Phase 4 | `Project.aiExtraVocabulary` | |
 | **AI tagging** | | | | |
 | Run AI analysis on photo | ✅ | 📋 Phase 4 | request via server `/v1/ai/tag-photo` | Same prompt template both platforms |
