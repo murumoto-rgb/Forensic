@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DistressKind, DistressMark, FloorPlan, Photo, Project } from "@forensic/shared";
 import { FloorPlanCanvas } from "../FloorPlanCanvas";
+import { FloorPlanManager } from "../FloorPlanManager";
 import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 
@@ -333,6 +334,12 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
 
   return (
     <>
+      <FloorPlanManager
+        project={project}
+        canEdit={canEdit}
+        onProjectChanged={(next) => manifest.save(next)}
+      />
+
       <div className="mb-4 flex items-center justify-between gap-4">
         {project.floorPlans.length > 1 ? (
           <div className="flex flex-wrap gap-2">

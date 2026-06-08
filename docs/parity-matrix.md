@@ -55,7 +55,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Calibrate scale | ✅ | 📋 Phase 3 PR-C | `FloorPlan.pixelsPerFoot` | |
 | Set north heading | ✅ | 📋 Phase 3 PR-C | `FloorPlan.northDeg` | |
 | Multiple plans per project | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `activeFloorPlanID` | Plan picker tabs on `/projects/:id/plan` |
-| Reorder / rename plans | ✅ | 📋 Phase 3 PR-C | `FloorPlan.label` | |
+| Rename / remove plans | ✅ | ✅ Build #5.89.1 | `FloorPlan.label`, `Project.floorPlans[]`, `Project.activeFloorPlanID` | Collapsible "Manage plans · N" disclosure above the picker chips; per-row label input (commit on blur), Set active, Remove (confirm + photo-impact preview; nulls `floorPlanID` + `planPixelX/Y` on photos that referenced the removed plan; falls back to the first remaining plan as active). Adding a brand-new plan ships with the file-upload PR. |
 | **Photos** | | | | |
 | Capture photo with camera | ✅ | ❌ | n/a | Web is desktop / tablet; capture is iOS-only |
 | Import from photo library | ✅ | 📋 Phase 2 | n/a | Web equivalent: upload from disk |
