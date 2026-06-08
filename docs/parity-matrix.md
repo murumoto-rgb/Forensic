@@ -84,8 +84,8 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Draw floor-crack stroke | ✅ | 📋 Phase 3 | `DistressMark.points[]` (stroke kind) | |
 | Annotate distress with note | ✅ | 📋 Phase 3 | `DistressMark.note` | |
 | **Markup (PencilKit)** | | | | |
-| Draw on photo with finger / Pencil | ✅ | ❌ | `Photo.markupOverlayFilename`, `markupDrawingFilename` | iOS-only (PencilKit); web shows PNG overlay read-only |
-| Render existing markup overlay | ✅ | 📋 Phase 2 | same | Web read-only display of the PNG |
+| Draw on photo with finger / Pencil | ✅ | ✅ Build #5.91.1 (Konva-based) | `Photo.markupOverlayFilename` | iOS uses PencilKit; web uses a Konva canvas in a modal — pen (color + width), eraser, undo / redo, clear. Rasterized to a transparent PNG at the photo's natural resolution on save. `markupDrawingFilename` (PencilKit stroke data) stays iOS-only — see Platform exclusions. |
+| Render existing markup overlay | ✅ | ✅ Build #5.91.1 | `Photo.markupOverlayFilename` | Round-trippable: web saves the same PNG iOS does and vice versa. |
 | **Export** | | | | |
 | PDF export (authoritative, multi-floor) | ✅ | 📋 Phase 4 | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer (preview-grade) |
 | Folder export (one dir per bucket) | ✅ | 📋 Phase 4 | n/a | |
@@ -168,8 +168,7 @@ Follow-ons still tracked (Phase 4+):
 - ~~**Full 3-level tag-selection picker UI on web.**~~ — shipped Build #5.86.1.
 - ~~**Re-tag-with-AI on a selection.**~~ — shipped Build #5.88.1. `useBatchRetag.start()` accepts an optional `photoIds` filter; the Photos-tab `SelectionActionBar` exposes a "Re-tag with AI" button that mounts a transient `BatchRetagControl` scoped to the snapshot of `selectedIds`.
 - ~~**Web file-upload "add photos".**~~ — shipped Build #5.90.1. Photos tab "+ Add photos" + Floor Plan tab "+ Add plan", both via existing presigned-PUT endpoints.
-- **Web canvas markup drawing.** A non-PencilKit equivalent is a
-  separate, large effort.
+- ~~**Web canvas markup drawing.**~~ — shipped Build #5.91.1 via Konva. The PencilKit stroke data side (`markupDrawingFilename`) stays iOS-only.
 - **Report branding.** Logos / colors / header-text payload lives in
   `app_config`; the upload + edit UI is its own PR.
 - ~~**Drag-and-drop bucket reorder.**~~ — shipped Build #5.87.1.
