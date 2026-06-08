@@ -41,6 +41,9 @@ import type {
   UploadUrlResponse,
   CommitUploadRequest,
   CommitUploadResponse,
+  GetUserPrefsResponse,
+  PutUserPrefsRequest,
+  PutUserPrefsResponse,
 } from "@forensic/shared";
 
 export class ApiError extends Error {
@@ -349,6 +352,23 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Load the calling user's UI preferences from the server. Returns
+   * a default-shaped payload + empty revision when the user has
+   * never written prefs.
+   */
+  getUserPrefs: () =>
+    request<GetUserPrefsResponse>("/v1/me/prefs"),
+  /**
+   * Persist UI preferences. `expectedRevision` echoes the value
+   * returned by the most recent GET — pass `""` (or `null`) for the
+   * first-time write. 409 on mismatch.
+   */
+  putUserPrefs: (req: PutUserPrefsRequest) =>
+    request<PutUserPrefsResponse>("/v1/me/prefs", {
+      method: "PUT",
+      body: JSON.stringify(req),
+    }),
   /**
    * Read-only bundled-defaults snapshot pushed by iOS at every
    * launch (Build #5.48.1). Used by the admin editors' "Restore

@@ -103,8 +103,8 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Plan color mode (mono / colour) | ✅ | 📋 Phase 2 | `PlanColorMode` | |
 | Tag library management | ✅ | ✅ (PR #66) | `TagLibrary` (app-wide) | Tag library editor on `/admin/tag-library`; linked from settings page. |
 | AI rules template management | ✅ | ✅ (PR #69) | `AIRulesTemplate` (app-wide) | AI rules editor on `/admin/ai-rules`; linked from settings page. |
-| Tag confidence threshold (per-user) | ✅ | ✅ Build #5.85.1 | localStorage `sitephoto.tagConfidenceThreshold` | Same default + storage key as iOS. Threshold slider on settings page; same hook (`useUserPrefs`) drives both settings and the existing `useTagConfidenceThreshold` callers. |
-| AI model / concurrency (per-user) | ✅ | ✅ Build #5.85.1 | localStorage `sitephoto.aiModel`, `sitephoto.aiConcurrency` | localStorage today; server-backed multi-device sync planned. Defaults drive the Re-tag-all batch modal. |
+| Tag confidence threshold (per-user) | ✅ | ✅ Build #5.85.1 (server-synced #5.95.1) | localStorage `sitephoto.tagConfidenceThreshold` + `user_prefs.tagConfidenceThreshold` | Same default + storage key as iOS. Threshold slider on settings page; same hook (`useUserPrefs`) drives both settings and the existing `useTagConfidenceThreshold` callers. Server sync follows prefs across browsers. |
+| AI model / concurrency (per-user) | ✅ | ✅ Build #5.85.1 (server-synced #5.95.1) | localStorage `sitephoto.aiModel`, `sitephoto.aiConcurrency` + `user_prefs.{aiModel,aiConcurrency}` | localStorage instant-read + server sync (1-second debounce on writes; hydrate-on-mount). Defaults drive the Re-tag-all batch modal. |
 
 ## Platform exclusions
 

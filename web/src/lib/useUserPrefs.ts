@@ -1,25 +1,34 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AITagPhotoModel } from "@forensic/shared";
+import { api, ApiError } from "./api";
 
 /**
- * Per-user AI prefs hook (Build #5.85.1).
+ * Per-user AI prefs hook (Build #5.85.1; server-sync added #5.95.1).
  *
  * Backs three knobs the settings page (and the batch-retag control)
  * read every render: AI model, parallel-request concurrency, and the
- * tag confidence threshold. localStorage-backed today; a follow-on
- * PR will sync these to the server so they follow the user across
- * devices.
+ * tag confidence threshold.
  *
- * Mirrors the storage-event + custom-in-tab-event pattern from
- * `useTagConfidenceThreshold` so multiple instances stay in sync.
- * The threshold key (`sitephoto.tagConfidenceThreshold`) is the
- * same one `useTagConfidenceThreshold` uses — both hooks back the
- * same value, and updating either re-renders the other.
+ * **localStorage is the source of truth** for hot reads — every
+ * `useUserPrefs()` call returns the localStorage value immediately
+ * so the UI never blocks on the network. On first mount we trigger
+ * a single best-effort `GET /v1/me/prefs` and merge any server-side
+ * values into localStorage if the user hadn't already set them
+ * locally (defensive — don't clobber the user's local choice with
+ * a stale server value). Subsequent setters write through both:
+ * localStorage (instant) and a debounced `PUT /v1/me/prefs` (every
+ * 1 second of idle).
  *
- * Model storage key is `sitephoto.aiModel` — mirrors the iOS
- * UserDefault of the same name.
- * Concurrency key is `sitephoto.aiConcurrency` — iOS-side is per-
- * batch + ephemeral, no UserDefault to mirror.
+ * Cross-tab + cross-device sync paths:
+ *   - Same tab: custom `sitephoto:prefsChanged` event.
+ *   - Cross-tab (same browser): `storage` event.
+ *   - Cross-device: server round-trip on next mount.
+ *
+ * Storage keys (unchanged from #5.85.1):
+ *   - `sitephoto.aiModel`
+ *   - `sitephoto.aiConcurrency`
+ *   - `sitephoto.tagConfidenceThreshold` (shared with
+ *     `useTagConfidenceThreshold`).
  */
 
 const MODEL_KEY = "sitephoto.aiModel";
@@ -73,12 +82,112 @@ export interface UserPrefs {
   setThreshold: (next: number) => void;
 }
 
+// Module-scoped state so multiple useUserPrefs callers in the same
+// app share one initial-hydration + one debounce timer.
+const serverState: {
+  hydrated: boolean;
+  revision: string;
+  pendingTimer: ReturnType<typeof setTimeout> | null;
+} = {
+  hydrated: false,
+  revision: "",
+  pendingTimer: null,
+};
+
+/**
+ * Best-effort initial fetch + merge from the server. Called once
+ * per app load (module-scoped flag). Server values fill in fields
+ * that aren't already set in localStorage; existing local values
+ * win (user's local choice should never get clobbered by a stale
+ * server copy).
+ */
+async function hydrateOnce(refresh: () => void): Promise<void> {
+  if (serverState.hydrated) return;
+  serverState.hydrated = true;
+  try {
+    const resp = await api.getUserPrefs();
+    serverState.revision = resp.revision;
+    const { aiModel, tagConfidenceThreshold, aiConcurrency } = resp.prefs;
+    if (
+      aiModel != null &&
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(MODEL_KEY) == null
+    ) {
+      window.localStorage.setItem(MODEL_KEY, aiModel);
+    }
+    if (
+      aiConcurrency != null &&
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(CONCURRENCY_KEY) == null
+    ) {
+      window.localStorage.setItem(CONCURRENCY_KEY, String(aiConcurrency));
+    }
+    if (
+      tagConfidenceThreshold != null &&
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(THRESHOLD_KEY) == null
+    ) {
+      window.localStorage.setItem(THRESHOLD_KEY, String(tagConfidenceThreshold));
+    }
+    refresh();
+  } catch (e: unknown) {
+    if (!(e instanceof ApiError)) {
+      // Network failure — leave localStorage values intact and try
+      // again on next mount (hydrated flag stays true for this
+      // session to avoid hammering the endpoint, but it's only a
+      // session-level penalty).
+    }
+  }
+}
+
+/**
+ * Schedule a debounced PUT of the current localStorage prefs to the
+ * server. Coalesces rapid writes into one request 1 second after
+ * the latest change.
+ */
+function scheduleSync(): void {
+  if (serverState.pendingTimer) clearTimeout(serverState.pendingTimer);
+  serverState.pendingTimer = setTimeout(() => {
+    serverState.pendingTimer = null;
+    const prefs = {
+      aiModel: typeof window === "undefined"
+        ? null
+        : window.localStorage.getItem(MODEL_KEY),
+      aiConcurrency: typeof window === "undefined"
+        ? null
+        : (() => {
+            const v = window.localStorage.getItem(CONCURRENCY_KEY);
+            return v == null ? null : Number.parseInt(v, 10);
+          })(),
+      tagConfidenceThreshold: typeof window === "undefined"
+        ? null
+        : (() => {
+            const v = window.localStorage.getItem(THRESHOLD_KEY);
+            return v == null ? null : Number.parseFloat(v);
+          })(),
+    };
+    api
+      .putUserPrefs({
+        prefs,
+        expectedRevision: serverState.revision || null,
+      })
+      .then((resp) => {
+        serverState.revision = resp.revision;
+      })
+      .catch(() => {
+        // Network / 409 failures are non-fatal — localStorage stays
+        // canonical for the current session; next mount will retry.
+      });
+  }, 1000);
+}
+
 export function useUserPrefs(): UserPrefs {
   const [model, setModelState] = useState<AITagPhotoModel>(() => readModel());
   const [concurrency, setConcurrencyState] = useState<number>(() =>
     readConcurrency()
   );
   const [threshold, setThresholdState] = useState<number>(() => readThreshold());
+  const refreshRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     function refresh() {
@@ -86,6 +195,7 @@ export function useUserPrefs(): UserPrefs {
       setConcurrencyState(readConcurrency());
       setThresholdState(readThreshold());
     }
+    refreshRef.current = refresh;
     function onStorage(e: StorageEvent) {
       if (
         e.key === MODEL_KEY ||
@@ -103,6 +213,8 @@ export function useUserPrefs(): UserPrefs {
     // Keep the legacy single-key event firing the threshold sync so
     // older `useTagConfidenceThreshold` instances still wake up.
     window.addEventListener("sitephoto:thresholdChanged", onCustom);
+    // Fire the once-per-session server hydrate.
+    void hydrateOnce(() => refreshRef.current());
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener(EVENT_NAME, onCustom);
@@ -115,6 +227,7 @@ export function useUserPrefs(): UserPrefs {
     setModelState(next);
     window.localStorage.setItem(MODEL_KEY, next);
     window.dispatchEvent(new Event(EVENT_NAME));
+    scheduleSync();
   }
 
   function setConcurrency(next: number) {
@@ -122,6 +235,7 @@ export function useUserPrefs(): UserPrefs {
     setConcurrencyState(clamped);
     window.localStorage.setItem(CONCURRENCY_KEY, String(clamped));
     window.dispatchEvent(new Event(EVENT_NAME));
+    scheduleSync();
   }
 
   function setThreshold(next: number) {
@@ -133,6 +247,7 @@ export function useUserPrefs(): UserPrefs {
     // instances pick up the change without refactor.
     window.dispatchEvent(new Event(EVENT_NAME));
     window.dispatchEvent(new Event("sitephoto:thresholdChanged"));
+    scheduleSync();
   }
 
   return {

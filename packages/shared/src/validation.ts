@@ -226,6 +226,12 @@ export const ReportBrandingSchema = z.object({
   logoStoragePath: nullable(z.string()),
 });
 
+export const UserPrefsSchema = z.object({
+  aiModel: nullable(z.string()),
+  tagConfidenceThreshold: nullable(z.number().min(0).max(1)),
+  aiConcurrency: nullable(z.number().int().min(1).max(20)),
+});
+
 /**
  * Dispatch map: each `AppConfigKey` paired with the zod schema for
  * its value. Server's PUT route uses this to validate the incoming

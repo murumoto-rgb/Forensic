@@ -282,6 +282,10 @@ describe("iOS ↔ shared TS parity contract", () => {
       // struct lives under the same name but isn't part of the manifest
       // fixture; same scoping rationale as TagLibrary etc.
       "ReportBranding",
+      // Build #5.95.1 — per-user UI prefs (web-only today; the iOS
+      // equivalents live in UserDefaults). Out of the manifest /
+      // app_config struct surface entirely.
+      "UserPrefs",
     ]);
     for (const n of APP_CONFIG_STRUCTS) tsStructNames.delete(n);
 
