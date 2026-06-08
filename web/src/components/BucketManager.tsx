@@ -2,16 +2,20 @@ import { useState } from "react";
 import type { Bucket, Project } from "@forensic/shared";
 
 /**
- * Bucket CRUD (Build #5.80.1 — Path P #5/8).
+ * Bucket CRUD (Build #5.80.1 — Path P #5/8; drag-reorder added
+ * Build #5.87.1).
  *
  * Per-project bucket management — create (name + color), rename,
  * recolor, reorder, delete (with photo-impact preview). Counts
  * per bucket and the project-wide "unbucketed" count are live
  * against the manifest, not cached.
  *
- * Reorder uses up/down buttons that swap `sortOrder` with the
- * adjacent bucket. Drag-and-drop ships in a follow-on if the
- * user asks for it — the iOS UI has the same buttons.
+ * Reorder modes:
+ *   - HTML5 drag-and-drop on the grip handle (mouse / trackpad);
+ *     drops the row at the new position and renumbers `sortOrder`
+ *     contiguously from 0.
+ *   - ↑ / ↓ buttons (keyboard accessibility — same UX iOS has);
+ *     swaps `sortOrder` with the adjacent bucket.
  *
  * Delete nulls `bucketID` on every photo that referenced the
  * removed bucket (so existing bucket assignments don't dangle).
@@ -42,6 +46,11 @@ export function BucketManager({ project, canEdit, onProjectChanged }: Props) {
   const [draftName, setDraftName] = useState("");
   const [draftColor, setDraftColor] = useState(COLOR_PALETTE[0]!);
   const [confirmDelete, setConfirmDelete] = useState<Bucket | null>(null);
+  // Track in-flight drag: the bucket being dragged + the index over
+  // which the user is currently hovering. Indices are into the
+  // visible (sorted) `buckets` array.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   const buckets = [...project.buckets].sort(
     (a, b) => a.sortOrder - b.sortOrder
@@ -115,6 +124,33 @@ export function BucketManager({ project, canEdit, onProjectChanged }: Props) {
     });
   }
 
+  /**
+   * Splice the dragged bucket into a new position and renumber
+   * `sortOrder` contiguously from 0. Renumbering keeps the
+   * underlying field tidy after many drops, and the up/down
+   * buttons keep working because they swap adjacent values.
+   */
+  function reorderByDrop(draggedId: string, targetIdx: number) {
+    if (!canEdit) return;
+    const fromIdx = buckets.findIndex((b) => b.id === draggedId);
+    if (fromIdx === -1 || fromIdx === targetIdx) return;
+    const next = [...buckets];
+    const [moved] = next.splice(fromIdx, 1);
+    // After splice, indices >= fromIdx shift left by one; if the
+    // target was past the dragged item, decrement to compensate.
+    const insertAt = targetIdx > fromIdx ? targetIdx - 1 : targetIdx;
+    next.splice(insertAt, 0, moved!);
+    const renumbered = next.map((b, i) => ({ ...b, sortOrder: i }));
+    // Preserve buckets that aren't in `buckets` (none today, but
+    // future-proof if filtering ever lands).
+    const renumberedIds = new Set(renumbered.map((b) => b.id));
+    const untouched = project.buckets.filter((b) => !renumberedIds.has(b.id));
+    onProjectChanged({
+      ...project,
+      buckets: [...untouched, ...renumbered],
+    });
+  }
+
   function deleteBucket(id: string) {
     if (!canEdit) return;
     onProjectChanged({
@@ -180,11 +216,59 @@ export function BucketManager({ project, canEdit, onProjectChanged }: Props) {
         <ul className="flex flex-col gap-2">
           {buckets.map((bucket, idx) => {
             const count = photoCounts.get(bucket.id) ?? 0;
+            const isDragging = draggingId === bucket.id;
+            const isHovered = hoverIdx === idx && draggingId !== null && !isDragging;
             return (
               <li
                 key={bucket.id}
-                className="flex flex-wrap items-center gap-2 rounded border border-neutral-800 bg-neutral-900/40 p-2"
+                onDragOver={(e) => {
+                  if (draggingId == null) return;
+                  e.preventDefault();
+                  setHoverIdx(idx);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggingId != null) {
+                    reorderByDrop(draggingId, idx);
+                  }
+                  setDraggingId(null);
+                  setHoverIdx(null);
+                }}
+                className={
+                  "flex flex-wrap items-center gap-2 rounded border bg-neutral-900/40 p-2 " +
+                  (isHovered
+                    ? "border-blue-600 bg-blue-950/30"
+                    : "border-neutral-800") +
+                  (isDragging ? " opacity-50" : "")
+                }
               >
+                <span
+                  draggable={canEdit}
+                  onDragStart={(e) => {
+                    if (!canEdit) {
+                      e.preventDefault();
+                      return;
+                    }
+                    setDraggingId(bucket.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    // Required for Firefox to start the drag.
+                    e.dataTransfer.setData("text/plain", bucket.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingId(null);
+                    setHoverIdx(null);
+                  }}
+                  className={
+                    "select-none px-1 text-neutral-500 " +
+                    (canEdit
+                      ? "cursor-grab active:cursor-grabbing hover:text-neutral-300"
+                      : "cursor-not-allowed opacity-40")
+                  }
+                  title="Drag to reorder"
+                  aria-label="Drag handle"
+                >
+                  ⋮⋮
+                </span>
                 <ColorSwatchPicker
                   color={bucket.colorHex}
                   onChange={(c) => recolorBucket(bucket.id, c)}

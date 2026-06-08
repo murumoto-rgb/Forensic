@@ -69,7 +69,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Edit photo tags (manual) | ✅ | 📋 Phase 2 | `Photo.tags[]` | Same vocabulary both platforms |
 | Hierarchical tags (primary / secondary) | ✅ | 📋 Phase 2 | `Tag.parentTag` | |
 | Tag confidence threshold | ✅ | 📋 Phase 2 | `Tag.confidence` | |
-| Buckets (project-scoped categories) | ✅ | 📋 Phase 2 | `Project.buckets[]`, `Photo.bucketID` | |
+| Buckets (project-scoped categories) | ✅ | ✅ (Build #5.80.1, drag-reorder #5.87.1) | `Project.buckets[]`, `Photo.bucketID` | CRUD + ↑/↓ buttons shipped in Path P #5/8; HTML5 drag-and-drop reorder via per-row grip handle added separately. Renumbers `sortOrder` contiguously from 0 on drop. |
 | Per-project tag selection | ✅ | ✅ Build #5.86.1 | `Project.tagSelection` | Three-column context → primary → secondary picker. Reads canonical library via `GET /v1/config/tagLibrary`; commit writes `tagSelection` through standard manifest PUT. Empty draft commits as `null` (means "use entire library"). |
 | Per-project extra vocabulary | ✅ | 📋 Phase 4 | `Project.aiExtraVocabulary` | |
 | **AI tagging** | | | | |
