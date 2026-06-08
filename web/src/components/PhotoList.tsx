@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Photo, Project } from "@forensic/shared";
 import { api } from "../lib/api";
 import { useTagConfidenceThreshold } from "../lib/useTagConfidenceThreshold";
@@ -11,9 +11,14 @@ import { PhotoListRow } from "./PhotoListRow";
  * viewport allows (`minmax(380px, 1fr)`): 1 col on phones,
  * 2 on tablets, 3 on laptops, 4+ on wide monitors.
  *
- * Thumbnail URLs are fetched in one batch (same pattern as
- * `PhotoGrid`); the URL map is then handed down to every row, so
- * we never fire N parallel GETs for a 100-photo project.
+ * Thumbnail URLs are cached **per-photo-id across renders**
+ * (Build #5.113.1). When the user toggles filters, the visible
+ * `photos` array changes, but the URL map is keyed by photo ID
+ * and we only fetch IDs that don't already have a URL. Toggling
+ * filters no longer re-fetches and re-mounts the entire grid.
+ *
+ * Cache scope: per `PhotoList` mount. Project switches discard
+ * the cache via the `projectId` reset effect.
  *
  * Edits flow through the parent — `onPhotoUpdated(updated)` is
  * called with the new photo struct and the parent merges it into
@@ -55,34 +60,81 @@ export function PhotoList({
   const [urlsState, setUrlsState] = useState<UrlsState>({ kind: "loading" });
   const [threshold] = useTagConfidenceThreshold();
 
-  const idsKey = photos.map((p) => p.id).join(",");
+  // Cumulative URL cache across renders. `urls` is the live map
+  // we hand down to rows; `attempted` records IDs we've already
+  // requested (succeeded or not) so a 404'd photo doesn't keep
+  // triggering re-fetches every filter toggle.
+  const cacheRef = useRef<{ urls: Map<string, string>; attempted: Set<string> }>({
+    urls: new Map(),
+    attempted: new Set(),
+  });
+
+  // Reset the cache when the project changes — different presigned
+  // URLs live under different project IDs, and there's no point
+  // hanging on to URLs for a project the user has left.
+  const lastProjectIdRef = useRef<string>(projectId);
+  if (lastProjectIdRef.current !== projectId) {
+    cacheRef.current = { urls: new Map(), attempted: new Set() };
+    lastProjectIdRef.current = projectId;
+  }
+
   useEffect(() => {
     if (photos.length === 0) {
-      setUrlsState({ kind: "ready", urls: {} });
+      setUrlsState({ kind: "ready", urls: snapshotUrls(cacheRef.current.urls) });
       return;
     }
+    // Anything we haven't seen before? Only fetch those.
+    const missing = photos.filter(
+      (p) => !cacheRef.current.attempted.has(p.id)
+    );
+    if (missing.length === 0) {
+      // Pure filter change — every visible photo's URL is already
+      // cached. Render synchronously with what we have; never blank
+      // the grid.
+      setUrlsState({ kind: "ready", urls: snapshotUrls(cacheRef.current.urls) });
+      return;
+    }
+    // First load OR new photos appeared (e.g. user uploaded some).
+    // Surface "loading" only on the FIRST batch where we have nothing
+    // at all — otherwise leave the existing thumbnails up while the
+    // new IDs resolve in the background.
+    if (cacheRef.current.urls.size === 0) {
+      setUrlsState({ kind: "loading" });
+    }
     let cancelled = false;
-    setUrlsState({ kind: "loading" });
+    const requestedIds = missing.map((p) => p.id);
+    // Mark as attempted immediately so a re-render mid-flight doesn't
+    // re-request the same IDs.
+    for (const id of requestedIds) cacheRef.current.attempted.add(id);
     api
-      .getPhotoUrlsBatch(
-        projectId,
-        photos.map((p) => p.id),
-        "thumb"
-      )
+      .getPhotoUrlsBatch(projectId, requestedIds, "thumb")
       .then((res) => {
         if (cancelled) return;
-        setUrlsState({ kind: "ready", urls: res.urls });
+        for (const [id, url] of Object.entries(res.urls)) {
+          cacheRef.current.urls.set(id, url);
+        }
+        setUrlsState({ kind: "ready", urls: snapshotUrls(cacheRef.current.urls) });
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-        setUrlsState({ kind: "error", message: msg });
+        // Roll back the attempted flag on these IDs so a retry is
+        // possible (e.g. transient network error).
+        for (const id of requestedIds) cacheRef.current.attempted.delete(id);
+        if (cacheRef.current.urls.size === 0) {
+          const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+          setUrlsState({ kind: "error", message: msg });
+        }
+        // If we already had some URLs cached, swallow the error —
+        // the user keeps seeing what they have. A second filter
+        // toggle will try again for the missing IDs.
       });
     return () => {
       cancelled = true;
     };
+    // The effect re-fires when the visible photo set changes; the
+    // cache check short-circuits when there's nothing new.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, idsKey]);
+  }, [projectId, photos.map((p) => p.id).join(",")]);
 
   if (photos.length === 0) {
     return (
@@ -132,4 +184,13 @@ export function PhotoList({
       ))}
     </div>
   );
+}
+
+/** Snapshot the live URL Map into a plain object for the
+ *  PhotoListRow consumers, which take a `Record<string, string>`.
+ *  Cheap — the map size is bounded by project.photos.length. */
+function snapshotUrls(m: Map<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, url] of m) out[id] = url;
+  return out;
 }
