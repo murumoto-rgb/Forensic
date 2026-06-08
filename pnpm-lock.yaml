@@ -44,6 +44,9 @@ importers:
       '@forensic/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@puppeteer/browsers':
+        specifier: ^3.0.4
+        version: 3.0.4
       '@sentry/node':
         specifier: ^8.45.0
         version: 8.55.2
