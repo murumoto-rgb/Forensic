@@ -57,7 +57,7 @@ import { getObjectBytes } from "../r2.js";
  * 512 MB: at perPage=6 a chunk carries ~150 photos worth of
  * inline-base64 thumbs ≈ 4-5 MB HTML, well within memory budget.
  */
-export const PAGES_PER_CHUNK = 25;
+export const PAGES_PER_CHUNK = 10;
 
 /** Color palette for distress marks. Mirrors the web canvas + iOS
  *  PDF for consistency across the three render surfaces. */

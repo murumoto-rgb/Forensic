@@ -71,18 +71,38 @@ async function getOrLaunchBrowser(): Promise<Browser> {
   browser = await puppeteer.launch({
     headless: true,
     args: [
-      // The standard "this is a container, you have no sandbox kernel
+      // Standard "this is a container, you have no sandbox kernel
       // features" flag set for Chromium on Render / Docker. Without
       // these the launch fails with "Failed to move to new namespace."
       "--no-sandbox",
       "--disable-setuid-sandbox",
+      // Force Chrome to use /tmp instead of /dev/shm — Render
+      // containers have a tiny /dev/shm by default; running out
+      // mid-render is one cause of "Target closed."
       "--disable-dev-shm-usage",
-      // Save memory on Render's 512 MB free dyno.
-      "--single-process",
-      "--no-zygote",
+      // NOTE: previously had `--single-process` + `--no-zygote` here
+      // for memory savings on Render free tier. Both turned out to
+      // cause "Protocol error: Target closed" mid-page.pdf() on
+      // 500+ photo exports (Build #5.74.4). Multi-process Chrome
+      // is more memory-stable for large prints; the per-chunk
+      // browser relaunch (also in #5.74.4) keeps RSS bounded.
     ],
   });
   return browser;
+}
+
+/** Close + null the current browser so the next call relaunches.
+ *  Used as a watchdog between chunk-render batches to keep Chrome's
+ *  RSS from growing unbounded on 500+ photo exports (Build #5.74.4). */
+async function recycleBrowser(): Promise<void> {
+  if (browser) {
+    try {
+      await browser.close();
+    } catch {
+      // Best-effort — if the close fails, just drop the reference.
+    }
+    browser = null;
+  }
 }
 
 /** Try to claim one queued job. Returns the claimed row or null when
@@ -150,7 +170,6 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     );
   }
 
-  const b = await getOrLaunchBrowser();
   const pdfFormat = options.pageSize === "a4" ? "A4" : "Letter";
   const chunkPdfs: Buffer[] = [];
   const mbAtStart = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -159,7 +178,17 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     "pdf worker — pre-render"
   );
 
+  // Browser-recycle cadence (Build #5.74.4). Keep RSS bounded by
+  // tearing down + relaunching the Chrome process every N chunks.
+  // 4 keeps overhead low (relaunch costs ~1 s) while preventing
+  // unbounded memory growth across a 30-chunk export.
+  const BROWSER_RECYCLE_EVERY = 4;
+
   for (let i = 0; i < chunks.length; i++) {
+    if (i > 0 && i % BROWSER_RECYCLE_EVERY === 0) {
+      await recycleBrowser();
+    }
+    const b = await getOrLaunchBrowser();
     const html = chunks[i]!;
     const page = await b.newPage();
     try {
