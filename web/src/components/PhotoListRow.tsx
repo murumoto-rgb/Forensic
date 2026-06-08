@@ -24,9 +24,16 @@ interface Props {
   batchLoading: boolean;
   threshold: number;
   canEdit: boolean;
+  /** When true, the row is in select mode: a checkbox appears on
+   *  the left, the thumbnail-click triggers selection toggle instead
+   *  of opening the lightbox, and the right-side action buttons are
+   *  hidden so the action bar at the top owns the verbs. */
+  selectMode: boolean;
+  selected: boolean;
   onOpen: () => void;
   onOpenEditor: () => void;
   onToggleFavorite: () => void;
+  onToggleSelected: () => void;
 }
 
 const ROTATIONS_LABEL: Record<number, string> = {
@@ -59,9 +66,12 @@ export function PhotoListRow({
   batchLoading,
   threshold,
   canEdit,
+  selectMode,
+  selected,
   onOpen,
   onOpenEditor,
   onToggleFavorite,
+  onToggleSelected,
 }: Props) {
   // Resolve floor-plan label for the "location" line. iOS treats
   // a photo as "located" when it has a plan AND pixel coordinates;
@@ -105,17 +115,37 @@ export function PhotoListRow({
 
   const inGroup = photo.groupID != null;
 
+  const thumbClickHandler = selectMode ? onToggleSelected : onOpen;
   return (
     <article
-      className="flex gap-3 rounded border border-neutral-800 bg-neutral-900/40 p-2 transition hover:border-neutral-700"
+      className={
+        selected
+          ? "flex gap-3 rounded border border-blue-500 bg-blue-950/40 p-2 transition"
+          : "flex gap-3 rounded border border-neutral-800 bg-neutral-900/40 p-2 transition hover:border-neutral-700"
+      }
       data-photo-id={photo.id}
     >
+      {selectMode && (
+        <label className="flex shrink-0 items-start pt-1">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onToggleSelected}
+            aria-label={`Select photo ${photo.sequenceNumber}`}
+            className="h-4 w-4 cursor-pointer"
+          />
+        </label>
+      )}
       <button
         type="button"
-        onClick={onOpen}
+        onClick={thumbClickHandler}
         className="relative block shrink-0 overflow-hidden rounded border border-neutral-800 bg-neutral-950"
         style={{ width: 144, height: 108 }}
-        aria-label={`Open photo ${photo.sequenceNumber}`}
+        aria-label={
+          selectMode
+            ? `Toggle selection for photo ${photo.sequenceNumber}`
+            : `Open photo ${photo.sequenceNumber}`
+        }
       >
         <PhotoThumbnail
           projectId={projectId}
@@ -223,6 +253,7 @@ export function PhotoListRow({
         )}
       </div>
 
+      {!selectMode && (
       <div className="flex shrink-0 flex-col items-end gap-1">
         <button
           type="button"
@@ -272,6 +303,7 @@ export function PhotoListRow({
           ⋯
         </button>
       </div>
+      )}
     </article>
   );
 }
