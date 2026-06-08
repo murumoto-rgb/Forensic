@@ -86,6 +86,13 @@ export function ProjectListPage({ session }: Props) {
           >
             AI rules
           </Link>
+          <Link
+            to="/settings"
+            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+            title="Account + AI preferences + diagnostics"
+          >
+            ⚙ Settings
+          </Link>
           <button
             type="button"
             onClick={() => signOutLocal()}

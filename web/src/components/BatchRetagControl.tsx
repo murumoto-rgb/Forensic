@@ -5,6 +5,7 @@ import {
   type BatchOptions,
   type BatchPhotoOutcome,
 } from "../lib/useBatchRetag";
+import { useUserPrefs } from "../lib/useUserPrefs";
 import type { MutableRefObject } from "react";
 
 /**
@@ -38,10 +39,14 @@ export function BatchRetagControl({
   photoCount: number;
 }) {
   const [showModal, setShowModal] = useState(false);
+  const prefs = useUserPrefs();
+  // Read user prefs as the initial defaults; the modal still lets
+  // the user override per-batch (the changes don't persist back to
+  // prefs — that would feel surprising for a one-off override).
   const [opts, setOpts] = useState<BatchOptions>({
-    model: "claude-sonnet-4-6",
+    model: prefs.model,
     skipAlreadyTagged: true,
-    concurrency: 3,
+    concurrency: prefs.concurrency,
   });
   const { state, start, cancel, reset } = useBatchRetag({
     projectId,
@@ -66,6 +71,14 @@ export function BatchRetagControl({
         type="button"
         onClick={() => {
           reset();
+          // Refresh the per-batch defaults from current user prefs
+          // so a settings change between batches is honored without
+          // remounting the control.
+          setOpts({
+            model: prefs.model,
+            skipAlreadyTagged: opts.skipAlreadyTagged,
+            concurrency: prefs.concurrency,
+          });
           setShowModal(true);
         }}
         disabled={photoCount === 0 || inFlight}

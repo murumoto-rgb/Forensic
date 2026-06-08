@@ -8,6 +8,7 @@ import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
 import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
 
 export function App() {
@@ -71,6 +72,10 @@ export function App() {
         <Route
           path="/admin/ai-rules"
           element={session ? <AdminAIRulesPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/settings"
+          element={session ? <SettingsPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
