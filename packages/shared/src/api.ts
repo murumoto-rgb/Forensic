@@ -97,6 +97,40 @@ export interface SyncFilesCheckResponse {
   existing: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Per-user preferences (Build #5.95.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-backed copy of the user's UI prefs. Web hydrates from
+ * `GET /v1/me/prefs` on app load with a localStorage fallback for
+ * 404s, and writes (debounced) on every change so the prefs follow
+ * the user across browsers / devices.
+ */
+export interface UserPrefs {
+  /** AI model used by the batch / single Re-tag controls. */
+  aiModel: string | null;
+  /** Tag confidence threshold (0–1). */
+  tagConfidenceThreshold: number | null;
+  /** Parallel AI request concurrency cap (1–20). */
+  aiConcurrency: number | null;
+}
+
+export interface GetUserPrefsResponse {
+  prefs: UserPrefs;
+  /** Opaque token; clients echo on PUT for optimistic concurrency. */
+  revision: string;
+}
+
+export interface PutUserPrefsRequest {
+  prefs: UserPrefs;
+  expectedRevision: string | null;
+}
+
+export interface PutUserPrefsResponse {
+  revision: string;
+}
+
 // ===========================================================================
 // Phase 4 — AI tagging proxy (Build #5.32.1)
 // ===========================================================================

@@ -32,6 +32,7 @@ import { aiTagRoute } from "./routes/aiTag.js";
 import { appConfigRoute } from "./routes/appConfig.js";
 import { locksRoute } from "./routes/locks.js";
 import { exportsRoute } from "./routes/exports.js";
+import { meRoute } from "./routes/me.js";
 import { startPdfExportWorker } from "./exports/pdfWorker.js";
 import { ensureChromium } from "./exports/ensureChromium.js";
 
@@ -82,6 +83,7 @@ async function main() {
   await app.register(appConfigRoute);
   await app.register(locksRoute);
   await app.register(exportsRoute);
+  await app.register(meRoute);
 
   // Error handler — captures non-4xx exceptions into Sentry then
   // delegates to Fastify's default reply machinery (Build #5.57.1).
