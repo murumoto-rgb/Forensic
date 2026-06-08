@@ -44,10 +44,10 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Magic-link sign in | 📋 Phase 2 | 📋 Phase 2 | n/a | Defers until Resend is configured |
 | **Project list & metadata** | | | | |
 | List projects | ✅ | ✅ Phase 1A | server: `projects.manifest`, list endpoint at `GET /v1/projects` | iOS pushes manifests to server in Phase 1B-2; web reads them from `GET /v1/projects` |
-| Create / rename project | ✅ | 📋 Phase 2 | `Project.name` | |
-| Project GPS + address | ✅ | 📋 Phase 2 | `Project.projectGPS`, `Project.projectAddress` | |
+| Create / rename project | ✅ | ✅ Build #5.84.1 | `Project.name` | "+ New project" modal on web list page; rename via Info-tab text input. Server `PUT /v1/projects/:id` already accepts create (expectedRevision: null) and update. iOS exposes create via `ProjectStore.create(named:)`; rename is iOS-only follow-on (the Info screen there is read-only for the name today). |
+| Project GPS + address | ✅ | ✅ Build #5.83.1 | `Project.projectGPS`, `Project.projectAddress` | Address edit on Info tab (Path P #8/8); forward-geocoding to fill `projectGPS` stays iOS-only. |
 | Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |
-| Soft-delete / restore project | ✅ | ✅ (Build #5.6.1) | `Project.isDeleted` (bool, default false) | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`; server filters list + detail on this flag (PR #35 = Build #5.5.1); web simply omits trashed rows from the project list. Schema bumped to v2 in the same PR. |
+| Soft-delete / restore project | ✅ | ✅ (Build #5.84.1) | `Project.isDeleted` (bool, default false), `POST /v1/projects/:id/restore` | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`. Web list filters trashed rows out of the active section and shows them in a collapsible "Trashed projects" section with a Restore button per row. Info tab's "Move to trash" sets `isDeleted=true` and navigates back to the list. Permanent deletion still pending — server endpoint not yet built. |
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
 | Import floor plan (PDF / image) | ✅ | 📋 Phase 3 PR-C | `FloorPlan.imageFilename` | |

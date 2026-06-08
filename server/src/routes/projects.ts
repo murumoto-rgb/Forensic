@@ -55,17 +55,32 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
   // Filters out soft-deleted projects (iOS sets `isDeleted=true` on
   // the manifest when the user trashes a project; we read that
   // straight from the JSONB so there's no extra writer to keep in
-  // sync). The `.or` clause keeps projects whose manifest never
-  // carried the field (older clients pre-isDeleted) as well as
-  // those that explicitly set it to false.
+  // sync). The default `.or` clause keeps projects whose manifest
+  // never carried the field (older clients pre-isDeleted) as well
+  // as those that explicitly set it to false.
+  //
+  // Query parameter `?trashed=true` flips the filter so the trashed
+  // projects section on the web list page can fetch its set. Old
+  // clients omit it; behaviour unchanged for them.
   // -----------------------------------------------------------------
-  app.get<{ Reply: ProjectListResponse | ApiError }>("/v1/projects", async (request, reply) => {
-    const { data, error } = await supabaseAdmin
+  app.get<{
+    Querystring: { trashed?: string };
+    Reply: ProjectListResponse | ApiError;
+  }>("/v1/projects", async (request, reply) => {
+    const trashed = request.query.trashed === "true";
+    let query = supabaseAdmin
       .from("projects")
       .select("id, name, manifest_schema_version, revision, created_at, updated_at")
       .eq("owner_id", request.user.id)
-      .or("manifest->>isDeleted.is.null,manifest->>isDeleted.eq.false")
       .order("updated_at", { ascending: false });
+
+    if (trashed) {
+      query = query.eq("manifest->>isDeleted", "true");
+    } else {
+      query = query.or("manifest->>isDeleted.is.null,manifest->>isDeleted.eq.false");
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       request.log.error({ err: error }, "Failed to list projects");
@@ -270,6 +285,79 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
     if (writeError) {
       request.log.error({ err: writeError, projectId: id }, "Failed to write project");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+
+    return { revision: newRevision };
+  });
+
+  // -----------------------------------------------------------------
+  // POST /v1/projects/:id/restore — flip a trashed project back to
+  // active (isDeleted: false).
+  //
+  // We can't restore via the normal PUT roundtrip because GET
+  // returns 404 for trashed projects (intentionally — deep-linking a
+  // trashed project's URL shouldn't bypass the list filter). The
+  // restore button on the web trash list only has the row's id +
+  // revision, not the full manifest, so the server reads the
+  // manifest itself, flips the flag, generates a fresh revision,
+  // and writes it back.
+  //
+  // No body. Returns the new revision so callers can keep their
+  // optimistic-concurrency token in sync if they navigate into the
+  // workspace afterward.
+  // -----------------------------------------------------------------
+  app.post<{
+    Params: { id: string };
+    Reply: PutManifestResponse | ApiError;
+  }>("/v1/projects/:id/restore", async (request, reply) => {
+    const { id } = request.params;
+
+    const { data, error } = await supabaseAdmin
+      .from("projects")
+      .select("manifest, owner_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      request.log.error({ err: error, projectId: id }, "Failed to fetch project for restore");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+    if (!data || data.owner_id !== request.user.id) {
+      reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
+      return;
+    }
+
+    const manifest = data.manifest as Record<string, unknown> & {
+      isDeleted?: boolean;
+    };
+    if (manifest.isDeleted !== true) {
+      // Already active — nothing to do. Return current revision so
+      // the client's UI can refresh without erroring.
+      const { data: row } = await supabaseAdmin
+        .from("projects")
+        .select("revision")
+        .eq("id", id)
+        .maybeSingle();
+      return { revision: (row?.revision as string) ?? "" };
+    }
+
+    const restored = { ...manifest, isDeleted: false };
+    const newRevision = crypto.randomUUID();
+
+    const { error: writeError } = await supabaseAdmin
+      .from("projects")
+      .update({
+        manifest: restored,
+        revision: newRevision,
+      })
+      .eq("id", id)
+      .eq("owner_id", request.user.id);
+
+    if (writeError) {
+      request.log.error({ err: writeError, projectId: id }, "Failed to restore project");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
