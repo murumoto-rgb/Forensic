@@ -238,6 +238,34 @@ export const api = {
       method: "POST",
     }),
   /**
+   * Permanently delete a trashed project — reaps every blob, drops
+   * the `files` rows, drops the `projects` row. Server returns 204
+   * on success and 409 if the project isn't already trashed.
+   */
+  hardDeleteProject: async (projectId: string): Promise<void> => {
+    const { data } = await supabase.auth.getSession();
+    const jwt = data.session?.access_token;
+    const resp = await fetch(
+      `${env.API_URL}/v1/projects/${projectId}`,
+      {
+        method: "DELETE",
+        headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+      }
+    );
+    if (resp.status === 204) return;
+    let body: { error?: string; message?: string } | null = null;
+    try {
+      body = (await resp.json()) as { error?: string; message?: string };
+    } catch {
+      // 5xx may not be JSON.
+    }
+    throw new ApiError(
+      resp.status,
+      body?.error ?? "unknown",
+      body?.message ?? `HTTP ${resp.status}`
+    );
+  },
+  /**
    * Request a presigned PUT URL for a photo/plan/markup binary.
    * Caller uploads the file directly to R2, then calls
    * `commitUpload` to record the row.

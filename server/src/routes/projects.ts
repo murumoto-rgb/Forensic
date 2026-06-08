@@ -23,6 +23,7 @@ import {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { deleteObjects } from "../r2.js";
 
 const PutBodySchema = z.object({
   project: ProjectSchema,
@@ -363,5 +364,109 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     }
 
     return { revision: newRevision };
+  });
+
+  // -----------------------------------------------------------------
+  // DELETE /v1/projects/:id — permanently delete a trashed project.
+  //
+  // Safety-net: refuse to hard-delete an active project; the caller
+  // must soft-delete (isDeleted=true) first. Mirrors iOS's two-step
+  // swipe-to-trash then swipe-to-purge flow.
+  //
+  // Steps:
+  //   1. Confirm ownership + isDeleted=true.
+  //   2. Gather every object_key in `files` for this project.
+  //   3. Batch-delete from R2 (best effort).
+  //   4. Delete the `files` rows.
+  //   5. Delete the `projects` row.
+  //
+  // Returns 204 on success.
+  // -----------------------------------------------------------------
+  app.delete<{
+    Params: { id: string };
+    Reply: ApiError | null;
+  }>("/v1/projects/:id", async (request, reply) => {
+    const { id } = request.params;
+
+    const { data: existing, error: fetchError } = await supabaseAdmin
+      .from("projects")
+      .select("manifest, owner_id")
+      .eq("id", id)
+      .maybeSingle();
+    if (fetchError) {
+      request.log.error({ err: fetchError, projectId: id }, "Failed to fetch project for DELETE");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+    if (!existing || existing.owner_id !== request.user.id) {
+      reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
+      return;
+    }
+
+    const manifest = existing.manifest as Record<string, unknown> & {
+      isDeleted?: boolean;
+    };
+    if (manifest.isDeleted !== true) {
+      reply.code(409).send({
+        error: "precondition_failed",
+        message: "Project is still active. Move it to trash before permanently deleting.",
+      });
+      return;
+    }
+
+    // Step 2: list every file row for the project.
+    const { data: files, error: filesError } = await supabaseAdmin
+      .from("files")
+      .select("object_key")
+      .eq("project_id", id);
+    if (filesError) {
+      request.log.error({ err: filesError, projectId: id }, "Failed to list files for DELETE");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+    const objectKeys = (files ?? []).map((r) => r.object_key as string);
+
+    // Step 3: best-effort R2 reaping. Per-blob errors are logged but
+    // not surfaced — orphaned blobs are a separate cleanup concern.
+    try {
+      await deleteObjects(objectKeys);
+    } catch (err) {
+      request.log.warn(
+        { err, projectId: id, objectCount: objectKeys.length },
+        "deleteObjects partial failure during project hard-delete; continuing with DB cleanup."
+      );
+    }
+
+    // Step 4: drop files rows.
+    if (objectKeys.length > 0) {
+      const { error: filesDeleteError } = await supabaseAdmin
+        .from("files")
+        .delete()
+        .eq("project_id", id);
+      if (filesDeleteError) {
+        request.log.error({ err: filesDeleteError, projectId: id }, "Failed to drop file rows");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+    }
+
+    // Step 5: drop project row.
+    const { error: projDeleteError } = await supabaseAdmin
+      .from("projects")
+      .delete()
+      .eq("id", id)
+      .eq("owner_id", request.user.id);
+    if (projDeleteError) {
+      request.log.error({ err: projDeleteError, projectId: id }, "Failed to delete project row");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+
+    request.log.info(
+      { projectId: id, blobCount: objectKeys.length, by: request.user.id },
+      "Project hard-deleted"
+    );
+    reply.code(204);
+    return null;
   });
 };
