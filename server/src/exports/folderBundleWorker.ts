@@ -225,9 +225,19 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
     },
   }).done();
 
+  let totalBytes = 0;
+  const bytesObserver = (n: number) => {
+    totalBytes += n;
+  };
+
+  // Step 4a: floor plans — `00 Floor Plans/` folder at the top.
+  // iOS export today skips plans; the user asked for them on web.
+  if (project.floorPlans.length > 0) {
+    await addFloorPlansToArchive(archive, project, log, bytesObserver);
+  }
+
   // Step 5: walk each bucket folder.
   let bucketIdx = 0;
-  let totalBytes = 0;
   for (const bucket of buckets) {
     const photosInBucket = byBucket.get(bucket.id);
     if (!photosInBucket || photosInBucket.length === 0) continue;
@@ -238,9 +248,7 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       photosInBucket.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      (n) => {
-        totalBytes += n;
-      }
+      bytesObserver
     );
   }
   // Unbucketed.
@@ -253,9 +261,7 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       unbucketed.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      (n) => {
-        totalBytes += n;
-      }
+      bytesObserver
     );
   }
 
@@ -271,6 +277,82 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   );
 }
 
+async function addFloorPlansToArchive(
+  archive: archiver.Archiver,
+  project: Project,
+  log: FastifyBaseLogger,
+  bytesObserver: (n: number) => void
+): Promise<void> {
+  const folder = "00 Floor Plans";
+  // Query files table for plan binaries (same lookup pattern as
+  // photos — handles UUID case-sensitivity in R2 keys).
+  const planIds = project.floorPlans.map((p) => p.id);
+  const { data: fileRows, error: filesErr } = await supabaseAdmin
+    .from("files")
+    .select("photo_id, object_key, kind")
+    .eq("project_id", project.id)
+    .in("photo_id", planIds)
+    .eq("kind", "plan");
+  if (filesErr) {
+    log.warn(
+      { err: filesErr, projectId: project.id },
+      "folder export — floor-plan files lookup failed; skipping plan binaries"
+    );
+  }
+  const keyByPlanIdLower = new Map<string, string>();
+  for (const row of fileRows ?? []) {
+    const r = row as { photo_id: string; object_key: string };
+    keyByPlanIdLower.set(r.photo_id.toLowerCase(), r.object_key);
+  }
+
+  // Plan metadata sidecar — calibration values + label + north + sortOrder.
+  const lines: string[] = [];
+  lines.push(`# ${project.name} — floor plans`);
+  lines.push(`# Generated ${new Date().toISOString()}`);
+  lines.push("");
+  for (const [idx, plan] of project.floorPlans.entries()) {
+    lines.push(`## Plan ${idx + 1} — ${plan.label}`);
+    lines.push(`pixelsPerFoot: ${plan.pixelsPerFoot}`);
+    lines.push(`calibrationDistanceFeet: ${plan.calibrationDistanceFeet}`);
+    lines.push(
+      `anchorPixel: (${plan.anchorPixelX}, ${plan.anchorPixelY})`
+    );
+    lines.push(
+      `anchorLocalFeet: (${plan.anchorLocalXFeet}, ${plan.anchorLocalYFeet})`
+    );
+    lines.push(`northDeg: ${plan.northDeg}`);
+    lines.push(`distress markers: ${plan.distress.length}`);
+    lines.push("");
+
+    const objectKey = keyByPlanIdLower.get(plan.id.toLowerCase());
+    if (!objectKey) {
+      log.warn(
+        { planId: plan.id },
+        "folder export — no files row for plan; skipping binary"
+      );
+      continue;
+    }
+    try {
+      const bytes = await getObjectBytes(objectKey);
+      const ext = plan.imageFilename.split(".").pop() ?? "png";
+      const safeLabel = safeName(plan.label);
+      archive.append(bytes, {
+        name: `${folder}/${String(idx + 1).padStart(2, "0")} ${safeLabel}.${ext}`,
+      });
+      bytesObserver(bytes.byteLength);
+    } catch (err) {
+      log.warn(
+        { err, planId: plan.id, objectKey },
+        "folder export — R2 read failed for plan; skipping binary"
+      );
+    }
+  }
+
+  const metadata = lines.join("\n");
+  archive.append(metadata, { name: `${folder}/plans.txt` });
+  bytesObserver(Buffer.byteLength(metadata));
+}
+
 async function addBucketToArchive(
   archive: archiver.Archiver,
   folderName: string,
@@ -279,10 +361,39 @@ async function addBucketToArchive(
   log: FastifyBaseLogger,
   bytesObserver: (n: number) => void
 ): Promise<void> {
+  // Look up the actual R2 object_key for each photo from the
+  // `files` table — iOS may store UUIDs as uppercase in the path
+  // while the manifest carries them as the canonical lowercase
+  // form, and R2 keys are case-sensitive. Querying the table is
+  // the only safe way to get the real key.
+  const photoIds = photos.map((p) => p.id);
+  const { data: fileRows, error: filesErr } = await supabaseAdmin
+    .from("files")
+    .select("photo_id, object_key, kind")
+    .eq("project_id", project.id)
+    .in("photo_id", photoIds)
+    .eq("kind", "photo");
+  if (filesErr) {
+    log.error(
+      { err: filesErr, projectId: project.id },
+      "folder export — files-table lookup failed; skipping photos but keeping captions.txt"
+    );
+  }
+  const keyByPhotoIdLower = new Map<string, string>();
+  for (const row of fileRows ?? []) {
+    const r = row as { photo_id: string; object_key: string };
+    keyByPhotoIdLower.set(r.photo_id.toLowerCase(), r.object_key);
+  }
+
   for (const photo of photos) {
-    // Pull the photo's R2 object key from the files table — same
-    // pattern PhotoSyncer + the photos route use.
-    const objectKey = `${project.id}/${photo.id}/photo`;
+    const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
+    if (!objectKey) {
+      log.warn(
+        { photoId: photo.id, projectId: project.id },
+        "folder export — no files row for photo (probably not uploaded yet); skipping"
+      );
+      continue;
+    }
     try {
       const bytes = await getObjectBytes(objectKey);
       const filename = photoFilename(project, photo);
@@ -291,7 +402,7 @@ async function addBucketToArchive(
     } catch (err) {
       log.warn(
         { err, photoId: photo.id, objectKey },
-        "folder export — skipping photo (R2 read failed)"
+        "folder export — R2 read failed; skipping photo"
       );
     }
   }
