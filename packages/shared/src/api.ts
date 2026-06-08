@@ -98,6 +98,80 @@ export interface SyncFilesCheckResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Project exports (Build #5.97.1) — unified surface for PDF / folder / CSV
+// ---------------------------------------------------------------------------
+
+export type ExportKind = "pdf" | "folder" | "csv";
+export type ExportStatus = "queued" | "running" | "done" | "failed";
+
+/** Options for the "Folder by Bucket" export. Mirrors iOS's
+ *  `FolderExportRunner` toggles. */
+export interface FolderExportOptions {
+  /** When true, server burns the photo's capture timestamp + GPS
+   *  into the JPG itself (re-encodes; loses original EXIF in the
+   *  process — a litigation-grade option). Default false. */
+  burnTimestampAndGPS: boolean;
+  /** Scope: which subset of project photos to include. */
+  scope: "all" | "filtered" | "selected";
+  /** When `scope === "selected"`, the photo IDs to include. */
+  selectedPhotoIds: string[] | null;
+}
+
+/** Options for the AI Analysis CSV export. */
+export interface AiAnalysisCsvOptions {
+  /** When true, photos without an `aiAnalysis` block are skipped
+   *  (default — most users only care about analyzed photos). */
+  onlyAnalyzed: boolean;
+  /** Tags below this confidence are dropped from the CSV. Defaults
+   *  to 0.5 (matches iOS). */
+  minConfidence: number;
+}
+
+/** Discriminated union of every export's options shape. */
+export type ProjectExportOptions =
+  | ({ kind: "pdf" } & Partial<PdfExportOptions>)
+  | ({ kind: "folder" } & Partial<FolderExportOptions>)
+  | ({ kind: "csv" } & Partial<AiAnalysisCsvOptions>);
+
+export interface ProjectExport {
+  id: string;
+  projectId: string;
+  kind: ExportKind;
+  status: ExportStatus;
+  /** Present once `status === "done"`. R2 object key the server
+   *  resolves to a presigned-GET on demand. */
+  objectKey: string | null;
+  /** Size of the rendered artifact in bytes (populated on done). */
+  sizeBytes: number | null;
+  errorMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface CreateProjectExportRequest {
+  kind: ExportKind;
+  /** Per-kind options. Unknown fields are ignored; missing fields
+   *  default to the worker's defaults. */
+  options?: Partial<FolderExportOptions> | Partial<AiAnalysisCsvOptions> | Partial<PdfExportOptions>;
+}
+
+export interface CreateProjectExportResponse {
+  export: ProjectExport;
+}
+
+export interface ListProjectExportsResponse {
+  exports: ProjectExport[];
+}
+
+export interface GetProjectExportResponse {
+  export: ProjectExport;
+  /** Short-lived presigned-GET URL when status==='done'. */
+  downloadUrl: string | null;
+  downloadUrlExpiresAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Per-user preferences (Build #5.95.1)
 // ---------------------------------------------------------------------------
 

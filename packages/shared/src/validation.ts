@@ -232,6 +232,28 @@ export const UserPrefsSchema = z.object({
   aiConcurrency: nullable(z.number().int().min(1).max(20)),
 });
 
+/** Folder-by-bucket export options. All fields optional on the wire;
+ *  worker fills defaults. */
+export const FolderExportOptionsSchema = z.object({
+  burnTimestampAndGPS: z.boolean().optional(),
+  scope: z.enum(["all", "filtered", "selected"]).optional(),
+  selectedPhotoIds: z.array(z.string()).nullable().optional(),
+});
+
+/** AI Analysis CSV export options. */
+export const AiAnalysisCsvOptionsSchema = z.object({
+  onlyAnalyzed: z.boolean().optional(),
+  minConfidence: z.number().min(0).max(1).optional(),
+});
+
+/** Project export creation body — kind + per-kind options. */
+export const CreateProjectExportSchema = z.object({
+  kind: z.enum(["pdf", "folder", "csv"]),
+  // Loose validation here: per-kind shape is checked by the worker.
+  // Empty object is fine; defaults apply.
+  options: z.record(z.unknown()).optional(),
+});
+
 /**
  * Dispatch map: each `AppConfigKey` paired with the zod schema for
  * its value. Server's PUT route uses this to validate the incoming
