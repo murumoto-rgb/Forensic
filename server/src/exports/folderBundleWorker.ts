@@ -35,7 +35,7 @@ import {
   type Project,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
-import { getObjectBytes, r2, r2Bucket } from "../r2.js";
+import { getObjectSize, getObjectStream, r2, r2Bucket } from "../r2.js";
 import { captureException } from "../sentry.js";
 
 const POLL_MS = 5_000;
@@ -148,27 +148,27 @@ class ProgressWriter {
 /**
  * Bounded-concurrency fetcher. Returns an array of promises in the
  * same order as the input. At most `concurrency` fetches in flight
- * at once. Each promise resolves with the fetched buffer or null on
+ * at once. Each promise resolves with the fetched value or null on
  * error so the caller can skip-and-continue without rejecting the
  * whole batch.
  *
- * Critical pattern: parallel FETCH (network-bound), serial APPEND
- * (CPU + stream backpressure). Caller awaits each promise in order
- * and `archive.append()`s the buffer; that gives us I/O parallelism
- * without ballooning the PassThrough buffer.
+ * Critical pattern: parallel FETCH (network-bound), serial CONSUME
+ * (archive.append on the result stream). With Build #5.108.1 the
+ * fetcher returns a Node Readable rather than a Buffer, so memory
+ * cost is per-socket overhead instead of the full body in RAM.
  */
-function parallelFetch<T>(
+function parallelFetch<T, U>(
   items: readonly T[],
-  fetcher: (item: T) => Promise<Buffer>,
+  fetcher: (item: T) => Promise<U>,
   concurrency: number
-): Promise<Buffer | null>[] {
-  const out: Promise<Buffer | null>[] = new Array(items.length);
+): Promise<U | null>[] {
+  const out: Promise<U | null>[] = new Array(items.length);
   let nextToStart = 0;
   let inFlight = 0;
-  const resolvers: Array<(b: Buffer | null) => void> = new Array(items.length);
+  const resolvers: Array<(b: U | null) => void> = new Array(items.length);
 
   for (let i = 0; i < items.length; i++) {
-    out[i] = new Promise<Buffer | null>((resolve) => {
+    out[i] = new Promise<U | null>((resolve) => {
       resolvers[i] = resolve;
     });
   }
@@ -184,8 +184,8 @@ function parallelFetch<T>(
         continue;
       }
       fetcher(item)
-        .then((buf) => {
-          resolvers[i]!(buf);
+        .then((val) => {
+          resolvers[i]!(val);
         })
         .catch(() => {
           resolvers[i]!(null);
@@ -200,7 +200,31 @@ function parallelFetch<T>(
   return out;
 }
 
-const PHOTO_FETCH_CONCURRENCY = 12;
+/**
+ * Wait for the archive entry to finish streaming. archiver emits
+ * 'entry' once the previous entry's stream has been drained into
+ * the zip. We wrap that in a Promise so the serial-append loop can
+ * actually wait for backpressure rather than racing ahead and
+ * piling up streams in memory.
+ */
+function waitForEntry(archive: archiver.Archiver): Promise<void> {
+  return new Promise((resolve) => {
+    archive.once("entry", () => resolve());
+  });
+}
+
+/**
+ * R2 GET concurrency. With streaming bodies (Build #5.108.1) each
+ * in-flight request only holds a small socket buffer (~64KB) in
+ * memory — not the full photo body. Even at 8 in-flight that's
+ * ~512KB of socket bookkeeping vs the previous ~96MB of buffered
+ * Buffers at concurrency 12 which OOM'd Render free tier (#5.107.1).
+ *
+ * Free tier still has a ~512MB envelope, so we keep this modest;
+ * the dominant memory cost is the multipart-upload's in-flight
+ * part buffer (5MB default) and archiver's pending entry header.
+ */
+const PHOTO_FETCH_CONCURRENCY = 8;
 
 /** Filter a name down to filesystem-safe characters; mirrors the
  *  iOS `safeFilename` helper. */
@@ -322,11 +346,6 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
     },
   }).done();
 
-  let totalBytes = 0;
-  const bytesObserver = (n: number) => {
-    totalBytes += n;
-  };
-
   // Initialize progress tracking — the user sees X / Y in the
   // Exports page as photos are pulled.
   const totalItems = photos.length + project.floorPlans.length;
@@ -336,7 +355,7 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   // Step 4a: floor plans — `00 Floor Plans/` folder at the top.
   // iOS export today skips plans; the user asked for them on web.
   if (project.floorPlans.length > 0) {
-    await addFloorPlansToArchive(archive, project, log, bytesObserver, progress);
+    await addFloorPlansToArchive(archive, project, log, progress);
   }
 
   // Step 5: walk each bucket folder.
@@ -351,7 +370,6 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       photosInBucket.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      bytesObserver,
       progress
     );
   }
@@ -365,7 +383,6 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       project,
       unbucketed.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
-      bytesObserver,
       progress
     );
   }
@@ -374,15 +391,16 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   // returns a Promise that resolves once every entry has been
   // flushed into the stream; PassThrough then emits 'end' which
   // lib-storage's Upload sees as the trigger to close the multipart.
-  // Previously the worker swallowed finalize errors and only awaited
-  // the upload — if finalize threw without piping 'end', the upload
-  // hung forever. Now we await both, surfacing any finalize error.
   await archive.finalize();
   await uploadPromise;
 
-  await markDone(job.id, objectKey, totalBytes);
+  // HEAD the uploaded zip to get the final size for the row. We
+  // stream bodies through the archive (#5.108.1) instead of
+  // buffering, so we don't accumulate byte counts during the run.
+  const finalSize = (await getObjectSize(objectKey)) ?? 0;
+  await markDone(job.id, objectKey, finalSize);
   log.info(
-    { jobId: job.id, projectId: job.project_id, bytes: totalBytes },
+    { jobId: job.id, projectId: job.project_id, bytes: finalSize },
     "folder export — done"
   );
 }
@@ -391,7 +409,6 @@ async function addFloorPlansToArchive(
   archive: archiver.Archiver,
   project: Project,
   log: FastifyBaseLogger,
-  bytesObserver: (n: number) => void,
   progress: ProgressWriter
 ): Promise<void> {
   const folder = "00 Floor Plans";
@@ -433,8 +450,7 @@ async function addFloorPlansToArchive(
     lines.push("");
   }
 
-  // Parallel fetch (concurrency-bounded) of every plan binary; serial
-  // append into the archive in array order.
+  // Parallel-fetch streams; consume serially in array order.
   const fetches = parallelFetch(
     project.floorPlans,
     async (plan) => {
@@ -446,28 +462,28 @@ async function addFloorPlansToArchive(
         );
         throw new Error("no_files_row");
       }
-      return getObjectBytes(objectKey);
+      return getObjectStream(objectKey);
     },
     PHOTO_FETCH_CONCURRENCY
   );
 
   for (let i = 0; i < project.floorPlans.length; i++) {
     const plan = project.floorPlans[i]!;
-    const bytes = await fetches[i]!;
-    if (bytes) {
+    const stream = await fetches[i]!;
+    if (stream) {
       const ext = plan.imageFilename.split(".").pop() ?? "png";
       const safeLabel = safeName(plan.label);
-      archive.append(bytes, {
+      const entryDone = waitForEntry(archive);
+      archive.append(stream, {
         name: `${folder}/${String(i + 1).padStart(2, "0")} ${safeLabel}.${ext}`,
       });
-      bytesObserver(bytes.byteLength);
+      await entryDone;
     }
     await progress.tick();
   }
 
   const metadata = lines.join("\n");
   archive.append(metadata, { name: `${folder}/plans.txt` });
-  bytesObserver(Buffer.byteLength(metadata));
 }
 
 async function addBucketToArchive(
@@ -476,7 +492,6 @@ async function addBucketToArchive(
   project: Project,
   photos: Photo[],
   log: FastifyBaseLogger,
-  bytesObserver: (n: number) => void,
   progress: ProgressWriter
 ): Promise<void> {
   // Look up the actual R2 object_key for each photo (case-safe;
@@ -500,9 +515,11 @@ async function addBucketToArchive(
     keyByPhotoIdLower.set(r.photo_id.toLowerCase(), r.object_key);
   }
 
-  // Parallel fetch the bucket's photos, but append serially in
-  // sequence-number order. The fetcher throws on a missing files
-  // row so parallelFetch resolves null and we skip + log.
+  // Parallel fetch the bucket's photos AS STREAMS. The fetch
+  // promise resolves once R2 has sent response headers, not after
+  // the body downloads — body bytes flow lazily as archiver
+  // consumes the stream. So memory is bounded by socket buffers
+  // not photo size, and concurrency can be higher without OOMing.
   const fetchStart = Date.now();
   let fetchedCount = 0;
   let totalFetchMs = 0;
@@ -512,30 +529,32 @@ async function addBucketToArchive(
       const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
       if (!objectKey) throw new Error("no_files_row");
       const t0 = Date.now();
-      const bytes = await getObjectBytes(objectKey);
+      const stream = await getObjectStream(objectKey);
       const elapsed = Date.now() - t0;
       totalFetchMs += elapsed;
       fetchedCount++;
-      // Surface slow R2 reads — typical should be <500ms; if we see
-      // multi-second fetches, R2 is the bottleneck not our code.
       if (elapsed > 2000) {
         log.warn(
-          { photoId: photo.id, objectKey, ms: elapsed, bytes: bytes.byteLength },
-          "folder export — slow R2 read"
+          { photoId: photo.id, objectKey, ms: elapsed },
+          "folder export — slow R2 response (headers)"
         );
       }
-      return bytes;
+      return stream;
     },
     PHOTO_FETCH_CONCURRENCY
   );
 
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i]!;
-    const bytes = await fetches[i]!;
-    if (bytes) {
+    const stream = await fetches[i]!;
+    if (stream) {
       const filename = photoFilename(project, photo);
-      archive.append(bytes, { name: `${folderName}/${filename}` });
-      bytesObserver(bytes.byteLength);
+      const entryDone = waitForEntry(archive);
+      archive.append(stream, { name: `${folderName}/${filename}` });
+      // Wait until archiver has drained THIS entry's stream before
+      // moving on; otherwise the loop races ahead and the next R2
+      // stream piles up in memory while this one is still consuming.
+      await entryDone;
     } else {
       log.warn(
         { photoId: photo.id, projectId: project.id },
@@ -550,14 +569,13 @@ async function addBucketToArchive(
       folder: folderName,
       photoCount: photos.length,
       wallMs,
-      avgFetchMs: fetchedCount > 0 ? Math.round(totalFetchMs / fetchedCount) : 0,
+      avgHeaderMs: fetchedCount > 0 ? Math.round(totalFetchMs / fetchedCount) : 0,
       concurrency: PHOTO_FETCH_CONCURRENCY,
     },
     "folder export — bucket batch done"
   );
   const captions = captionsTextForBucket(project, photos);
   archive.append(captions, { name: `${folderName}/captions.txt` });
-  bytesObserver(Buffer.byteLength(captions));
 }
 
 async function tick(log: FastifyBaseLogger): Promise<void> {
