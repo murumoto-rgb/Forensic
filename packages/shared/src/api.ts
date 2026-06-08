@@ -205,6 +205,37 @@ export interface PutUserPrefsResponse {
   revision: string;
 }
 
+// ---------------------------------------------------------------------------
+// Per-user storage status (Build #5.100.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregated cloud-storage usage for the calling user — surfaced on
+ * the Settings page (Storage section) so users can see how much
+ * their projects + photos consume on the server. Phase 5
+ * multi-user quotas will reuse this shape.
+ */
+export interface UserStorageStatus {
+  /** Total projects owned by the user (active + trashed). */
+  projectCount: number;
+  /** Active (non-deleted) projects. */
+  activeProjectCount: number;
+  /** Total photos across all projects (manifest counts, not file rows). */
+  photoCount: number;
+  /** Total floor plans across all projects. */
+  floorPlanCount: number;
+  /** Sum of `size_bytes` across all `files` rows owned by the user. */
+  totalBlobBytes: number;
+  /** Per-kind blob breakdown — same `kind` values as `files.kind`. */
+  blobBytesByKind: Record<string, number>;
+}
+
+export interface GetUserStorageStatusResponse {
+  status: UserStorageStatus;
+  /** Server time the aggregate was computed (browser caches 30s). */
+  computedAt: string;
+}
+
 // ===========================================================================
 // Phase 4 — AI tagging proxy (Build #5.32.1)
 // ===========================================================================

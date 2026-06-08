@@ -195,6 +195,15 @@ function WorkspaceHeader({ session, manifest }: WorkspaceHeaderProps) {
         <span className="text-xs text-neutral-500">{session.user.email}</span>
         <SaveStatusPill status={manifest.status} />
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void manifest.reload()}
+            disabled={manifest.status.kind === "loading" || manifest.status.kind === "saving"}
+            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            title="Re-fetch the manifest from the server. Mirrors iOS's Sync-now button."
+          >
+            ↻
+          </button>
           <Link
             to="/settings"
             className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
