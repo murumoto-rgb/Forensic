@@ -1,19 +1,48 @@
+import { useEffect, useState } from "react";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 
 /**
- * Info tab — project metadata at a glance. Currently read-only.
- * Address editing (writes `projectAddress`) and report-branding
- * (via `app_config`) land in PR #8 of the Path-P series.
+ * Info tab — project metadata + editable address.
+ *
+ * Build #5.83.1 (Path P #8/8) wires the address-edit affordance:
+ * a plain text input that writes `projectAddress` on blur.
+ * Forward-geocoding (resolving the typed address into lat/long and
+ * stamping `projectGPS`) is iOS-only — web stores the literal string
+ * and lets the next iOS sync pick a fix if the user wants one.
+ *
+ * Report-branding (logos, colors, header text) is out of scope for
+ * this PR — it lives in `app_config` with a per-team payload, and
+ * the upload + edit UI is a separate effort. Captured in the parity
+ * matrix as a follow-on.
  */
 interface Props {
   projectId: string;
   manifest: ProjectManifestHook;
+  canEdit: boolean;
 }
 
-export function InfoTab({ manifest }: Props) {
+export function InfoTab({ manifest, canEdit }: Props) {
   const project = manifest.project;
+  const [address, setAddress] = useState(project?.projectAddress ?? "");
+
+  useEffect(() => {
+    setAddress(project?.projectAddress ?? "");
+  }, [project?.projectAddress]);
+
   if (!project) return null;
   const gps = project.projectGPS;
+
+  function commitAddress() {
+    if (!project) return;
+    const next = address.trim();
+    const cur = project.projectAddress ?? "";
+    if (next === cur.trim()) return;
+    manifest.save({
+      ...project,
+      projectAddress: next === "" ? null : next,
+    });
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
@@ -26,10 +55,16 @@ export function InfoTab({ manifest }: Props) {
         </dd>
 
         <dt className="text-neutral-500">Address</dt>
-        <dd className="text-neutral-200">
-          {project.projectAddress ?? (
-            <span className="text-neutral-500">(none set)</span>
-          )}
+        <dd>
+          <input
+            type="text"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            onBlur={commitAddress}
+            disabled={!canEdit}
+            placeholder="(no address set)"
+            className="w-full max-w-md rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 placeholder:text-neutral-600 disabled:opacity-50"
+          />
         </dd>
 
         <dt className="text-neutral-500">GPS</dt>
@@ -67,8 +102,11 @@ export function InfoTab({ manifest }: Props) {
         <dd className="text-neutral-500">v{project.manifestSchemaVersion}</dd>
       </dl>
       <p className="text-xs text-neutral-500">
-        Address editing + report-branding controls land in a follow-up
-        PR of the Path-P parity series.
+        Address edits write `projectAddress` on blur. Forward-geocoding
+        (resolving the address to GPS coordinates) stays on iOS — when
+        you next open the project there, iOS can pick a fix and stamp
+        `projectGPS`. Report-branding (logos / colors / header text)
+        is a follow-on PR.
       </p>
     </section>
   );

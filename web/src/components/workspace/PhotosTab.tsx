@@ -8,6 +8,7 @@ import { PhotoLightbox } from "../PhotoLightbox";
 import { PhotoFilterBar } from "../PhotoFilterBar";
 import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import { SelectionActionBar } from "../SelectionActionBar";
+import { TrashSection } from "../TrashSection";
 
 /**
  * Photos tab — filter bar + rich list + editor + select mode.
@@ -202,6 +203,12 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
         onOpenEditor={(photo) => setEditorPhotoId(photo.id)}
         onPhotoUpdated={updatePhoto}
         onToggleSelected={toggleSelected}
+      />
+
+      <TrashSection
+        project={project}
+        canEdit={canEdit}
+        onProjectChanged={(next) => manifest.save(next)}
       />
 
       {lightboxIndex !== null && (

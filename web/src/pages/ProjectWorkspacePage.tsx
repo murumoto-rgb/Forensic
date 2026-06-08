@@ -142,7 +142,9 @@ export function ProjectWorkspacePage({ session }: Props) {
             />
             <Route
               path="info"
-              element={<InfoTab projectId={id} manifest={manifest} />}
+              element={
+                <InfoTab projectId={id} manifest={manifest} canEdit={canEdit} />
+              }
             />
             <Route path="*" element={<Navigate to="photos" replace />} />
           </Routes>
