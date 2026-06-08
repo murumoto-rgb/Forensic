@@ -76,6 +76,31 @@ export interface AIRulesTemplate {
 }
 
 // ---------------------------------------------------------------------------
+// Report branding — team-wide overrides for PDF export header / footer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-team report branding. iOS displays the same fields under
+ * Settings → Report branding; the PDF exporter on both sides reads
+ * this key at render time and falls back to compile-time defaults
+ * when a field is null. Logo lives in R2 under the project-agnostic
+ * `branding/<uuid>.png` key; the manifest carries the storage path,
+ * not the URL — the PDF service resolves the URL at render time
+ * with a fresh presigned-GET.
+ */
+export interface ReportBranding {
+  /** Optional override for the report's top-of-page title. Null = use
+   *  the project name. */
+  titleOverride: string | null;
+  /** Optional subtitle line (typically the firm name or report kind). */
+  subtitleOverride: string | null;
+  /** Optional footer text — appears at the bottom of every page. */
+  footerOverride: string | null;
+  /** Storage path (R2 object key) of the team logo PNG, or null. */
+  logoStoragePath: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Key union + value-shape mapping.
 // ---------------------------------------------------------------------------
 
@@ -91,7 +116,8 @@ export type AppConfigKey =
   | "tagLibrary"
   | "aiRulesTemplate"
   | "tagLibraryDefault"
-  | "aiRulesTemplateDefault";
+  | "aiRulesTemplateDefault"
+  | "reportBranding";
 
 /**
  * Map from `AppConfigKey` to the value shape stored under that key.
@@ -123,4 +149,7 @@ export interface AppConfigValueByKey {
   aiRulesTemplate: AIRulesTemplate;
   tagLibraryDefault: TagLibrary;
   aiRulesTemplateDefault: AIRulesTemplate;
+  /** Editable from web Admin → Report branding; iOS reads it at
+   *  PDF render time. */
+  reportBranding: ReportBranding;
 }

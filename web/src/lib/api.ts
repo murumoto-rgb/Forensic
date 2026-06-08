@@ -311,6 +311,16 @@ export const api = {
       throw e;
     }
   },
+  getReportBrandingConfig: async (): Promise<GetAppConfigResponse<"reportBranding"> | null> => {
+    try {
+      return await request<GetAppConfigResponse<"reportBranding">>(
+        "/v1/config/reportBranding"
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
   /**
    * Read-only bundled-defaults snapshot pushed by iOS at every
    * launch (Build #5.48.1). Used by the admin editors' "Restore
