@@ -29,6 +29,17 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Build #5.134.1: stop corepack hanging the deploy. The
+      # startCommand invokes pnpm through corepack, which — on a cold
+      # free-tier start where pnpm@<pinned> isn't cached in the runtime
+      # image — prints "! Corepack is about to download …" and then
+      # BLOCKS on an interactive "continue? [Y/n]" prompt that never
+      # gets an answer in Render's non-TTY shell. The server never binds
+      # its port, the /healthz check never passes, and the deploy spins
+      # forever (observed: 13+ min hang on the #5.133.1 deploy). Setting
+      # this to 0 makes corepack proceed with the download silently.
+      - key: COREPACK_ENABLE_DOWNLOAD_PROMPT
+        value: "0"
       # Puppeteer Chromium cache (Build #5.74.1 — corrected from
       # #5.62.1). MUST be inside `/opt/render/project/src/` because
       # ONLY that path is packed into the runtime container image.
