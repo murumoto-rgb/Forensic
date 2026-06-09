@@ -21,8 +21,8 @@ enum ProjectDetailScope: Hashable {
     case photos    // imports + photos list + trash + filter chips
     case plan      // floor plans
     case ai        // AI tagging
-    case export    // export
-    case more      // metadata + buckets
+    case buckets   // buckets (Build #5.129.1: Buckets gets its own tab)
+    case more      // metadata + export (Build #5.129.1: Export folds here)
 }
 
 struct ProjectDetailView: View {
@@ -269,32 +269,7 @@ struct ProjectDetailView: View {
             if let project {
                 ScrollViewReader { proxy in
                     List {
-                        // Build #5.128.1: per-tab scope filters which
-                        // sections render. .all (the default) keeps
-                        // today's layout for any non-tabbed caller.
-                        // Build #5.129.1: Buckets gets its own tab;
-                        // Export folds into More.
-                        if scope == .all || scope == .more {
-                            metadataSection(project)
-                        }
-                        if scope == .all || scope == .photos {
-                            actionsSection(project)
-                        }
-                        if scope == .all || scope == .plan {
-                            floorPlanSection(project)
-                        }
-                        if scope == .all || scope == .ai {
-                            aiTaggingSection(project)
-                        }
-                        if scope == .all || scope == .buckets {
-                            bucketsSection(project)
-                        }
-                        if scope == .all || scope == .more {
-                            exportSection(project)
-                        }
-                        if scope == .all || scope == .photos {
-                            photosSection(project)
-                        }
+                        scopedSections(project)
                     }
                     .onChange(of: scrollToPhotoID) { _, newID in
                         guard let newID else { return }
@@ -700,6 +675,46 @@ struct ProjectDetailView: View {
         return current
     }
 
+    /// Build #5.132.1: extracted the scope-conditional section list out
+    /// of the `List { … }` literal into its own `@ViewBuilder` function.
+    /// Seven `if` branches inline inside `Group { ScrollViewReader {
+    /// List { … } } }` made the whole `body` type-check as one
+    /// expression, which Swift rejected with "expression too complex"
+    /// (and cascaded into bogus "no member 'buckets'" errors on the
+    /// enum). Pulling them into a dedicated function gives the type
+    /// checker a small, independent context. The scope booleans are
+    /// precomputed so each branch is a trivial `if`.
+    @ViewBuilder
+    private func scopedSections(_ project: Project) -> some View {
+        let showPhotos = scope == .all || scope == .photos
+        let showPlan   = scope == .all || scope == .plan
+        let showAI     = scope == .all || scope == .ai
+        let showBuckets = scope == .all || scope == .buckets
+        let showMore   = scope == .all || scope == .more
+
+        if showMore {
+            metadataSection(project)
+        }
+        if showPhotos {
+            actionsSection(project)
+        }
+        if showPlan {
+            floorPlanSection(project)
+        }
+        if showAI {
+            aiTaggingSection(project)
+        }
+        if showBuckets {
+            bucketsSection(project)
+        }
+        if showMore {
+            exportSection(project)
+        }
+        if showPhotos {
+            photosSection(project)
+        }
+    }
+
     @ViewBuilder
     private func metadataSection(_ project: Project) -> some View {
         Section("Project Information") {
@@ -771,10 +786,10 @@ struct ProjectDetailView: View {
 
     /// Build #5.128.1: scope-aware FAB selector. Each tab in the
     /// workspace shell shows only the FABs that make sense for it:
-    ///   .photos / .ai  → Camera (take photo / reshoot)
-    ///   .plan          → Distress (mark structural distress on plan)
-    ///   .export / .more → no FAB
-    ///   .all (legacy)  → both FABs (today's behavior, preserved)
+    ///   .photos / .ai    → Camera (take photo / reshoot)
+    ///   .plan            → Distress (mark structural distress on plan)
+    ///   .buckets / .more → no FAB
+    ///   .all (legacy)    → both FABs (today's behavior, preserved)
     @ViewBuilder
     private func scopedFabStack(for project: Project) -> some View {
         switch scope {
