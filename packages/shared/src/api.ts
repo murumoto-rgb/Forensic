@@ -515,10 +515,21 @@ export interface ProjectLock {
   lastHeartbeat: string;
   /** ISO timestamp the lock auto-expires at if no heartbeat lands. */
   expiresAt: string;
+  /**
+   * Per-tab session token the holder sent on acquire (Build #5.120.1).
+   * Lets the server distinguish "same user, same tab" from "same user,
+   * different tab" so a back-nav return doesn't render the user as
+   * locked out by their own stale lock. `null` for iOS holders and
+   * for old web binaries that don't send the token.
+   */
+  clientSession: string | null;
 }
 
 export interface AcquireLockRequest {
   client: LockClient;
+  /** Per-tab session token (web only — see `ProjectLock.clientSession`).
+   *  Generated from `sessionStorage`. */
+  clientSession?: string;
 }
 
 /** Response to acquire / heartbeat — the now-current lock (held by
@@ -528,10 +539,24 @@ export interface LockResponse {
   lock: ProjectLock;
 }
 
-/** GET /lock response. `lock` is null when the project is free
- *  (no row, or the existing row has expired). */
+/** GET /lock response (Build #5.120.1).
+ *
+ *  `lock` is null when the project is free (no row, or expired).
+ *
+ *  `heldByYou` tells the caller their relationship to the lock and
+ *  is what fixes the back-button self-lock bug:
+ *   - `"session"` → same user_id AND same client_session as the
+ *     caller sent → the caller IS the holder (resume editing).
+ *   - `"user"`    → same user_id, different client_session → another
+ *     tab / device of the same user holds it (gentle re-acquire).
+ *   - `null`      → someone else holds it, or it's free.
+ *
+ *  Old servers (pre-#5.120.1) omit `heldByYou`; clients should treat
+ *  absence as `null` and fall back to the legacy "GET never sets
+ *  holding" behaviour. */
 export interface GetLockResponse {
   lock: ProjectLock | null;
+  heldByYou?: "session" | "user" | null;
 }
 
 // ===========================================================================

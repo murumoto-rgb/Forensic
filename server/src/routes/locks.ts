@@ -45,6 +45,14 @@ const LOCK_TTL_MS = 10 * 60 * 1000;
 
 const AcquireBodySchema = z.object({
   client: z.enum(["web", "ios"]),
+  /** Per-tab session token (Build #5.120.1). Web sends a
+   *  sessionStorage-backed UUID; iOS omits. Lets the server
+   *  distinguish same-user-same-tab from same-user-different-tab. */
+  clientSession: z.string().optional(),
+});
+
+const ReleaseBodySchema = z.object({
+  clientSession: z.string().optional(),
 });
 
 interface LockRow {
@@ -55,6 +63,7 @@ interface LockRow {
   acquired_at: string;
   last_heartbeat: string;
   expires_at: string;
+  client_session: string | null;
 }
 
 function rowToLock(row: LockRow): ProjectLock {
@@ -66,7 +75,20 @@ function rowToLock(row: LockRow): ProjectLock {
     acquiredAt: row.acquired_at,
     lastHeartbeat: row.last_heartbeat,
     expiresAt: row.expires_at,
+    clientSession: row.client_session,
   };
+}
+
+/** Compute the caller's relationship to a live lock row.
+ *  See `GetLockResponse.heldByYou` for the discriminator semantics. */
+function heldByYou(
+  row: LockRow,
+  callerUserId: string,
+  callerSession: string | null
+): "session" | "user" | null {
+  if (row.user_id !== callerUserId) return null;
+  if (callerSession === null || row.client_session === null) return "user";
+  return row.client_session === callerSession ? "session" : "user";
 }
 
 /** A row is "live" (still holds the lock) when its expiry is in the
@@ -117,12 +139,21 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
 
   // -----------------------------------------------------------------
   // GET /v1/projects/:id/lock — current lock state (or null when free)
+  //
+  // Query: `?clientSession=<uuid>` — optional. Web sends its per-tab
+  // sessionStorage UUID so the response can carry `heldByYou` (see
+  // shared `GetLockResponse`) and the hook can distinguish
+  // same-tab (resume) from another-tab (gentle re-acquire) from
+  // someone-else (read-only). The bug fix for self-lock on back-nav
+  // return lives here (Build #5.120.1).
   // -----------------------------------------------------------------
   app.get<{
     Params: { id: string };
+    Querystring: { clientSession?: string };
     Reply: GetLockResponse | ApiError;
   }>("/v1/projects/:id/lock", async (request, reply) => {
     const projectId = request.params.id;
+    const callerSession = request.query.clientSession ?? null;
     const { data, error } = await supabaseAdmin
       .from("project_locks")
       .select("*")
@@ -134,9 +165,13 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     if (!data || !isLive(data as LockRow)) {
-      return { lock: null };
+      return { lock: null, heldByYou: null };
     }
-    return { lock: rowToLock(data as LockRow) };
+    const row = data as LockRow;
+    return {
+      lock: rowToLock(row),
+      heldByYou: heldByYou(row, request.user.id, callerSession),
+    };
   });
 
   // -----------------------------------------------------------------
@@ -214,6 +249,7 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
           acquired_at: acquiredAt,
           last_heartbeat: now.toISOString(),
           expires_at: expiresAt.toISOString(),
+          client_session: parsed.data.clientSession ?? null,
         },
         { onConflict: "project_id" }
       )
@@ -304,17 +340,28 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
 
   // -----------------------------------------------------------------
   // DELETE /v1/projects/:id/lock — release (holder only)
+  //
+  // Scoped to the caller's per-tab session when one is provided
+  // (Build #5.120.1) so closing tab A doesn't free tab B's lock.
+  // Without a session token, falls back to "any of my rows" — same
+  // behaviour as today for iOS and old web binaries.
   // -----------------------------------------------------------------
   app.delete<{
     Params: { id: string };
+    Querystring: { clientSession?: string };
     Reply: { ok: true } | ApiError;
   }>("/v1/projects/:id/lock", async (request, reply) => {
     const projectId = request.params.id;
-    const { error } = await supabaseAdmin
+    const callerSession = request.query.clientSession;
+    let query = supabaseAdmin
       .from("project_locks")
       .delete()
       .eq("project_id", projectId)
       .eq("user_id", request.user.id);
+    if (callerSession) {
+      query = query.eq("client_session", callerSession);
+    }
+    const { error } = await query;
     if (error) {
       request.log.error({ err: error, projectId }, "lock release failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
@@ -324,6 +371,51 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     // that still returns ok. (If someone else holds it, this delete
     // matched zero rows and left theirs intact.)
     request.log.info({ projectId, userId: request.user.id }, "lock released");
+    return { ok: true };
+  });
+
+  // -----------------------------------------------------------------
+  // POST /v1/projects/:id/lock/release — beacon-friendly release
+  //
+  // `navigator.sendBeacon` (used on `pagehide` to free the lock when
+  // the user closes the tab) can only POST, not DELETE. This route
+  // accepts a JSON body with `clientSession` and behaves identically
+  // to the scoped DELETE above. Build #5.120.1.
+  // -----------------------------------------------------------------
+  app.post<{
+    Params: { id: string };
+    Body: unknown;
+    Reply: { ok: true } | ApiError;
+  }>("/v1/projects/:id/lock/release", async (request, reply) => {
+    const projectId = request.params.id;
+    const parsed = ReleaseBodySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400).send({
+        error: "bad_request",
+        message: "Request body failed validation",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+    const callerSession = parsed.data.clientSession;
+    let query = supabaseAdmin
+      .from("project_locks")
+      .delete()
+      .eq("project_id", projectId)
+      .eq("user_id", request.user.id);
+    if (callerSession) {
+      query = query.eq("client_session", callerSession);
+    }
+    const { error } = await query;
+    if (error) {
+      request.log.error({ err: error, projectId }, "lock release (beacon) failed");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+    request.log.info(
+      { projectId, userId: request.user.id, beacon: true },
+      "lock released"
+    );
     return { ok: true };
   });
 
