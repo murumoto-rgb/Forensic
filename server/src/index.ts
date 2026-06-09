@@ -34,6 +34,7 @@ import { locksRoute } from "./routes/locks.js";
 import { exportsRoute } from "./routes/exports.js";
 import { projectExportsRoute } from "./routes/projectExports.js";
 import { meRoute } from "./routes/me.js";
+import { adminRoute } from "./routes/admin.js";
 import { startPdfExportWorker } from "./exports/pdfWorker.js";
 import { startFolderExportWorker } from "./exports/folderBundleWorker.js";
 import { startCsvExportWorker } from "./exports/csvWorker.js";
@@ -88,6 +89,7 @@ async function main() {
   await app.register(exportsRoute);
   await app.register(projectExportsRoute);
   await app.register(meRoute);
+  await app.register(adminRoute);
 
   // Error handler — captures non-4xx exceptions into Sentry then
   // delegates to Fastify's default reply machinery (Build #5.57.1).

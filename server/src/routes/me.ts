@@ -15,6 +15,7 @@ import { z } from "zod";
 import {
   UserPrefsSchema,
   type GetUserPrefsResponse,
+  type MeResponse,
   type PutUserPrefsResponse,
   type GetUserStorageStatusResponse,
   type ApiError,
@@ -29,6 +30,46 @@ const PutBodySchema = z.object({
 
 export const meRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
+
+  // -----------------------------------------------------------------
+  // GET /v1/me — identity + org-role for the calling user
+  // (Build #5.124.1). NOT admin-gated — every signed-in user calls
+  // this on mount so the web client can render the right admin
+  // links and gate the admin page.
+  // -----------------------------------------------------------------
+  app.get<{ Reply: MeResponse | ApiError }>(
+    "/v1/me",
+    async (request, reply) => {
+      const userId = request.user.id;
+      const { data, error } = await supabaseAdmin
+        .from("profiles")
+        .select("id, email, display_name, is_admin")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) {
+        request.log.error({ err: error, userId }, "me — read failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+      if (!data) {
+        // First-login race: the on_auth_user_created trigger should
+        // have created the profile row, but if we're called before
+        // it commits, fall back to the JWT-derived identity.
+        return {
+          id: userId,
+          email: request.user.email ?? "",
+          displayName: null,
+          isAdmin: false,
+        };
+      }
+      return {
+        id: data.id as string,
+        email: data.email as string,
+        displayName: (data.display_name as string | null) ?? null,
+        isAdmin: (data.is_admin as boolean | null) === true,
+      };
+    }
+  );
 
   // -----------------------------------------------------------------
   // GET /v1/me/prefs
