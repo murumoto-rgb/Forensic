@@ -13,6 +13,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import { verifyUserJWT } from "../supabase.js";
 import { setRequestUser } from "../sentry.js";
+import { isOrgAdmin } from "../access.js";
 
 const BEARER_RE = /^Bearer\s+(.+)$/;
 
@@ -60,3 +61,20 @@ export async function requireAuth(
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   app.addHook("preHandler", requireAuth);
 });
+
+/**
+ * preHandler that 403s any caller without `profiles.is_admin = true`.
+ * Use as a second-stage gate after `authPlugin` for `/v1/admin/*`
+ * routes. Phase 3, Build #5.123.1.
+ */
+export async function requireAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  if (!(await isOrgAdmin(request.user.id))) {
+    reply.code(403).send({
+      error: "forbidden",
+      message: "Admin role required.",
+    });
+  }
+}

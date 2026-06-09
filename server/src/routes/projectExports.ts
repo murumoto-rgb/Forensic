@@ -34,6 +34,10 @@ import {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import {
+  assertProjectAccess,
+  sendAccessError,
+} from "../access.js";
 import { deleteObjects, presignedGet } from "../r2.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 300; // 5 min
@@ -115,19 +119,8 @@ function rowToProjectExport(row: ExportRow): ProjectExport {
 export const projectExportsRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
 
-  async function callerOwnsProject(
-    projectId: string,
-    userId: string
-  ): Promise<boolean> {
-    const { data, error } = await supabaseAdmin
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("owner_id", userId)
-      .maybeSingle();
-    if (error) throw error;
-    return data != null;
-  }
+  // Phase 3 (Build #5.123.1): access checks moved inline to each
+  // handler. Create export = editor; list/read/manifest = viewer.
 
   // -----------------------------------------------------------------
   // POST /v1/projects/:id/exports — enqueue a new export.
@@ -155,12 +148,12 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      if (!(await callerOwnsProject(projectId, request.user.id))) {
-        reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
-        return;
-      }
+      // Create export is an edit intent → editor. List/read paths
+      // below downgrade to viewer per route.
+      await assertProjectAccess(request.user.id, projectId, "editor");
     } catch (err) {
-      request.log.error({ err, projectId }, "project_exports — ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "project_exports — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
@@ -198,21 +191,21 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     const projectId = request.params.id;
 
     try {
-      if (!(await callerOwnsProject(projectId, request.user.id))) {
-        reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
-        return;
-      }
+      // List exports is a read → viewer is enough.
+      await assertProjectAccess(request.user.id, projectId, "viewer");
     } catch (err) {
-      request.log.error({ err, projectId }, "project_exports — ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "project_exports list — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
 
+    // Phase 3 (Build #5.123.1): drop the `created_by = uid` filter —
+    // any project viewer can see all exports of that project.
     const { data, error } = await supabaseAdmin
       .from("project_exports")
       .select("*")
       .eq("project_id", projectId)
-      .eq("created_by", request.user.id)
       .order("created_at", { ascending: false });
     if (error) {
       request.log.error({ err: error, projectId }, "project_exports — list failed");
@@ -246,8 +239,18 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     const row = data as ExportRow | null;
-    if (!row || row.created_by !== request.user.id) {
+    if (!row) {
       reply.code(404).send({ error: "not_found", message: `Export ${exportId} not found` });
+      return;
+    }
+
+    // Any project viewer can read the export's status + download URL.
+    try {
+      await assertProjectAccess(request.user.id, row.project_id, "viewer");
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, exportId }, "project_exports read — access check failed");
+      reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
 
@@ -299,12 +302,12 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     const projectId = request.params.id;
 
     try {
-      if (!(await callerOwnsProject(projectId, request.user.id))) {
-        reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
-        return;
-      }
+      // Folder export manifest is a read of presigned-GET URLs →
+      // viewer suffices.
+      await assertProjectAccess(request.user.id, projectId, "viewer");
     } catch (err) {
-      request.log.error({ err, projectId }, "folder-export-manifest — ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "folder-export-manifest — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
@@ -453,7 +456,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     const exportId = request.params.exportId;
     const { data, error } = await supabaseAdmin
       .from("project_exports")
-      .select("created_by, object_key, status")
+      .select("created_by, project_id, object_key, status")
       .eq("id", exportId)
       .maybeSingle();
     if (error) {
@@ -461,13 +464,33 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
-    if (!data || (data as { created_by: string }).created_by !== request.user.id) {
+    if (!data) {
       reply.code(404).send({ error: "not_found", message: `Export ${exportId} not found` });
       return;
     }
+    const row = data as {
+      created_by: string;
+      project_id: string;
+      object_key: string | null;
+      status: ExportStatus;
+    };
+
+    // Phase 3 (Build #5.123.1): the creator can always delete their
+    // own export; otherwise the caller needs editor-or-above on the
+    // project (so admins / owners / member-editors can clean up).
+    if (row.created_by !== request.user.id) {
+      try {
+        await assertProjectAccess(request.user.id, row.project_id, "editor");
+      } catch (err) {
+        if (sendAccessError(reply, err)) return;
+        request.log.error({ err, exportId }, "project_exports delete — access check failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+    }
+
     // Refuse to delete in-flight exports — the worker is still
-    // pointing at the row. The user can wait or wait for failure.
-    const row = data as { created_by: string; object_key: string | null; status: ExportStatus };
+    // pointing at the row.
     if (row.status === "running") {
       reply.code(409).send({
         error: "precondition_failed",
@@ -489,8 +512,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     const { error: delErr } = await supabaseAdmin
       .from("project_exports")
       .delete()
-      .eq("id", exportId)
-      .eq("created_by", request.user.id);
+      .eq("id", exportId);
     if (delErr) {
       request.log.error({ err: delErr, exportId }, "project_exports — row delete failed");
       reply.code(500).send({ error: "internal", message: "Database error" });

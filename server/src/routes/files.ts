@@ -23,6 +23,7 @@ import {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { assertProjectAccess, isOrgAdmin, sendAccessError } from "../access.js";
 import { buildObjectKey, objectExists, presignedPut } from "../r2.js";
 
 const FileKindSchema = z.enum([
@@ -61,19 +62,9 @@ const UPLOAD_URL_TTL_SECONDS = 15 * 60;
  * (handler responds 404 — don't leak existence of someone else's
  * project).
  */
-async function callerOwnsProject(
-  projectId: string,
-  userId: string
-): Promise<boolean> {
-  const { data, error } = await supabaseAdmin
-    .from("projects")
-    .select("id")
-    .eq("id", projectId)
-    .eq("owner_id", userId)
-    .maybeSingle();
-  if (error) throw error;
-  return !!data;
-}
+// Build #5.123.1: access checks moved to the central
+// `assertProjectAccess` helper (editor for upload/commit; viewer for
+// the sync/check endpoint).
 
 export const filesRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
@@ -102,16 +93,13 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     }
     const { photoId, kind, sizeBytes, contentType } = parsed.data;
 
-    let owns: boolean;
+    // Upload-url provisioning is an edit intent → editor-or-above.
     try {
-      owns = await callerOwnsProject(projectId, request.user.id);
+      await assertProjectAccess(request.user.id, projectId, "editor");
     } catch (err) {
-      request.log.error({ err, projectId }, "Ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "files upload-url — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    if (!owns) {
-      reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
       return;
     }
 
@@ -170,16 +158,13 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    let owns: boolean;
+    // Commit is an edit intent.
     try {
-      owns = await callerOwnsProject(projectId, request.user.id);
+      await assertProjectAccess(request.user.id, projectId, "editor");
     } catch (err) {
-      request.log.error({ err, projectId }, "Ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "files commit — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    if (!owns) {
-      reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
       return;
     }
 
@@ -251,9 +236,27 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     const { objectKeys } = parsed.data;
     if (objectKeys.length === 0) return { existing: [] };
 
-    // Sub-batch the incoming keys, run one query per sub-batch,
-    // merge results. Owner filter applied per sub-batch so the
-    // join doesn't broaden the result set unexpectedly.
+    // Phase 3 (Build #5.123.1): the caller can verify file existence
+    // for projects they OWN, are MEMBER of, or — if they're an org
+    // admin — any project. Precompute the user's accessible-project
+    // set once so the per-row filter is a Map lookup, not an
+    // owner_id string compare.
+    const uid = request.user.id;
+    const callerIsAdmin = await isOrgAdmin(uid);
+    let memberIds = new Set<string>();
+    if (!callerIsAdmin) {
+      const { data: memberRows, error: memberErr } = await supabaseAdmin
+        .from("project_members")
+        .select("project_id")
+        .eq("user_id", uid);
+      if (memberErr) {
+        request.log.error({ err: memberErr }, "files/check member lookup failed");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+      memberIds = new Set((memberRows ?? []).map((r) => r.project_id as string));
+    }
+
     const existing: string[] = [];
     for (let i = 0; i < objectKeys.length; i += SUB_BATCH_SIZE) {
       const chunk = objectKeys.slice(i, i + SUB_BATCH_SIZE);
@@ -269,16 +272,18 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
         reply.code(500).send({ error: "internal", message: "Database error" });
         return;
       }
-      // Filter out rows whose project the caller doesn't own —
-      // defense in depth in case we ever share projects across
-      // users. supabase-js types the joined relation as either an
-      // object or an array depending on the FK shape; accept both.
       for (const row of data ?? []) {
         const joined = (row as unknown as {
           projects: { owner_id: string } | { owner_id: string }[] | null;
         }).projects;
         const owner = Array.isArray(joined) ? joined[0] : joined;
-        if (owner?.owner_id === request.user.id) {
+        const ownerId = owner?.owner_id;
+        const projectId = row.project_id as string;
+        if (
+          callerIsAdmin ||
+          ownerId === uid ||
+          memberIds.has(projectId)
+        ) {
           existing.push(row.object_key as string);
         }
       }

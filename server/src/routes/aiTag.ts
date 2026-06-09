@@ -45,6 +45,7 @@ import {
 import { env } from "../env.js";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { assertProjectAccess, sendAccessError } from "../access.js";
 import { getObjectBytes } from "../r2.js";
 import { recordAITagAudit } from "../audit.js";
 
@@ -160,11 +161,20 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
     // imageFilename for the `photo_id` echo in the user prompt even
     // in client-driven mode (currently unused there, but cheap to
     // have available for future audit-row enrichment).
+    // AI re-tag mutates analysis → editor-or-above.
+    try {
+      await assertProjectAccess(request.user.id, projectId, "editor");
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "AI tag — access check failed");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+      return;
+    }
+
     const { data: projectRow, error: projectErr } = await supabaseAdmin
       .from("projects")
       .select("id, manifest")
       .eq("id", projectId)
-      .eq("owner_id", request.user.id)
       .maybeSingle();
     if (projectErr) {
       request.log.error({ err: projectErr, projectId }, "AI tag — project lookup failed");

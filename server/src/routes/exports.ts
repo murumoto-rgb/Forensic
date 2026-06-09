@@ -32,6 +32,7 @@ import type {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { assertProjectAccess, sendAccessError } from "../access.js";
 import { presignedGet } from "../r2.js";
 import { applyOptionDefaults } from "../exports/options.js";
 
@@ -113,19 +114,8 @@ function rowToJob(row: JobRow): PdfExportJob {
 export const exportsRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
 
-  async function callerOwnsProject(
-    projectId: string,
-    userId: string
-  ): Promise<boolean> {
-    const { data, error } = await supabaseAdmin
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("owner_id", userId)
-      .maybeSingle();
-    if (error) throw error;
-    return data != null;
-  }
+  // Phase 3 (Build #5.123.1): legacy PDF export creation is an edit
+  // intent → editor-or-above. Routed through `assertProjectAccess`.
 
   // -----------------------------------------------------------------
   // POST /v1/projects/:id/export/pdf — enqueue
@@ -167,12 +157,10 @@ export const exportsRoute: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      if (!(await callerOwnsProject(projectId, request.user.id))) {
-        reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
-        return;
-      }
+      await assertProjectAccess(request.user.id, projectId, "editor");
     } catch (err) {
-      request.log.error({ err, projectId }, "pdf export — ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "pdf export — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }

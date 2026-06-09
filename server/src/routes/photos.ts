@@ -30,6 +30,7 @@ import type {
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { presignedGet } from "../r2.js";
+import { assertProjectAccess, sendAccessError } from "../access.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 5 * 60;
 
@@ -65,24 +66,21 @@ async function resolveObjectKey(args: {
   preferredKind: string;
   fallbackKind?: string;
 }): Promise<{ ok: true; key: string } | { ok: false; status: number; error: ApiError }> {
-  const { data: project, error: projectErr } = await supabaseAdmin
-    .from("projects")
-    .select("id")
-    .eq("id", args.projectId)
-    .eq("owner_id", args.userId)
-    .maybeSingle();
-  if (projectErr) {
+  try {
+    await assertProjectAccess(args.userId, args.projectId, "viewer");
+  } catch (err) {
+    if (err && typeof err === "object" && "status" in err && "code" in err) {
+      const e = err as { status: number; code: string; message: string };
+      return {
+        ok: false,
+        status: e.status,
+        error: { error: e.code, message: e.message },
+      };
+    }
     return {
       ok: false,
       status: 500,
       error: { error: "internal", message: "Database error" },
-    };
-  }
-  if (!project) {
-    return {
-      ok: false,
-      status: 404,
-      error: { error: "not_found", message: `Project ${args.projectId} not found` },
     };
   }
 
@@ -200,20 +198,13 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
     }
     const { photoIds, kind } = parsed.data;
 
-    // Project-ownership gate. One round trip regardless of N.
-    const { data: project, error: projectErr } = await supabaseAdmin
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("owner_id", request.user.id)
-      .maybeSingle();
-    if (projectErr) {
-      request.log.error({ err: projectErr, projectId }, "Project ownership check failed");
+    // Project-access gate. viewer is the lowest read role.
+    try {
+      await assertProjectAccess(request.user.id, projectId, "viewer");
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "Project access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    if (!project) {
-      reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
       return;
     }
 
