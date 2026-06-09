@@ -17,7 +17,9 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import {
   ProjectSchema,
+  mergeManifest,
   type GetManifestResponse,
+  type Project,
   type PutManifestResponse,
   type ApiError,
 } from "@forensic/shared";
@@ -28,9 +30,22 @@ import { deleteObjects } from "../r2.js";
 const PutBodySchema = z.object({
   project: ProjectSchema,
   // `null` on first create; previous revision on every subsequent
-  // PUT. Server rejects mismatches with 409.
+  // PUT. Server rejects mismatches with 409 on the legacy path. On
+  // the merge path it's advisory (the merge handles concurrency).
   expectedRevision: z.string().nullable(),
+  // Cloud-first 3-way merge (Build #5.117.1). When present, the
+  // server merges `(baseManifest, current, project)` against current
+  // truth and returns the merged manifest in the response so the
+  // client can adopt it. When absent, the legacy optimistic-
+  // concurrency path runs (back-compat for un-upgraded clients).
+  baseManifest: ProjectSchema.optional(),
 });
+
+/** Compare-and-swap retry budget on the merge path. Two concurrent
+ *  writers landing in sequence is the common case (1 retry); 3 is a
+ *  safe ceiling for occasional storms. Merge is idempotent so retries
+ *  never duplicate work. */
+const MERGE_CAS_RETRIES = 3;
 
 interface ProjectListItem {
   id: string;
@@ -188,7 +203,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       });
       return;
     }
-    const { project, expectedRevision } = parsed.data;
+    const { project, expectedRevision, baseManifest } = parsed.data;
 
     // The URL identifies the project. The body's project.id must
     // agree or it's a client bug. Compared case-insensitively
@@ -227,7 +242,113 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       );
     }
 
-    // Look up current state to honor optimistic-concurrency check.
+    // ---------------------------------------------------------------
+    // Merge path (cloud-first, Build #5.117.1)
+    // ---------------------------------------------------------------
+    // When the client provides `baseManifest`, run a 3-way merge
+    // against current truth + compare-and-swap update so concurrent
+    // writers from web and iOS no longer clobber each other. The
+    // merge is idempotent, so retrying on a CAS miss is safe and
+    // converges.
+    if (baseManifest !== undefined) {
+      for (let attempt = 0; attempt < MERGE_CAS_RETRIES; attempt++) {
+        const { data: existing, error: fetchError } = await supabaseAdmin
+          .from("projects")
+          .select("manifest, revision, owner_id")
+          .eq("id", id)
+          .maybeSingle();
+        if (fetchError) {
+          request.log.error(
+            { err: fetchError, projectId: id },
+            "Failed to fetch project for merge PUT"
+          );
+          reply.code(500).send({ error: "internal", message: "Database error" });
+          return;
+        }
+
+        if (!existing) {
+          // First-create on the merge path: the legacy path handles
+          // create cleanly (no row to merge against). Fall through.
+          break;
+        }
+        if (existing.owner_id !== request.user.id) {
+          reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
+          return;
+        }
+
+        const serverCurrent = existing.manifest as unknown as Project;
+        const { merged, report } = mergeManifest(baseManifest, serverCurrent, project);
+        if (report.conflicts.length > 0) {
+          // Audit observability — never blocks the write.
+          request.log.info(
+            {
+              projectId: id,
+              userId: request.user.id,
+              conflictCount: report.conflicts.length,
+              conflicts: report.conflicts,
+            },
+            "manifest merge forced winners"
+          );
+        }
+
+        const newRevision = crypto.randomUUID();
+        const expectedServerRev = existing.revision as string;
+
+        // Compare-and-swap: only update if the row's revision is
+        // still the one we just merged against. If another writer
+        // raced us, rowCount comes back 0 and we loop.
+        const { data: updatedRows, error: writeError } = await supabaseAdmin
+          .from("projects")
+          .update({
+            name: merged.name,
+            manifest: merged,
+            manifest_schema_version: merged.manifestSchemaVersion,
+            revision: newRevision,
+          })
+          .eq("id", id)
+          .eq("revision", expectedServerRev)
+          .select("id");
+        if (writeError) {
+          request.log.error(
+            { err: writeError, projectId: id },
+            "Failed to write merged project"
+          );
+          reply.code(500).send({ error: "internal", message: "Database error" });
+          return;
+        }
+        if (updatedRows && updatedRows.length === 1) {
+          if (attempt > 0) {
+            request.log.info(
+              { projectId: id, attempts: attempt + 1 },
+              "merge CAS converged after retry"
+            );
+          }
+          return { revision: newRevision, project: merged };
+        }
+        // CAS miss → another writer landed first; loop and re-merge
+        // against the new server state.
+        request.log.info(
+          { projectId: id, attempt: attempt + 1 },
+          "merge CAS miss; retrying"
+        );
+      }
+      // Exhausted retries (extremely rare — three concurrent writers
+      // in flight at once). Degrade to a generic 409 so the client
+      // re-syncs and tries again on the next save tick.
+      request.log.warn(
+        { projectId: id, retries: MERGE_CAS_RETRIES },
+        "merge CAS retries exhausted"
+      );
+      reply.code(409).send({
+        error: "merge_cas_exhausted",
+        message: "Project was modified repeatedly during merge. Retry.",
+      });
+      return;
+    }
+
+    // ---------------------------------------------------------------
+    // Legacy optimistic-concurrency path (no baseManifest)
+    // ---------------------------------------------------------------
     const { data: existing, error: fetchError } = await supabaseAdmin
       .from("projects")
       .select("revision, owner_id")
