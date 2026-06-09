@@ -26,6 +26,14 @@ export interface GetManifestResponse {
   /** Opaque server-side revision string. Clients echo it on write to
    *  enable optimistic concurrency in Phase 1. */
   revision: string;
+  /**
+   * Caller's effective role on this project (Build #5.122.1). UI hides
+   * edit controls when `"viewer"`. `"editor"` covers project owners and
+   * member-editors; `"admin"` is an Org Admin. Optional for backwards
+   * compatibility with older servers — clients that don't see this
+   * field should fall back to today's owner-only behaviour.
+   */
+  role?: ProjectRole;
 }
 
 export interface PutManifestRequest {
@@ -743,4 +751,87 @@ export interface GetPdfExportResponse {
   /** ISO timestamp when `downloadUrl` stops working. Null when there's
    *  no URL yet. */
   downloadUrlExpiresAt: string | null;
+}
+
+
+// ===========================================================================
+// Phase 3 — Users, roles, per-project assignment (Build #5.122.1)
+// ===========================================================================
+
+/**
+ * Effective role of a caller on a project.
+ *
+ *   - `"admin"`  — Org Admin. Can see and edit every project, manage
+ *     users, set per-project member assignments.
+ *   - `"editor"` — Owner of the project (implicit) OR a member with
+ *     role `"editor"` from the `project_members` table. Can edit.
+ *   - `"viewer"` — Member with role `"viewer"`. Read-only.
+ *
+ * Resolution order on the server:
+ *     admin > owner (implicit editor) > member.role > none
+ */
+export type ProjectRole = "admin" | "editor" | "viewer";
+
+/** Per-project assignment view shown on the admin users page so an
+ *  admin can audit which projects each user can touch. */
+export interface AdminUserAssignment {
+  projectId: string;
+  projectName: string;
+  /** Member role only — owner/admin don't appear here (they're
+   *  resolved via `projects.owner_id` and `profiles.is_admin`). */
+  role: "editor" | "viewer";
+}
+
+/** A user row in the admin users page. `pending` is true when the
+ *  user has been invited but never signed in (their profile has a
+ *  null display_name AND auth.users.last_sign_in_at is null). */
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string | null;
+  isAdmin: boolean;
+  createdAt: string;
+  pending: boolean;
+  assignments: AdminUserAssignment[];
+}
+
+export interface ListAdminUsersResponse {
+  users: AdminUser[];
+}
+
+export interface InviteUserRequest {
+  email: string;
+}
+export interface InviteUserResponse {
+  user: AdminUser;
+}
+
+export interface PatchUserRequest {
+  isAdmin: boolean;
+}
+export interface PatchUserResponse {
+  user: AdminUser;
+}
+
+export interface ProjectMemberAssignment {
+  userId: string;
+  role: "editor" | "viewer";
+}
+export interface SetProjectMembersRequest {
+  members: ProjectMemberAssignment[];
+}
+export interface SetProjectMembersResponse {
+  members: ProjectMemberAssignment[];
+}
+
+/**
+ * `GET /v1/me` response (Build #5.122.1). Source of truth for the
+ * web client's "am I admin?" gate. Not admin-gated — every signed-in
+ * user calls it on mount to decide which admin links to render.
+ */
+export interface MeResponse {
+  id: string;
+  email: string;
+  displayName: string | null;
+  isAdmin: boolean;
 }

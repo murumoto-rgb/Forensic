@@ -297,6 +297,12 @@ describe("iOS ↔ shared TS parity contract", () => {
       "FolderExportOptions",
       "AiAnalysisCsvOptions",
       "CreateProjectExport",
+      // Build #5.122.1 — Phase 3 admin/team API request validators.
+      // Wire-only request bodies. iOS doesn't consume these (the
+      // admin surface is web-only).
+      "InviteUser",
+      "PatchUser",
+      "SetProjectMembers",
     ]);
     for (const n of APP_CONFIG_STRUCTS) tsStructNames.delete(n);
 

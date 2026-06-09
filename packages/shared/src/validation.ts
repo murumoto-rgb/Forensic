@@ -313,3 +313,32 @@ export const ProjectSchema = z.object({
   aiExtraVocabulary: nullable(ProjectExtraVocabularySchema),
   manifestSchemaVersion: z.number().int().min(1),
 });
+
+// ===========================================================================
+// Phase 3 — Admin/team API request validators (Build #5.122.1)
+// ===========================================================================
+
+/** Bare email validator used by the invite endpoint. Server's
+ *  Supabase Auth invite call does its own format check too; this is
+ *  a fast-fail at the route boundary. */
+export const InviteUserSchema = z.object({
+  email: z.string().email(),
+});
+
+/** PATCH body for `PATCH /v1/admin/users/:id` — toggles the org-admin
+ *  flag. Other profile fields aren't admin-editable. */
+export const PatchUserSchema = z.object({
+  isAdmin: z.boolean(),
+});
+
+/** PUT body for `PUT /v1/admin/projects/:projectId/members` — replaces
+ *  the project's full member list. Server refuses to include the
+ *  project owner here (owner is implicit editor; see migration 0014). */
+export const SetProjectMembersSchema = z.object({
+  members: z.array(
+    z.object({
+      userId: uuid,
+      role: z.enum(["editor", "viewer"]),
+    })
+  ),
+});
