@@ -571,9 +571,10 @@ export const api = {
       headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
     });
     if (resp.ok) return;
-    let body: { error?: string; message?: string; details?: unknown } | null = null;
+    type ErrorBody = { error?: string; message?: string; details?: unknown };
+    let body: ErrorBody | null = null;
     try {
-      body = (await resp.json()) as typeof body;
+      body = (await resp.json()) as ErrorBody;
     } catch {
       /* 5xx may not be JSON */
     }

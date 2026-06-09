@@ -238,7 +238,6 @@ interface MembersSectionProps {
 function MembersSection({ projectId }: MembersSectionProps) {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
-  const [ownerId, setOwnerId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -255,20 +254,15 @@ function MembersSection({ projectId }: MembersSectionProps) {
       setUsers(list.users);
       // Derive this project's current member assignments from the
       // user list — `AdminUser.assignments` already includes them.
+      // The project owner is silently stripped from any PUT by the
+      // server (they're the implicit editor), so we don't need to
+      // know which row is the owner to keep the picker honest.
       const next: Record<string, "editor" | "viewer" | undefined> = {};
-      let owner: string | null = null;
       for (const u of list.users) {
         for (const a of u.assignments) {
           if (a.projectId === projectId) next[u.id] = a.role;
         }
       }
-      // Owner is the project's `projects.owner_id` — we don't have
-      // that directly, but we can pull it from the in-page project
-      // manifest. The simplest approach is to call getProject; for
-      // now, leave owner_id null and rely on the server to silently
-      // strip the owner from any PUT. The owner row is shown with a
-      // disabled toggle once we know which one it is — best-effort.
-      void owner;
       setAssignments(next);
     } catch (e: unknown) {
       setError(
@@ -280,28 +274,6 @@ function MembersSection({ projectId }: MembersSectionProps) {
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Look up the owner_id from the project manifest GET — separate
-  // call so this section is independent of `manifest` (which a
-  // viewer may not have full access to in a future hardening pass).
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .getProject(projectId)
-      .then(() => {
-        // We don't get owner_id directly today (it's not in
-        // GetManifestResponse). Surface it via /v1/projects list
-        // would require a separate call. For now, we silently
-        // ignore — the server filters the owner out of PUT bodies.
-        void cancelled;
-      })
-      .catch(() => {
-        // Ignored — section degrades gracefully.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
 
   if (isAdmin === null) return null;
   if (!isAdmin) return null;
