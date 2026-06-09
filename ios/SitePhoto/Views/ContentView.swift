@@ -95,7 +95,11 @@ struct ContentView: View {
                 }
             }
             .navigationDestination(for: Project.self) { project in
-                ProjectDetailView(projectID: project.id)
+                // Build #5.127.1: the project detail behind a five-tab
+                // shell (Photos / Plan / AI / Export / More). PR 1 ships
+                // the shell with Photos embedding today's ProjectDetailView;
+                // PRs 2-6 carve sections into their proper tabs.
+                ProjectWorkspaceView(projectID: project.id)
             }
             .sheet(isPresented: $showingNew) {
                 NewProjectView { newProject in
