@@ -3,6 +3,28 @@ import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
 
+/// Which subset of the legacy ProjectDetailView body to render
+/// (Build #5.128.1 — iOS IA refactor PR 2/7).
+///
+/// PR 1 introduced the workspace tab shell with Photos embedding the
+/// full ProjectDetailView and the other four tabs showing placeholders.
+/// PR 2 makes each tab render a *slice* of the same view via this scope
+/// enum, so the user sees only the section that belongs to that tab —
+/// the actual content stays in ProjectDetailView (no per-section file
+/// rewrites yet, those are PRs 3-6).
+///
+/// `.all` is the default and matches today's behavior for any caller
+/// that doesn't opt in. Each tab passes the scope that corresponds to
+/// its content.
+enum ProjectDetailScope: Hashable {
+    case all
+    case photos    // imports + photos list + trash + filter chips
+    case plan      // floor plans
+    case ai        // AI tagging
+    case export    // export
+    case more      // metadata + buckets
+}
+
 struct ProjectDetailView: View {
     @Environment(ProjectStore.self) private var store
     @Environment(LocationService.self) private var location
@@ -10,6 +32,7 @@ struct ProjectDetailView: View {
     @AppStorage("sitephoto.tagConfidenceThreshold")
     private var tagConfidenceThreshold: Double = 0.5
     let projectID: UUID
+    var scope: ProjectDetailScope = .all
 
     @State private var addressLookupRunning = false
     @State private var locationError: String?
@@ -246,13 +269,30 @@ struct ProjectDetailView: View {
             if let project {
                 ScrollViewReader { proxy in
                     List {
-                        metadataSection(project)
-                        actionsSection(project)
-                        floorPlanSection(project)
-                        aiTaggingSection(project)
-                        bucketsSection(project)
-                        exportSection(project)
-                        photosSection(project)
+                        // Build #5.128.1: per-tab scope filters which
+                        // sections render. .all (the default) keeps
+                        // today's layout for any non-tabbed caller.
+                        if scope == .all || scope == .more {
+                            metadataSection(project)
+                        }
+                        if scope == .all || scope == .photos {
+                            actionsSection(project)
+                        }
+                        if scope == .all || scope == .plan {
+                            floorPlanSection(project)
+                        }
+                        if scope == .all || scope == .ai {
+                            aiTaggingSection(project)
+                        }
+                        if scope == .all || scope == .more {
+                            bucketsSection(project)
+                        }
+                        if scope == .all || scope == .export {
+                            exportSection(project)
+                        }
+                        if scope == .all || scope == .photos {
+                            photosSection(project)
+                        }
                     }
                     .onChange(of: scrollToPhotoID) { _, newID in
                         guard let newID else { return }
@@ -271,11 +311,17 @@ struct ProjectDetailView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    fabStack(for: project)
+                    // Build #5.128.1: FABs only on the tabs that need
+                    // them. Photos + AI get the Camera FAB; Plan gets
+                    // the Distress FAB. Export and More render no FAB.
+                    // .all (legacy / non-tabbed callers) keeps today's
+                    // both-FABs-on-one-screen behavior.
+                    scopedFabStack(for: project)
                 }
-                .searchable(text: $searchText,
-                            placement: .navigationBarDrawer(displayMode: .automatic),
-                            prompt: "Search photos by tag, caption, or #")
+                .modifier(SearchableIfPhotos(
+                    show: scope == .all || scope == .photos,
+                    searchText: $searchText
+                ))
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -718,6 +764,28 @@ struct ProjectDetailView: View {
                 distressFAB
             }
             takePhotoFAB
+        }
+    }
+
+    /// Build #5.128.1: scope-aware FAB selector. Each tab in the
+    /// workspace shell shows only the FABs that make sense for it:
+    ///   .photos / .ai  → Camera (take photo / reshoot)
+    ///   .plan          → Distress (mark structural distress on plan)
+    ///   .export / .more → no FAB
+    ///   .all (legacy)  → both FABs (today's behavior, preserved)
+    @ViewBuilder
+    private func scopedFabStack(for project: Project) -> some View {
+        switch scope {
+        case .all:
+            fabStack(for: project)
+        case .photos, .ai:
+            takePhotoFAB
+        case .plan:
+            if !project.floorPlans.isEmpty {
+                distressFAB
+            }
+        case .export, .more:
+            EmptyView()
         }
     }
 
@@ -3085,5 +3153,33 @@ private struct PhotoRow: View {
         ProjectDetailView(projectID: saved.id)
             .environment(store)
             .environment(location)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Conditional search bar (Build #5.128.1)
+// ---------------------------------------------------------------------
+
+/// Applies `.searchable` only when `show` is true. Used by the workspace
+/// shell to keep the search bar on the Photos tab and hide it from the
+/// Plan / AI / Export / More tabs (where it has nothing to search).
+///
+/// Implemented as a ViewModifier because SwiftUI's built-in modifier
+/// chain has no inline conditional and chaining `if show { .searchable }`
+/// inside a builder breaks the resulting type.
+private struct SearchableIfPhotos: ViewModifier {
+    let show: Bool
+    @Binding var searchText: String
+
+    func body(content: Content) -> some View {
+        if show {
+            content.searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .automatic),
+                prompt: "Search photos by tag, caption, or #"
+            )
+        } else {
+            content
+        }
     }
 }

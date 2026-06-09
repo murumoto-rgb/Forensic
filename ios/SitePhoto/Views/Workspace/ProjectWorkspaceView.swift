@@ -57,79 +57,48 @@ struct ProjectWorkspaceView: View {
             get: { workspace.selectedTab },
             set: { workspace.selectedTab = $0 }
         )) {
-            // Photos tab — embeds today's full ProjectDetailView. Every
-            // existing per-project workflow remains accessible here while
-            // PRs 2-6 incrementally carve sections into their own tabs.
-            ProjectDetailView(projectID: projectID)
+            // Build #5.128.1: each tab renders a `.scope`-filtered slice
+            // of ProjectDetailView. The view's body conditionally shows
+            // only the sections that belong to the active tab. State
+            // (filter chips, search text, sheet visibility) survives tab
+            // switches via SwiftUI's TabView state preservation —
+            // ProjectDetailView keeps its @State on the Photos tab, and
+            // each other tab's slice has its own state because each
+            // ProjectDetailView instance is independent.
+            ProjectDetailView(projectID: projectID, scope: .photos)
                 .tabItem {
                     Label(ProjectTab.photos.label,
                           systemImage: ProjectTab.photos.systemImage)
                 }
                 .tag(ProjectTab.photos)
 
-            ComingSoonTab(
-                tab: .plan,
-                explainer: "Floor plan list + embedded plan viewer move here in PR 4. For now use the Photos tab."
-            )
-            .tabItem {
-                Label(ProjectTab.plan.label,
-                      systemImage: ProjectTab.plan.systemImage)
-            }
-            .tag(ProjectTab.plan)
+            ProjectDetailView(projectID: projectID, scope: .plan)
+                .tabItem {
+                    Label(ProjectTab.plan.label,
+                          systemImage: ProjectTab.plan.systemImage)
+                }
+                .tag(ProjectTab.plan)
 
-            ComingSoonTab(
-                tab: .ai,
-                explainer: "Consolidated AI configuration (Prompt / Vocabulary / Notes / Run) moves here in PR 3. For now use the AI Tagging section on the Photos tab."
-            )
-            .tabItem {
-                Label(ProjectTab.ai.label,
-                      systemImage: ProjectTab.ai.systemImage)
-            }
-            .tag(ProjectTab.ai)
+            ProjectDetailView(projectID: projectID, scope: .ai)
+                .tabItem {
+                    Label(ProjectTab.ai.label,
+                          systemImage: ProjectTab.ai.systemImage)
+                }
+                .tag(ProjectTab.ai)
 
-            ComingSoonTab(
-                tab: .export,
-                explainer: "Export chooser (PDF / Folder / CSV) moves here in PR 5. For now use the Export section on the Photos tab."
-            )
-            .tabItem {
-                Label(ProjectTab.export.label,
-                      systemImage: ProjectTab.export.systemImage)
-            }
-            .tag(ProjectTab.export)
+            ProjectDetailView(projectID: projectID, scope: .export)
+                .tabItem {
+                    Label(ProjectTab.export.label,
+                          systemImage: ProjectTab.export.systemImage)
+                }
+                .tag(ProjectTab.export)
 
-            ComingSoonTab(
-                tab: .more,
-                explainer: "Project info, buckets, members, danger zone move here in PR 6. For now use the Photos tab."
-            )
-            .tabItem {
-                Label(ProjectTab.more.label,
-                      systemImage: ProjectTab.more.systemImage)
-            }
-            .tag(ProjectTab.more)
+            ProjectDetailView(projectID: projectID, scope: .more)
+                .tabItem {
+                    Label(ProjectTab.more.label,
+                          systemImage: ProjectTab.more.systemImage)
+                }
+                .tag(ProjectTab.more)
         }
-    }
-}
-
-/// Placeholder body for the four tabs whose content lands in PR 2-6.
-/// Keeps the shell shippable on PR 1 without rewriting any content.
-private struct ComingSoonTab: View {
-    let tab: ProjectTab
-    let explainer: String
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: tab.systemImage)
-                .font(.system(size: 56))
-                .foregroundStyle(.tertiary)
-            Text("\(tab.label) tab")
-                .font(.title2.weight(.semibold))
-            Text(explainer)
-                .font(.callout)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 32)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }
