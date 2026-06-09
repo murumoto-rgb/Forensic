@@ -1,0 +1,34 @@
+-- 0013_project_locks_session.sql — Phase 2 of the cloud-first program,
+-- Build #5.120.1.
+--
+-- Adds a per-tab session token to the project_locks row so the server
+-- can distinguish "same user, same tab" (resume on back-nav return)
+-- from "same user, different tab" (gentle re-acquire prompt) from
+-- "different user" (read-only banner).
+--
+-- THE BUG THIS FIXES:
+-- Today, when a web user takes the edit lock and then navigates away
+-- with the browser back arrow, the React unmount cleanup's DELETE is
+-- often cancelled mid-flight. The 10-minute lock row survives. On
+-- return to the same project, `GET /lock` finds the row, the row's
+-- user_id matches the current user, and the web hook (deliberately)
+-- treats it as someone-else's lock — showing the user as locked out
+-- by themselves until the TTL elapses.
+--
+-- THE FIX:
+-- Each browser TAB gets a stable UUID stored in sessionStorage
+-- (semantically: persists across same-tab navigations, unique per
+-- tab). The lock row records the token. The server can then compute:
+--   - same user_id AND same client_session → "session" (resume)
+--   - same user_id, different client_session → "user" (other tab)
+--   - different user_id → null (read-only)
+--
+-- iOS sends no token; its rows have client_session=null and behave
+-- exactly as today (no per-tab granularity needed; iOS is one-process-
+-- one-user).
+--
+-- Column is nullable so old web/iOS binaries continue to work during
+-- the rollout window.
+
+alter table public.project_locks
+  add column if not exists client_session text;

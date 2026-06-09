@@ -427,28 +427,43 @@ export const api = {
       throw e;
     }
   },
-  // -------------------- Project edit lock (Build #5.60.1) --------------------
-  /** Current lock state for a project. `lock` is null when free. */
-  getProjectLock: (projectId: string) =>
-    request<GetLockResponse>(`/v1/projects/${projectId}/lock`),
+  // -------------------- Project edit lock (Build #5.60.1, session #5.120.1) --
+  /** Current lock state. `clientSession` is the per-tab token from
+   *  `sessionStorage` — the response's `heldByYou` lets the hook
+   *  resume `holding` on back-nav return (the self-lock bug fix). */
+  getProjectLock: (projectId: string, clientSession?: string) => {
+    const qs = clientSession
+      ? `?clientSession=${encodeURIComponent(clientSession)}`
+      : "";
+    return request<GetLockResponse>(
+      `/v1/projects/${projectId}/lock${qs}`
+    );
+  },
   /** Acquire — 409 ApiError when held live by another user; the
    *  envelope's `details.lock` carries the holder for the conflict
-   *  banner. */
-  acquireProjectLock: (projectId: string) =>
+   *  banner. `clientSession` records the per-tab token. */
+  acquireProjectLock: (projectId: string, clientSession?: string) =>
     request<LockResponse>(`/v1/projects/${projectId}/lock`, {
       method: "POST",
-      body: JSON.stringify({ client: "web" }),
+      body: JSON.stringify({ client: "web", clientSession }),
     }),
   /** Bump expiry — 409 `lock_lost` if we're no longer the holder. */
   heartbeatProjectLock: (projectId: string) =>
     request<LockResponse>(`/v1/projects/${projectId}/lock/heartbeat`, {
       method: "POST",
     }),
-  /** Release (holder-only on the server; idempotent). */
-  releaseProjectLock: (projectId: string) =>
-    request<{ ok: true }>(`/v1/projects/${projectId}/lock`, {
-      method: "DELETE",
-    }),
+  /** Release (holder-only on the server; idempotent). When
+   *  `clientSession` is provided the delete is scoped to that tab so
+   *  closing tab A doesn't free tab B's lock. */
+  releaseProjectLock: (projectId: string, clientSession?: string) => {
+    const qs = clientSession
+      ? `?clientSession=${encodeURIComponent(clientSession)}`
+      : "";
+    return request<{ ok: true }>(
+      `/v1/projects/${projectId}/lock${qs}`,
+      { method: "DELETE" }
+    );
+  },
   /** Force-release — any signed-in user for now (no admin role
    *  yet). Server logs at warn so it's traceable. */
   forceReleaseProjectLock: (projectId: string) =>

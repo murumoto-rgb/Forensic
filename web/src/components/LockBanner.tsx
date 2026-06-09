@@ -2,7 +2,8 @@ import { useState } from "react";
 import type { LockStatus } from "../lib/useProjectLock";
 
 /**
- * Header banner that drives the project edit-lock UX (Build #5.60.1).
+ * Header banner that drives the project edit-lock UX (Build #5.60.1;
+ * `holding_elsewhere` branch added #5.120.1).
  *
  * Renders different shapes for each `LockStatus.kind`:
  *  - **loading** — quiet "Checking lock…" placeholder so the rest of
@@ -11,6 +12,9 @@ import type { LockStatus } from "../lib/useProjectLock";
  *  - **holding** — green pill ("You're editing"), the holder's email
  *    + acquired-at, a "Release" button. While holding, edit controls
  *    elsewhere on the page are enabled.
+ *  - **holding_elsewhere** — same user holds the lock from another
+ *    tab/device. "Resume here" calls `acquire` to take it for this
+ *    tab (succeeds — server lets the same user re-acquire).
  *  - **read_only** — amber banner naming the holder ("Currently
  *    editing: alice@…, since 11:42") plus a "Force release" button
  *    (visible to everyone for now — Phase 5 may admin-gate it).
@@ -86,6 +90,29 @@ export function LockBanner({
           className="rounded border border-green-700 bg-green-900/40 px-3 py-1 text-xs text-green-100 hover:bg-green-900/60"
         >
           Release lock
+        </button>
+      </div>
+    );
+  }
+
+  if (status.kind === "holding_elsewhere") {
+    const since = formatRelativeTime(status.lock.acquiredAt);
+    const clientLabel = status.lock.client === "ios" ? "iPad" : "another tab";
+    return (
+      <div className="mb-4 flex items-center justify-between gap-3 rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-sm">
+        <div className="flex items-center gap-2 text-amber-200">
+          <span className="inline-block h-2 w-2 rounded-full bg-amber-400" />
+          <span>
+            You're editing this in {clientLabel}{" "}
+            <span className="text-amber-400/80">(since {since})</span>.
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => void acquire()}
+          className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-blue-600"
+        >
+          Resume here
         </button>
       </div>
     );

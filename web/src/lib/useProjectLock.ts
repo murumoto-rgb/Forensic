@@ -1,44 +1,44 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProjectLock } from "@forensic/shared";
 import { api, ApiError } from "./api";
+import { env } from "./env";
+import { supabase } from "./supabase";
 
 /**
- * Web client for the project edit-lock model (Build #5.60.1; backed
- * by the server endpoints from #5.59.1).
+ * Web client for the project edit-lock model (Build #5.60.1; extended
+ * for per-tab session tokens in #5.120.1 to fix the "back-button
+ * self-lock" bug).
  *
- * Three roles a page can be in for a given project:
- *  - **free** — no live lock; anyone can take it. Edit controls
- *    show an "Edit" button that calls `acquire`.
- *  - **holding** — this client holds the lock. Edit controls are
- *    enabled. A 90-second heartbeat runs (server TTL is 10 min so
- *    a few missed beats don't lose the lock). A "Release" button
- *    is available.
- *  - **read-only** — someone else holds it. Edit controls are
- *    disabled. A banner names the holder.
+ * Statuses:
+ *  - **free** — no live lock; "Edit" button calls `acquire`.
+ *  - **holding** — this tab holds the lock. A 90s heartbeat runs;
+ *    server TTL is 10 min.
+ *  - **holding_elsewhere** — same user holds the lock from another
+ *    tab/device. "Resume here" calls `acquire` to take it.
+ *  - **read_only** — someone else holds it.
+ *  - **lock_lost** — heartbeat returned 409.
+ *  - **error** — fetch failure surfaces the message.
  *
- * The hook auto-fetches the current state on mount and re-polls on
- * a slow cadence (30s) so a viewer notices when the holder
- * disconnects. The holder doesn't poll — its heartbeat IS the
- * polling signal (responses carry the updated lock state).
+ * The bug fix: each browser tab gets a stable UUID stored in
+ * `sessionStorage` (semantics: persists across same-tab navigations,
+ * unique per tab). The lock row records it. On mount the hook sends
+ * the token to GET /lock; the server returns `heldByYou`:
+ *   - "session" → resume `holding` (the bug fix — back-nav return).
+ *   - "user"    → `holding_elsewhere` (another tab/device).
+ *   - null      → other user / free (existing behaviour).
  *
- * On unmount + on `beforeunload` we attempt a release via
- * `navigator.sendBeacon` so closing the tab frees the lock without
- * waiting for the TTL. If the beacon fails (offline, blocked), the
- * 10-min server expiry catches up.
- *
- * 409 handling:
- *   - acquire 409 `locked` → store the holder, surface via `lock`,
- *     UI shows the "currently editing: X" banner.
- *   - heartbeat 409 `lock_lost` → we silently dropped the lock
- *     (someone forced it or the TTL elapsed during a hot-page
- *     pause). Caller sees `status === "lock_lost"` and can prompt
- *     the user to re-acquire.
+ * Release: on `pagehide` we fire a `navigator.sendBeacon` to the
+ * beacon-friendly POST endpoint so closing the tab frees the lock
+ * reliably (more reliable than the unmount cleanup or `beforeunload`,
+ * which is cancelled on SPA nav). Even if the beacon doesn't land,
+ * the session-resume above makes return-to-project correct anyway.
  */
 
 export type LockStatus =
   | { kind: "loading" }
   | { kind: "free" }
   | { kind: "holding"; lock: ProjectLock }
+  | { kind: "holding_elsewhere"; lock: ProjectLock }
   | { kind: "read_only"; lock: ProjectLock }
   | { kind: "lock_lost" }
   | { kind: "error"; message: string };
@@ -50,15 +50,31 @@ const HEARTBEAT_MS = 90_000;
  *  promptly when the holder disconnects. */
 const POLL_MS = 30_000;
 
+const SESSION_KEY = "forensic.lockSession";
+
+/** Read or create the per-tab session token. Stable across same-tab
+ *  back/forward navigation; unique per tab. */
+function getTabSessionToken(): string {
+  try {
+    const existing = sessionStorage.getItem(SESSION_KEY);
+    if (existing) return existing;
+    const token = crypto.randomUUID();
+    sessionStorage.setItem(SESSION_KEY, token);
+    return token;
+  } catch {
+    // sessionStorage unavailable (private browsing edge cases) —
+    // fall back to a per-mount token. Worse UX (no resume on
+    // back-nav) but safe.
+    return crypto.randomUUID();
+  }
+}
+
 export function useProjectLock(projectId: string | null | undefined): {
   status: LockStatus;
   acquire: () => Promise<void>;
   release: () => Promise<void>;
   force: () => Promise<void>;
-  /** Refetch the current lock state. */
   refresh: () => Promise<void>;
-  /** Clear a `lock_lost` status after the user dismisses the
-   *  re-acquire prompt. */
   acknowledgeLost: () => void;
 } {
   const [status, setStatus] = useState<LockStatus>({ kind: "loading" });
@@ -67,19 +83,50 @@ export function useProjectLock(projectId: string | null | undefined): {
     statusRef.current = status;
   }, [status]);
 
+  // One token per tab, computed on first render and reused.
+  const sessionTokenRef = useRef<string>(getTabSessionToken());
+
+  // Cache the latest Supabase access token so the pagehide handler
+  // can fire a synchronous authenticated keepalive fetch. The
+  // `request()` path's `getAuthHeader` is async and we can't await
+  // inside the pagehide synchronous window.
+  const accessTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      accessTokenRef.current = data.session?.access_token ?? null;
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      accessTokenRef.current = session?.access_token ?? null;
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   const fetchOnce = useCallback(async () => {
     if (!projectId) return;
     try {
-      const resp = await api.getProjectLock(projectId);
-      // Preserve a "holding" status across a poll — that's only set
-      // by acquire/heartbeat, never by GET (the server doesn't know
-      // which client is asking, so two of our own browsers would
-      // both see the same lock and would both think they hold it).
-      // GET is informational; it's how a viewer learns about other
-      // people's locks.
+      const resp = await api.getProjectLock(
+        projectId,
+        sessionTokenRef.current
+      );
+      // Preserve a `holding` status across a poll (the holder's
+      // heartbeat is the live signal; the GET would otherwise
+      // demote it briefly).
       if (statusRef.current.kind === "holding") return;
       if (resp.lock == null) {
         setStatus({ kind: "free" });
+        return;
+      }
+      // Cloud-first lock: the server tells us if it's ours and from
+      // which tab. Old servers omit `heldByYou` → treat as null.
+      const held = resp.heldByYou ?? null;
+      if (held === "session") {
+        // Same user, same tab — back-nav return, or a re-mount that
+        // raced our own release. Resume holding silently.
+        setStatus({ kind: "holding", lock: resp.lock });
+      } else if (held === "user") {
+        setStatus({ kind: "holding_elsewhere", lock: resp.lock });
       } else {
         setStatus({ kind: "read_only", lock: resp.lock });
       }
@@ -124,43 +171,58 @@ export function useProjectLock(projectId: string | null | undefined): {
     return () => window.clearInterval(id);
   }, [projectId, status.kind]);
 
-  // beforeunload + cleanup release: closing the tab fires the
-  // beacon so the next user doesn't wait the full TTL. Beacon is
-  // best-effort — if it fails the server eventually expires us.
+  // pagehide release via authenticated keepalive fetch — fires
+  // reliably on tab close and on real navigation. Scoped to this
+  // tab's session so closing tab A doesn't free tab B's lock.
+  // (sendBeacon would be even more reliable but can't set the
+  // Authorization header, so the server would 401 it.)
   useEffect(() => {
     if (!projectId) return;
-    function onBeforeUnload() {
+    function onPageHide(): void {
       if (statusRef.current.kind !== "holding") return;
-      const url = `${import.meta.env.VITE_API_URL ?? ""}/v1/projects/${projectId}/lock`;
-      // sendBeacon doesn't support DELETE directly, but we can hit
-      // a POST-shaped variant. The server treats any authenticated
-      // call to its DELETE handler as release; for the beacon we
-      // POST to the same path with a body the server ignores. To
-      // avoid that nuance, just fire a release via fetch with
-      // keepalive — works on every modern browser.
-      void fetch(url, { method: "DELETE", keepalive: true }).catch(() => {});
+      const token = accessTokenRef.current;
+      if (!token) return; // not signed in — server'd 401 anyway
+      const url = `${env.API_URL}/v1/projects/${projectId}/lock/release`;
+      const body = JSON.stringify({
+        clientSession: sessionTokenRef.current,
+      });
+      void fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body,
+        keepalive: true,
+      }).catch(() => {});
     }
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
   }, [projectId]);
 
-  // Hard release on unmount (page navigation away).
+  // Soft release on unmount (SPA navigation away). Best-effort — the
+  // session-resume on next mount makes return-to-project correct even
+  // when this is cancelled.
   useEffect(() => {
     return () => {
       if (!projectId) return;
       if (statusRef.current.kind !== "holding") return;
-      void api.releaseProjectLock(projectId).catch(() => {});
+      void api
+        .releaseProjectLock(projectId, sessionTokenRef.current)
+        .catch(() => {});
     };
   }, [projectId]);
 
   const acquire = useCallback(async () => {
     if (!projectId) return;
     try {
-      const resp = await api.acquireProjectLock(projectId);
+      const resp = await api.acquireProjectLock(
+        projectId,
+        sessionTokenRef.current
+      );
       setStatus({ kind: "holding", lock: resp.lock });
     } catch (e: unknown) {
       if (e instanceof ApiError && e.status === 409) {
-        // Server returned the holder in `details.lock`.
         const detail = (e.details as { lock?: ProjectLock } | undefined)?.lock;
         if (detail) {
           setStatus({ kind: "read_only", lock: detail });
@@ -178,7 +240,7 @@ export function useProjectLock(projectId: string | null | undefined): {
   const release = useCallback(async () => {
     if (!projectId) return;
     try {
-      await api.releaseProjectLock(projectId);
+      await api.releaseProjectLock(projectId, sessionTokenRef.current);
     } catch {
       // Idempotent server-side; best-effort.
     }
@@ -205,3 +267,4 @@ export function useProjectLock(projectId: string | null | undefined): {
 
   return { status, acquire, release, force, refresh: fetchOnce, acknowledgeLost };
 }
+
