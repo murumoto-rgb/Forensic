@@ -55,11 +55,13 @@ export function ProjectWorkspacePage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
   const manifest = useProjectManifest(id);
   const lock = useProjectLock(id ?? null);
-  // Build #5.125.1: viewers can't edit even when holding the lock —
-  // the server would 403 every write anyway, but gating the UI keeps
-  // the lock semantics clean (a viewer can still acquire if it lets
-  // them; the workspace just won't render mutation affordances).
-  const canEdit = lock.status.kind === "holding" && manifest.hasWriteAccess;
+  // Build #5.126.1: composite gate. Holding the edit-lock + viewer
+  // gate from #5.125.1 + project not frozen. Frozen projects are
+  // read-only for everyone (Owner/Admin uses a separate "Unlock"
+  // toggle on the Info tab that's exempt from this gate).
+  const isFrozen = manifest.project?.isFrozen === true;
+  const canEdit =
+    lock.status.kind === "holding" && manifest.hasWriteAccess && !isFrozen;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -77,6 +79,17 @@ export function ProjectWorkspacePage({ session }: Props) {
         refresh={lock.refresh}
         acknowledgeLost={lock.acknowledgeLost}
       />
+
+      {isFrozen && (
+        <div className="mb-4 flex items-center gap-2 rounded border border-amber-700 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          <span>🔒</span>
+          <span>
+            This project is <span className="font-medium">locked / finalized</span>.
+            All edits are disabled until an owner or admin unlocks it
+            from the Info tab.
+          </span>
+        </div>
+      )}
 
       <TabBar projectId={id ?? null} />
 

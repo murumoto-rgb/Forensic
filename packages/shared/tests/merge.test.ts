@@ -72,6 +72,7 @@ function project(over: Partial<Project> = {}): Project {
     lastStoppedAt: null,
     stopped: false,
     isDeleted: false,
+    isFrozen: false,
     projectGPS: null,
     projectAddress: null,
     photos: [],
@@ -248,6 +249,14 @@ describe("mergeManifest — tags", () => {
 // ---------------------------------------------------------------------------
 
 describe("mergeManifest — scalar rules", () => {
+  it("isFrozen: true wins on conflict (freeze is protective intent)", () => {
+    const base = project({ isFrozen: false });
+    const server = project({ isFrozen: true });
+    const client = project({ isFrozen: false, name: "edited concurrently" });
+    const { merged } = mergeManifest(base, server, client);
+    assert.equal(merged.isFrozen, true);
+  });
+
   it("isDeleted: true wins on conflict (deletion not silently resurrected)", () => {
     const base = project({ isDeleted: false });
     const server = project({ isDeleted: true });

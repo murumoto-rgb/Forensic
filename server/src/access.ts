@@ -112,6 +112,23 @@ export async function isOrgAdmin(userId: string): Promise<boolean> {
   return data?.is_admin === true;
 }
 
+/** Returns true when `userId` is the literal `projects.owner_id`. Used
+ *  for the rare gates that need to distinguish owner from member-
+ *  editor (e.g. flipping `isFrozen` on the project — only Owner or
+ *  Admin can). */
+export async function isProjectOwner(
+  userId: string,
+  projectId: string
+): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("projects")
+    .select("owner_id")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.owner_id === userId;
+}
+
 /** Translate an `AccessError` into a Fastify reply. Returns true when
  *  the error was handled (so callers can early-return). Returns false
  *  on other error types so they can be re-thrown for the generic 500

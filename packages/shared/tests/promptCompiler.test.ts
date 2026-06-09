@@ -117,6 +117,7 @@ const fixtureProject: Project = {
   lastStoppedAt: null,
   stopped: false,
   isDeleted: false,
+  isFrozen: false,
   projectGPS: null,
   projectAddress: null,
   photos: [],

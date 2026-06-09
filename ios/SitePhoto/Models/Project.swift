@@ -71,6 +71,15 @@ struct Project: Identifiable, Codable, Hashable {
     /// the server carries the correct state. Defaults to `false`
     /// for new projects + older manifests pre-Build #5.6.1.
     var isDeleted: Bool = false
+    /// Project-lock / "finalized" flag (Build #5.126.1, Phase 4).
+    /// When true the project is read-only on every client — edit
+    /// controls are disabled in the UI and the server's access helper
+    /// requires Owner/Admin to flip the flag. Distinct from the
+    /// transient `project_locks` edit-lock; this is a persistent
+    /// state for finalising a report.
+    /// Defaults to `false` for new projects + older manifests pre-
+    /// Build #5.126.1.
+    var isFrozen: Bool = false
     /// Integer schema version of the on-disk manifest format. Bumped
     /// whenever a field is added, removed, renamed, or its semantics
     /// change — in one PR that touches `packages/shared/`,
@@ -79,7 +88,7 @@ struct Project: Identifiable, Codable, Hashable {
     /// clients reporting a higher version than it knows about
     /// (forces server-first updates). Legacy manifests written before
     /// this field shipped default to `1` at decode time.
-    var manifestSchemaVersion: Int = 2
+    var manifestSchemaVersion: Int = 3
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -101,7 +110,8 @@ struct Project: Identifiable, Codable, Hashable {
         self.tagSelection = nil
         self.aiExtraVocabulary = nil
         self.isDeleted = false
-        self.manifestSchemaVersion = 2
+        self.isFrozen = false
+        self.manifestSchemaVersion = 3
     }
 
     /// Explicit keys so the decoder can read the legacy singular
@@ -118,6 +128,7 @@ struct Project: Identifiable, Codable, Hashable {
         case folderName, aiInstructions, buckets, tagSelection
         case aiExtraVocabulary
         case isDeleted
+        case isFrozen
         case manifestSchemaVersion
     }
 
@@ -168,6 +179,11 @@ struct Project: Identifiable, Codable, Hashable {
         // forward.
         self.isDeleted = try c.decodeIfPresent(Bool.self,
                                                   forKey: .isDeleted) ?? false
+        // Pre-Build #5.126.1 manifests didn't carry isFrozen.
+        // Default to false so existing projects stay editable;
+        // Owner/Admin flips true via the "Lock project" action.
+        self.isFrozen = try c.decodeIfPresent(Bool.self,
+                                                 forKey: .isFrozen) ?? false
         // Legacy manifests written before this field shipped default
         // to version 1 — the schema as it stood at the moment the
         // field was introduced. New manifests written by this code
@@ -200,6 +216,7 @@ struct Project: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(tagSelection,       forKey: .tagSelection)
         try c.encodeIfPresent(aiExtraVocabulary,  forKey: .aiExtraVocabulary)
         try c.encode(isDeleted,                   forKey: .isDeleted)
+        try c.encode(isFrozen,                    forKey: .isFrozen)
         try c.encode(manifestSchemaVersion,       forKey: .manifestSchemaVersion)
     }
 

@@ -300,6 +300,9 @@ export const ProjectSchema = z.object({
   // server boundary so old iOS clients can still PUT cleanly while
   // the rollout propagates via TestFlight.
   isDeleted: z.boolean().default(false),
+  // Build #5.126.1 (Phase 4) — project freeze flag. Same default-
+  // on-absence discipline as isDeleted for older clients.
+  isFrozen: z.boolean().default(false),
   projectGPS: nullable(ProjectGPSSchema),
   projectAddress: nullable(z.string()),
   photos: z.array(PhotoSchema),

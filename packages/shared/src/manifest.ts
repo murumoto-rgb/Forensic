@@ -17,7 +17,7 @@
  * we normalize on read.
  */
 
-export const MANIFEST_SCHEMA_VERSION = 2 as const;
+export const MANIFEST_SCHEMA_VERSION = 3 as const;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -230,6 +230,21 @@ export interface Project {
    * new projects + older manifests that pre-date this field.
    */
   isDeleted: boolean;
+  /**
+   * Project-lock / "finalized" flag (Build #5.126.1, Phase 4).
+   *
+   * When `true`, every client treats the project as read-only — edit
+   * controls are disabled in the UI and the server's `assertProject
+   * Access` requires Owner/Admin to flip the flag. Distinct from
+   * the transient `project_locks` edit-lock (which prevents two
+   * editors at once); this is a deliberate persistent state for
+   * finalising a report.
+   *
+   * Defaults to `false` for new projects and older manifests that
+   * pre-date this field. The 3-way merge resolves a both-changed
+   * conflict with **true wins** (freeze is the protective intent).
+   */
+  isFrozen: boolean;
   projectGPS: ProjectGPS | null;
   projectAddress: string | null;
   photos: Photo[];
