@@ -74,14 +74,27 @@ final class APIClient {
         try await request("GET", "/v1/projects/\(id.uuidString.lowercased())", body: Optional<Empty>.none)
     }
 
-    /// Create-or-update a project on the server. `expectedRevision`
-    /// is `nil` for first push (server creates the row), or the
-    /// previous server revision for subsequent updates.
+    /// Create-or-update a project on the server.
+    ///
+    /// `expectedRevision` is `nil` for first push (server creates the
+    /// row), or the previous server revision for subsequent updates.
+    ///
+    /// `baseManifest` (Build #5.119.1, cloud-first Phase 1) is the
+    /// manifest the client last successfully held. When non-nil, the
+    /// server runs a 3-way merge against current truth and returns the
+    /// merged manifest in `PutManifestResponse.project` for the client
+    /// to adopt. When nil, the legacy optimistic-concurrency path
+    /// runs (server-side back-compat).
     @discardableResult
     func putProject(id: UUID,
                     project: Project,
-                    expectedRevision: String?) async throws -> PutManifestResponse {
-        let body = PutManifestRequest(project: project, expectedRevision: expectedRevision)
+                    expectedRevision: String?,
+                    baseManifest: Project? = nil) async throws -> PutManifestResponse {
+        let body = PutManifestRequest(
+            project: project,
+            expectedRevision: expectedRevision,
+            baseManifest: baseManifest
+        )
         return try await request("PUT",
                                   "/v1/projects/\(id.uuidString.lowercased())",
                                   body: body)
@@ -405,23 +418,37 @@ private struct ServerErrorEnvelope: Decodable {
 /// explicit `null` on the wire (instead of being omitted). The
 /// server's zod schema declares the field as `z.string().nullable()`
 /// which accepts string-or-null but NOT undefined / missing.
+///
+/// `baseManifest` (Build #5.119.1) is the OPPOSITE — only emitted
+/// when non-nil, because the server's zod schema declares it as
+/// `.optional()` and uses its presence as the feature flag to
+/// activate the 3-way merge path.
 struct PutManifestRequest: Encodable {
     let project: Project
     let expectedRevision: String?
+    let baseManifest: Project?
 
     private enum CodingKeys: String, CodingKey {
-        case project, expectedRevision
+        case project, expectedRevision, baseManifest
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(project, forKey: .project)
         try c.encode(expectedRevision, forKey: .expectedRevision)
+        // encodeIfPresent so the absence flips the server back to the
+        // legacy optimistic-concurrency path.
+        try c.encodeIfPresent(baseManifest, forKey: .baseManifest)
     }
 }
 
 struct PutManifestResponse: Decodable {
     let revision: String
+    /// The server-merged manifest, present only when the server ran
+    /// the 3-way merge path (i.e. the client sent `baseManifest`).
+    /// Clients adopt this so future edits base on what the server
+    /// now holds. Absent on the legacy path.
+    let project: Project?
 }
 
 struct ProjectListResponse: Decodable {

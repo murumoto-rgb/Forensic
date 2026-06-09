@@ -2,20 +2,40 @@ import Foundation
 import Observation
 
 /// Pushes local project manifests to the Forensic server when they
-/// change. Single direction for Phase 1B-2 — iOS → server only. The
-/// server's project-list endpoint is what the web app reads, so this
-/// is what makes iOS-captured work appear on the web.
+/// change, and pulls server-side changes back. Cloud-first as of
+/// Build #5.119.1 — the server is the source of truth and a
+/// deterministic 3-way merge at the server's PUT boundary makes
+/// concurrent web + iOS edits safe.
 ///
-/// Server-side revision tokens are tracked per-project in
-/// `UserDefaults` under the prefix `sitephoto.serverRevision.`. On
-/// first push for a project, `expectedRevision` is `nil` (server
-/// creates the row). On subsequent pushes, the stored revision is
-/// sent and rotated to whatever the server returned. On 409
-/// (mismatch from another device having modified the row), the
-/// syncer refetches the current revision via `GET /v1/projects/:id`
-/// and retries the PUT once — that retry overwrites whatever was
-/// on the server. Proper merge logic is a Phase 2+ concern;
-/// pre-multi-user this never trips.
+/// Per-project state in `UserDefaults`:
+///  - `sitephoto.serverRevision.<uuid>` — opaque server-issued
+///    optimistic-concurrency token.
+///  - `sitephoto.serverBase.<uuid>` — the encoded JSON of the
+///    manifest the server last confirmed we held. Sent on every
+///    PUT as `baseManifest` so the server can merge against current
+///    truth; advances to the server's returned merged manifest
+///    after each successful push.
+///
+/// Push flow:
+///  - First-ever push for a project: no stored base → send legacy
+///    request shape (no `baseManifest`), server runs the legacy
+///    create / optimistic-concurrency path, response carries the
+///    new revision only. We store the just-pushed manifest as the
+///    base for the next push.
+///  - Subsequent pushes: send `baseManifest = storedBase`, server
+///    merges, returns merged manifest in `response.project`; we
+///    adopt it (write to disk via a no-hook apply) and advance both
+///    revision and base.
+///  - 409 is now a degraded fallback (server-side CAS retries
+///    handle the common race). The legacy refetch-and-clobber
+///    retry is gone — local-wins is incompatible with cloud-first.
+///
+/// Pull flow (`pullIfNeeded`):
+///  - If local manifest equals stored base (clean) → adopt server.
+///  - If local differs from stored base (dirty across relaunch
+///    too, because we compare on-disk to base instead of an
+///    in-memory flag) → don't blind-replace; push instead. The
+///    server merge will fold both sides cleanly.
 ///
 /// Errors surface as toasts via `ToastCenter` — sync is
 /// fire-and-forget from the caller's perspective.
@@ -32,12 +52,18 @@ final class ManifestSyncer {
     weak var store: ProjectStore?
 
     private let revisionKeyPrefix = "sitephoto.serverRevision."
+    /// Per-project base snapshot — the manifest the server last
+    /// confirmed we held. Sent on every PUT as `baseManifest` so the
+    /// server can do a 3-way merge. Encoded as JSON `Data` under
+    /// `sitephoto.serverBase.<uuid>` in UserDefaults. Build #5.119.1.
+    private let baseKeyPrefix = "sitephoto.serverBase."
     /// In-memory set of project IDs whose local file has been
     /// modified since the last successful push. `pullAllFromServer`
     /// skips these so an in-progress local edit isn't clobbered by
-    /// a pull. Cleared on successful push. Lives only in memory —
-    /// on relaunch we treat all projects as clean (subsequent local
-    /// edits re-mark them).
+    /// a pull. Cleared on successful push. The on-disk-vs-stored-base
+    /// comparison in `pullIfNeeded` is the robust cross-relaunch
+    /// equivalent — this in-memory flag is the same-session
+    /// short-circuit.
     private var dirty: Set<UUID> = []
 
     /// Project IDs currently mid-sync. Lets the UI surface a
@@ -67,14 +93,6 @@ final class ManifestSyncer {
             do {
                 try await pushOnce(project: project)
                 dirty.remove(id)
-            } catch APIClient.APIError.http(status: 409, _, _) {
-                // Stale revision — refetch and retry once.
-                do {
-                    try await refetchRevisionAndRetry(project: project)
-                    dirty.remove(id)
-                } catch {
-                    surfaceError(error, projectName: project.name)
-                }
             } catch APIClient.APIError.notAuthenticated {
                 // Silently skip when not signed in — the sign-in
                 // sheet is already (or about to be) present.
@@ -132,42 +150,49 @@ final class ManifestSyncer {
         }
     }
 
-    /// Clear all stored revisions. Called on sign-out so the next
-    /// user (or a fresh sign-in by the same user) starts clean.
+    /// Clear all stored revisions and base snapshots. Called on
+    /// sign-out so the next user (or a fresh sign-in by the same
+    /// user) starts clean.
     func resetRevisions() {
         let defaults = UserDefaults.standard
-        for key in defaults.dictionaryRepresentation().keys
-        where key.hasPrefix(revisionKeyPrefix) {
-            defaults.removeObject(forKey: key)
+        for key in defaults.dictionaryRepresentation().keys {
+            if key.hasPrefix(revisionKeyPrefix) || key.hasPrefix(baseKeyPrefix) {
+                defaults.removeObject(forKey: key)
+            }
         }
         dirty.removeAll()
     }
 
     // MARK: Internals
 
+    /// Cloud-first push. Sends `baseManifest = storedBase` when
+    /// available (server runs 3-way merge); falls back to legacy
+    /// shape on the very first push for a project (no stored base
+    /// yet — the server's legacy path runs, and we capture the
+    /// just-pushed manifest as the base for next time).
     private func pushOnce(project: Project) async throws {
         let expectedRevision = storedRevision(for: project.id)
+        let base = storedBase(for: project.id)
         let response = try await api.putProject(
             id: project.id,
             project: project,
-            expectedRevision: expectedRevision
+            expectedRevision: expectedRevision,
+            baseManifest: base
         )
         storeRevision(response.revision, for: project.id)
+        // Adopt the server's merged result so future edits base on
+        // what the server now holds. If the server skipped merge
+        // (legacy path, first push), fall back to the just-pushed
+        // manifest as the new base.
+        if let merged = response.project {
+            storeBase(merged, for: project.id)
+            store?.applyServerProject(merged)
+        } else {
+            storeBase(project, for: project.id)
+        }
     }
 
-    private func refetchRevisionAndRetry(project: Project) async throws {
-        let current = try await api.getProject(id: project.id)
-        storeRevision(current.revision, for: project.id)
-        let response = try await api.putProject(
-            id: project.id,
-            project: project,
-            expectedRevision: current.revision
-        )
-        storeRevision(response.revision, for: project.id)
-    }
-
-    /// Awaitable equivalent of `sync(_:)` — same push + 409-retry
-    /// logic but the caller waits for completion. Used by
+    /// Awaitable equivalent of `sync(_:)` — used by
     /// `pushAllToServer()` so we know every project is on the
     /// server before kicking off photo upload.
     private func pushAwait(project: Project) async {
@@ -180,13 +205,6 @@ final class ManifestSyncer {
         do {
             try await pushOnce(project: project)
             dirty.remove(id)
-        } catch APIClient.APIError.http(status: 409, _, _) {
-            do {
-                try await refetchRevisionAndRetry(project: project)
-                dirty.remove(id)
-            } catch {
-                surfaceError(error, projectName: project.name)
-            }
         } catch APIClient.APIError.notAuthenticated {
             return
         } catch {
@@ -198,14 +216,25 @@ final class ManifestSyncer {
         let id = item.id
         // Don't trample an in-flight push.
         if inFlight.contains(id) { return }
-        // Don't trample local edits the user hasn't pushed yet.
-        if dirty.contains(id) { return }
         // No-op when server matches local.
         if storedRevision(for: id) == item.revision { return }
 
+        // Robust dirty check: same-session in-memory flag OR the
+        // on-disk manifest differs from the stored base (survives
+        // relaunch). Either way, defer to a push so the server can
+        // merge — never blind-replace.
+        if dirty.contains(id) || hasUnpushedLocalEdits(id: id) {
+            if let project = store?.project(withID: id) {
+                await pushAwait(project: project)
+            }
+            return
+        }
+
+        // Clean local — adopt server.
         do {
             let resp = try await api.getProject(id: id)
             storeRevision(resp.revision, for: id)
+            storeBase(resp.project, for: id)
             store?.applyServerProject(resp.project)
         } catch APIClient.APIError.notAuthenticated {
             return
@@ -219,6 +248,53 @@ final class ManifestSyncer {
         }
     }
 
+    /// Compare the project's on-disk manifest to the stored base
+    /// snapshot. Returns true when they differ (the user made
+    /// edits the server hasn't seen yet). Returns false when there's
+    /// no stored base — in that case the dirty-set in-memory flag
+    /// is the only signal we have for this session.
+    private func hasUnpushedLocalEdits(id: UUID) -> Bool {
+        guard let baseData = UserDefaults.standard.data(forKey: baseKey(for: id)) else {
+            return false
+        }
+        guard let project = store?.project(withID: id) else {
+            return false
+        }
+        guard let localData = try? encoder().encode(project) else {
+            return false
+        }
+        // Re-encode both through a canonical encoder so key-order
+        // differences from old saves don't register as edits.
+        guard let canonicalBase = canonicalize(baseData),
+              let canonicalLocal = canonicalize(localData) else {
+            return localData != baseData
+        }
+        return canonicalLocal != canonicalBase
+    }
+
+    /// Decode-then-re-encode through the same encoder so two
+    /// equivalent JSON blobs compare equal regardless of dictionary
+    /// key order. Used only by the dirty check.
+    private func canonicalize(_ data: Data) -> Data? {
+        guard let project = try? decoder().decode(Project.self, from: data) else {
+            return nil
+        }
+        return try? encoder().encode(project)
+    }
+
+    private func encoder() -> JSONEncoder {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }
+
+    private func decoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
     private func storedRevision(for id: UUID) -> String? {
         UserDefaults.standard.string(forKey: revisionKey(for: id))
     }
@@ -229,6 +305,22 @@ final class ManifestSyncer {
 
     private func revisionKey(for id: UUID) -> String {
         revisionKeyPrefix + id.uuidString.lowercased()
+    }
+
+    private func storedBase(for id: UUID) -> Project? {
+        guard let data = UserDefaults.standard.data(forKey: baseKey(for: id)) else {
+            return nil
+        }
+        return try? decoder().decode(Project.self, from: data)
+    }
+
+    private func storeBase(_ project: Project, for id: UUID) {
+        guard let data = try? encoder().encode(project) else { return }
+        UserDefaults.standard.set(data, forKey: baseKey(for: id))
+    }
+
+    private func baseKey(for id: UUID) -> String {
+        baseKeyPrefix + id.uuidString.lowercased()
     }
 
     private func surfaceError(_ error: Error, projectName: String) {
