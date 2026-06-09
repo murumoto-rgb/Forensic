@@ -63,6 +63,20 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // Build #5.131.1: three category dividers (Personal /
+                // Team / Diagnostics) so the user can see at a glance
+                // which group each section belongs to. Each divider is
+                // a Section with only a Label inside — produces a
+                // visually distinct grouped row.
+
+                Section {
+                    Label("Personal", systemImage: "person.crop.circle")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("Settings that affect only your device.")
+                }
+
                 // Account first — most relevant identity info.
                 Section("Account") {
                     if let email = auth.userEmail {
@@ -92,41 +106,29 @@ struct SettingsSheet: View {
                     }
                 }
 
-                // Manual sync trigger — useful for poking at uploads
-                // without restarting the app, and for verifying that
-                // floor-plan binaries reach R2 (the per-plan toasts
-                // PhotoSyncer emits land here).
+                // Build #5.131.1: Sync section moved down to Diagnostics
+                // cluster. Appearance moved up here so the Personal-side
+                // settings sit together (account, API key, AI speed,
+                // confidence filter, appearance).
                 Section {
-                    Button {
-                        Task {
-                            toastCenter.post("Sync started…", kind: .info)
-                            await appConfigSyncer.pullAllFromServer()
-                            await syncer.pullAllFromServer()
-                            await syncer.pushAllToServer()
-                            await photoSyncer.syncAll()
-                            await backfillService.backfillAll()
-                            toastCenter.post("Sync sweep done.", kind: .info)
-                        }
-                    } label: {
-                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Accent Color")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        accentPicker
                     }
-                    // Build #5.51.1 — dedicated entry point for the
-                    // backfill path so the user can isolate it from
-                    // the full sweep above. Useful when the launch
-                    // sweep is slow or noisy and the user wants to
-                    // verify backfill specifically.
-                    Button {
-                        Task {
-                            toastCenter.post("Backfill started…", kind: .info)
-                            await backfillService.backfillAll()
+                    if !AppearanceSettings.alternateIcons.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("App Icon")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            iconPicker
                         }
-                    } label: {
-                        Label("Backfill missing files", systemImage: "arrow.down.circle")
                     }
                 } header: {
-                    Text("Sync")
+                    Text("Appearance")
                 } footer: {
-                    Text("Sync now: pulls the team's tag library and AI rules template, pushes any pending manifest changes, and uploads any photo / plan binaries that haven't reached R2 yet.\n\nBackfill missing files: only downloads photos / plans whose manifest is present locally but whose binary is missing (simulator, fresh install, restored device). Backfill summary toast and persistent chip in the projects-list footer surface the result.")
+                    Text("Accent color tints buttons, chips, selected markers, and other interactive elements. Restart not required.\(AppearanceSettings.alternateIcons.isEmpty ? "" : " Alternate app icons appear on the home screen once chosen.")")
                 }
 
                 Section {
@@ -239,6 +241,15 @@ struct SettingsSheet: View {
                     Text("Tags below this confidence are hidden from photo rows, the filter bar, the tag-filter screen, and the PDF — but they stay on the photo, so lowering the slider brings them back. Manually-typed tags are always 100%. AI-suggested tags carry whatever score Claude returned. Default 50%.")
                 }
 
+                // Build #5.131.1: Team category divider.
+                Section {
+                    Label("Team", systemImage: "person.3.fill")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("Settings that affect every project across all team members.")
+                }
+
                 Section {
                     Button {
                         showingRulesTemplate = true
@@ -296,25 +307,44 @@ struct SettingsSheet: View {
                     Text("Customise the cover title / subtitle, footer line, and logo that appear on every exported PDF.")
                 }
 
+                // Build #5.131.1: Diagnostics category divider.
                 Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Accent Color")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        accentPicker
-                    }
-                    if !AppearanceSettings.alternateIcons.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("App Icon")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            iconPicker
+                    Label("Diagnostics", systemImage: "stethoscope")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("Manual sync, storage status, and version info.")
+                }
+
+                // Build #5.131.1: Sync moved down here from the top so
+                // the Diagnostics cluster (Sync · Storage · Links · About)
+                // sits together.
+                Section {
+                    Button {
+                        Task {
+                            toastCenter.post("Sync started…", kind: .info)
+                            await appConfigSyncer.pullAllFromServer()
+                            await syncer.pullAllFromServer()
+                            await syncer.pushAllToServer()
+                            await photoSyncer.syncAll()
+                            await backfillService.backfillAll()
+                            toastCenter.post("Sync sweep done.", kind: .info)
                         }
+                    } label: {
+                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    Button {
+                        Task {
+                            toastCenter.post("Backfill started…", kind: .info)
+                            await backfillService.backfillAll()
+                        }
+                    } label: {
+                        Label("Backfill missing files", systemImage: "arrow.down.circle")
                     }
                 } header: {
-                    Text("Appearance")
+                    Text("Sync")
                 } footer: {
-                    Text("Accent color tints buttons, chips, selected markers, and other interactive elements. Restart not required.\(AppearanceSettings.alternateIcons.isEmpty ? "" : " Alternate app icons appear on the home screen once chosen.")")
+                    Text("Sync now: pulls the team's tag library and AI rules template, pushes any pending manifest changes, and uploads any photo / plan binaries that haven't reached R2 yet.\n\nBackfill missing files: only downloads photos / plans whose manifest is present locally but whose binary is missing (simulator, fresh install, restored device). Backfill summary toast and persistent chip in the projects-list footer surface the result.")
                 }
 
                 Section {
