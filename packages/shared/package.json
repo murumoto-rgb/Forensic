@@ -14,7 +14,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit && node --test --import tsx tests/ios-parity.test.ts tests/promptCompiler.test.ts tests/aiSuggestions.test.ts tests/aiResponseValidator.test.ts"
+    "test": "tsc --noEmit && node --test --import tsx tests/ios-parity.test.ts tests/promptCompiler.test.ts tests/aiSuggestions.test.ts tests/aiResponseValidator.test.ts tests/merge.test.ts"
   },
   "dependencies": {
     "zod": "^3.23.8"

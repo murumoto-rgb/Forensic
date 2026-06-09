@@ -30,12 +30,29 @@ export interface GetManifestResponse {
 
 export interface PutManifestRequest {
   project: Project;
-  /** Revision from the last GET. Server rejects with 409 on mismatch. */
+  /** Revision from the last GET. Server rejects with 409 on mismatch
+   *  (legacy path). On the merge path it's advisory — the server
+   *  merges against current truth regardless. */
   expectedRevision: string;
+  /**
+   * The manifest this client started from (its last-synced snapshot).
+   * **Presence flips the server onto the 3-way merge path** (Build
+   * #5.116.1): the server merges `(baseManifest, current, project)`
+   * and stores the result. Absent → the legacy optimistic-concurrency
+   * path (blind overwrite on a matching `expectedRevision`, 409
+   * otherwise), so old clients keep working unchanged.
+   */
+  baseManifest?: Project;
 }
 
 export interface PutManifestResponse {
   revision: string;
+  /**
+   * The merged manifest the server now holds — present only on the
+   * merge path. Clients **adopt** this (replace local + advance their
+   * base) so both sides converge. Absent on the legacy path.
+   */
+  project?: Project;
 }
 
 export interface ApiError {
