@@ -435,6 +435,7 @@ function buildEmptyProject(
     lastStoppedAt: null,
     stopped: false,
     isDeleted: false,
+    isFrozen: false,
     projectGPS: null,
     projectAddress,
     photos: [],

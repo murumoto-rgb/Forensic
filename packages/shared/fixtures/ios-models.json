@@ -1,6 +1,6 @@
 {
   "_generated_by": "scripts/regen-ios-fixtures.ts — do not edit by hand. Run `pnpm parity:regen-fixtures`.",
-  "manifestSchemaVersion": 2,
+  "manifestSchemaVersion": 3,
   "models": {
     "Project": {
       "source": "ios/SitePhoto/Models/Project.swift",
@@ -24,6 +24,7 @@
         "tagSelection": "ProjectTagSelection?",
         "aiExtraVocabulary": "ProjectExtraVocabulary?",
         "isDeleted": "Bool",
+        "isFrozen": "Bool",
         "manifestSchemaVersion": "Int"
       }
     },

@@ -578,6 +578,7 @@ export function mergeManifest(
     lastStoppedAt: scalar3(base.lastStoppedAt, server.lastStoppedAt, client.lastStoppedAt, laterIso, ctx, "lastStoppedAt"),
     stopped: scalar3(base.stopped, server.stopped, client.stopped, trueWins, ctx, "stopped"),
     isDeleted: scalar3(base.isDeleted, server.isDeleted, client.isDeleted, trueWins, ctx, "isDeleted"),
+    isFrozen: scalar3(base.isFrozen, server.isFrozen, client.isFrozen, trueWins, ctx, "isFrozen"),
     projectGPS: scalar3(base.projectGPS, server.projectGPS, client.projectGPS, gpsTie, ctx, "projectGPS"),
     projectAddress: scalar3(base.projectAddress, server.projectAddress, client.projectAddress, nonNullThenClient, ctx, "projectAddress"),
     photos,

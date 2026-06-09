@@ -30,6 +30,7 @@ import { deleteObjects } from "../r2.js";
 import {
   assertProjectAccess,
   isOrgAdmin,
+  isProjectOwner,
   sendAccessError,
 } from "../access.js";
 
@@ -361,6 +362,24 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         }
 
         const serverCurrent = existing.manifest as unknown as Project;
+
+        // Phase 4 (Build #5.126.1): flipping `isFrozen` requires
+        // Owner OR Admin. assertProjectAccess(..., "editor") already
+        // ran above for any save, so we only need the extra check
+        // when the flag is actually changing.
+        if ((serverCurrent.isFrozen ?? false) !== (project.isFrozen ?? false)) {
+          const allowed =
+            (await isOrgAdmin(request.user.id)) ||
+            (await isProjectOwner(request.user.id, id));
+          if (!allowed) {
+            reply.code(403).send({
+              error: "forbidden",
+              message: "Only an owner or admin can lock or unlock a project.",
+            });
+            return;
+          }
+        }
+
         const { merged, report } = mergeManifest(baseManifest, serverCurrent, project);
         if (report.conflicts.length > 0) {
           // Audit observability — never blocks the write.
@@ -435,7 +454,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // ---------------------------------------------------------------
     const { data: existing, error: fetchError } = await supabaseAdmin
       .from("projects")
-      .select("revision, owner_id")
+      .select("revision, owner_id, manifest")
       .eq("id", id)
       .maybeSingle();
 
@@ -454,6 +473,23 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         if (sendAccessError(reply, err)) return;
         throw err;
       }
+
+      // Phase 4 (Build #5.126.1): flipping `isFrozen` requires Owner
+      // OR Admin on the legacy path too.
+      const existingManifest = existing.manifest as unknown as Project;
+      if ((existingManifest.isFrozen ?? false) !== (project.isFrozen ?? false)) {
+        const allowed =
+          (await isOrgAdmin(request.user.id)) ||
+          (await isProjectOwner(request.user.id, id));
+        if (!allowed) {
+          reply.code(403).send({
+            error: "forbidden",
+            message: "Only an owner or admin can lock or unlock a project.",
+          });
+          return;
+        }
+      }
+
       if (expectedRevision !== existing.revision) {
         reply.code(409).send({
           error: "revision_mismatch",

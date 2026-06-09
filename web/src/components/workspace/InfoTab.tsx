@@ -28,6 +28,13 @@ interface Props {
 }
 
 export function InfoTab({ projectId, manifest, canEdit }: Props) {
+  // The Lock/Unlock toggle is exempt from `canEdit` (otherwise you
+  // couldn't unfreeze a frozen project) and exempt from the edit-lock
+  // gate. UX surface limited to admin/editor; the server's
+  // `assertProjectAccess(..., "editor")` on the PUT path filters
+  // viewers via 403 if they ever try.
+  const canToggleFreeze =
+    manifest.role === "admin" || manifest.role === "editor";
   const project = manifest.project;
   const navigate = useNavigate();
   const [name, setName] = useState(project?.name ?? "");
@@ -170,6 +177,26 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
         </p>
       </div>
 
+      {canToggleFreeze && (
+        <div className="mt-3 rounded border border-amber-800/60 bg-amber-950/20 p-4">
+          <div className="mb-2 text-sm font-medium text-amber-200">
+            {project.isFrozen ? "🔒 Project is locked" : "Lock project"}
+          </div>
+          <button
+            type="button"
+            onClick={toggleFreeze}
+            className="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-100 transition hover:bg-amber-900/40"
+          >
+            {project.isFrozen ? "Unlock project" : "Lock project (finalize)"}
+          </button>
+          <p className="mt-2 text-xs text-neutral-500">
+            {project.isFrozen
+              ? "Every edit affordance is disabled until you unlock. Use Unlock to make further changes."
+              : "Lock the project to finalize the report — disables every edit on web and iOS until an owner or admin unlocks it. Distinct from the transient edit-lock that prevents simultaneous editors."}
+          </p>
+        </div>
+      )}
+
       <div className="mt-3 rounded border border-red-900/40 bg-red-950/20 p-4">
         <div className="mb-2 text-sm font-medium text-red-300">
           Danger zone
@@ -192,6 +219,21 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
       <MembersSection projectId={projectId} />
     </section>
   );
+
+  function toggleFreeze() {
+    if (!project) return;
+    const next = !project.isFrozen;
+    if (next) {
+      if (
+        !window.confirm(
+          `Lock "${project.name}"?\n\nNo one can edit the project on web or iOS until it's unlocked. Use this when the report is finalized.`
+        )
+      ) {
+        return;
+      }
+    }
+    manifest.save({ ...project, isFrozen: next });
+  }
 
   function renumberByDate() {
     if (!project) return;
