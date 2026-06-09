@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Project } from "@forensic/shared";
+import type { Project, ProjectRole } from "@forensic/shared";
 import { api, ApiError } from "./api";
 
 /**
@@ -49,6 +49,19 @@ export type SaveStatus =
 export interface ProjectManifestHook {
   project: Project | null;
   revision: string | null;
+  /**
+   * Caller's effective role on this project (Build #5.125.1).
+   * `null` while the manifest is loading or when the response
+   * predates server-side role plumbing.
+   */
+  role: ProjectRole | null;
+  /**
+   * Convenience derived from `role`. `null`/`"admin"`/`"editor"`
+   * pass; `"viewer"` blocks. Combine with `lock.status === "holding"`
+   * + `!project.isFrozen` at the workspace level for the final
+   * `canEdit` decision.
+   */
+  hasWriteAccess: boolean;
   /** Read-only mirror refs for callers (e.g. `useBatchRetag`) that
    *  need to grab the latest project/revision from inside a long-
    *  running task without re-rendering. */
@@ -72,6 +85,7 @@ export function useProjectManifest(
 ): ProjectManifestHook {
   const [project, setProjectState] = useState<Project | null>(null);
   const [revision, setRevisionState] = useState<string | null>(null);
+  const [role, setRoleState] = useState<ProjectRole | null>(null);
   const [status, setStatus] = useState<SaveStatus>({ kind: "loading" });
 
   const projectRef = useRef<Project | null>(null);
@@ -104,6 +118,7 @@ export function useProjectManifest(
       const resp = await api.getProject(projectId);
       setProjectState(resp.project);
       setRevisionState(resp.revision);
+      setRoleState(resp.role ?? null);
       projectRef.current = resp.project;
       revisionRef.current = resp.revision;
       baseRef.current = resp.project;
@@ -209,9 +224,17 @@ export function useProjectManifest(
     [runSaveLoop]
   );
 
+  // hasWriteAccess: viewer blocks; null/admin/editor pass. Null
+  // covers (a) initial loading and (b) an older server that doesn't
+  // populate `role` — fall back to today's permissive behaviour
+  // rather than locking the user out unexpectedly.
+  const hasWriteAccess = role !== "viewer";
+
   return {
     project,
     revision,
+    role,
+    hasWriteAccess,
     projectRef,
     revisionRef,
     status,

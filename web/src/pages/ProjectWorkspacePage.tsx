@@ -55,7 +55,11 @@ export function ProjectWorkspacePage({ session }: Props) {
   const { id } = useParams<{ id: string }>();
   const manifest = useProjectManifest(id);
   const lock = useProjectLock(id ?? null);
-  const canEdit = lock.status.kind === "holding";
+  // Build #5.125.1: viewers can't edit even when holding the lock —
+  // the server would 403 every write anyway, but gating the UI keeps
+  // the lock semantics clean (a viewer can still acquire if it lets
+  // them; the workspace just won't render mutation affordances).
+  const canEdit = lock.status.kind === "holding" && manifest.hasWriteAccess;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">

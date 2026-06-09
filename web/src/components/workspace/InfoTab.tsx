@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import type { AdminUser } from "@forensic/shared";
+import { api, ApiError } from "../../lib/api";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 
 /**
@@ -25,7 +27,7 @@ interface Props {
   canEdit: boolean;
 }
 
-export function InfoTab({ manifest, canEdit }: Props) {
+export function InfoTab({ projectId, manifest, canEdit }: Props) {
   const project = manifest.project;
   const navigate = useNavigate();
   const [name, setName] = useState(project?.name ?? "");
@@ -186,6 +188,8 @@ export function InfoTab({ manifest, canEdit }: Props) {
           Permanent deletion is a separate action on the trash row.
         </p>
       </div>
+
+      <MembersSection projectId={projectId} />
     </section>
   );
 
@@ -210,4 +214,195 @@ export function InfoTab({ manifest, canEdit }: Props) {
     }));
     manifest.save({ ...project, photos: renumbered });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Per-project member assignment (Build #5.125.1)
+// ---------------------------------------------------------------------------
+
+interface MembersSectionProps {
+  projectId: string;
+}
+
+/**
+ * Per-project member assignment editor. Admin-only — checks
+ * `getMe().isAdmin` on mount and hides the section entirely for
+ * non-admins. The owner is the implicit editor and never appears
+ * in the picker.
+ *
+ * Lives on the Info tab so admins manage access in the same place
+ * they look at project metadata, avoiding an N×M user-projects
+ * matrix on AdminUsersPage. Reads the full user list once on mount
+ * and projects the current project's assignments onto it.
+ */
+function MembersSection({ projectId }: MembersSectionProps) {
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  // assignments: userId -> role | undefined (no membership)
+  const [assignments, setAssignments] = useState<Record<string, "editor" | "viewer" | undefined>>({});
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const me = await api.getMe();
+      setIsAdmin(me.isAdmin);
+      if (!me.isAdmin) return;
+      const list = await api.listAdminUsers();
+      setUsers(list.users);
+      // Derive this project's current member assignments from the
+      // user list — `AdminUser.assignments` already includes them.
+      // The project owner is silently stripped from any PUT by the
+      // server (they're the implicit editor), so we don't need to
+      // know which row is the owner to keep the picker honest.
+      const next: Record<string, "editor" | "viewer" | undefined> = {};
+      for (const u of list.users) {
+        for (const a of u.assignments) {
+          if (a.projectId === projectId) next[u.id] = a.role;
+        }
+      }
+      setAssignments(next);
+    } catch (e: unknown) {
+      setError(
+        e instanceof ApiError ? `${e.errorCode}: ${e.message}` : "Failed to load users"
+      );
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (isAdmin === null) return null;
+  if (!isAdmin) return null;
+
+  async function save(next: Record<string, "editor" | "viewer" | undefined>) {
+    setAssignments(next);
+    setSaving(true);
+    setError(null);
+    try {
+      const members = Object.entries(next)
+        .filter(([, role]) => role !== undefined)
+        .map(([userId, role]) => ({ userId, role: role as "editor" | "viewer" }));
+      await api.setProjectMembers(projectId, members);
+      setSavedAt(Date.now());
+    } catch (e: unknown) {
+      setError(
+        e instanceof ApiError ? `${e.errorCode}: ${e.message}` : "Save failed"
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleRole(userId: string, role: "editor" | "viewer" | undefined) {
+    const next = { ...assignments };
+    if (role === undefined) {
+      delete next[userId];
+    } else {
+      next[userId] = role;
+    }
+    void save(next);
+  }
+
+  return (
+    <div className="mt-3 rounded border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="mb-2 flex items-center justify-between text-sm">
+        <span className="font-medium text-neutral-200">Project members</span>
+        <span className="text-xs text-neutral-500">
+          {saving && "Saving…"}
+          {!saving && savedAt && Date.now() - savedAt < 5000 && (
+            <span className="text-emerald-400">Saved ✓</span>
+          )}
+        </span>
+      </div>
+      <p className="mb-3 text-xs text-neutral-500">
+        The project owner has implicit Editor access. Add other
+        users as Editor (can edit) or Viewer (read-only).
+      </p>
+      {error && (
+        <div className="mb-2 rounded border border-red-800 bg-red-950/40 p-2 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+      {users === null ? (
+        <div className="text-xs text-neutral-500">Loading users…</div>
+      ) : (
+        <ul className="divide-y divide-neutral-800">
+          {users
+            .filter((u) => !u.isAdmin) // admins see everything anyway
+            .map((u) => {
+              const role = assignments[u.id];
+              return (
+                <li
+                  key={u.id}
+                  className="flex items-center justify-between gap-3 py-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-neutral-200">{u.email}</div>
+                    {u.pending && (
+                      <div className="text-[10px] text-amber-300">
+                        Invited (pending)
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-1">
+                    <RoleButton
+                      label="None"
+                      active={role === undefined}
+                      onClick={() => toggleRole(u.id, undefined)}
+                      disabled={saving}
+                    />
+                    <RoleButton
+                      label="Viewer"
+                      active={role === "viewer"}
+                      onClick={() => toggleRole(u.id, "viewer")}
+                      disabled={saving}
+                    />
+                    <RoleButton
+                      label="Editor"
+                      active={role === "editor"}
+                      onClick={() => toggleRole(u.id, "editor")}
+                      disabled={saving}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          {users.filter((u) => !u.isAdmin).length === 0 && (
+            <li className="py-2 text-xs text-neutral-500">
+              No other users to assign yet. Invite some on the{" "}
+              <span className="text-neutral-300">Team &amp; access</span>{" "}
+              page.
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface RoleButtonProps {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  disabled: boolean;
+}
+function RoleButton({ label, active, onClick, disabled }: RoleButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        active
+          ? "rounded border border-blue-500 bg-blue-600/80 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+          : "rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+      }
+    >
+      {label}
+    </button>
+  );
 }

@@ -145,6 +145,8 @@ export interface ProjectListItem {
   revision: string;
   createdAt: string;
   updatedAt: string;
+  /** Caller's effective role on this project (Build #5.125.1). */
+  role?: import("@forensic/shared").ProjectRole;
 }
 
 export interface ProjectListResponse {
@@ -535,6 +537,63 @@ export const api = {
       body?.message ?? `HTTP ${resp.status}`
     );
   },
+
+  // -------------------- Phase 3: identity + admin (Build #5.125.1) --
+  /** Identity + org role for the calling user. Every signed-in user
+   *  may call this. Source of truth for showing the admin link / page. */
+  getMe: () =>
+    request<import("@forensic/shared").MeResponse>("/v1/me"),
+  /** List every user with their assignments. Admin-only on the
+   *  server; UI also gates via `getMe().isAdmin`. */
+  listAdminUsers: () =>
+    request<import("@forensic/shared").ListAdminUsersResponse>(
+      "/v1/admin/users"
+    ),
+  /** Send a Supabase invite email. Returns the new AdminUser DTO. */
+  inviteUser: (email: string) =>
+    request<import("@forensic/shared").InviteUserResponse>(
+      "/v1/admin/users/invite",
+      { method: "POST", body: JSON.stringify({ email }) }
+    ),
+  /** Toggle the org-admin flag on a user. Server 409s on last-admin. */
+  setUserAdmin: (userId: string, isAdmin: boolean) =>
+    request<import("@forensic/shared").PatchUserResponse>(
+      `/v1/admin/users/${userId}`,
+      { method: "PATCH", body: JSON.stringify({ isAdmin }) }
+    ),
+  /** Hard-delete a user (revokes memberships then deletes auth row).
+   *  Server 409s on self_delete / owns_projects / last_admin. */
+  removeUser: async (userId: string): Promise<void> => {
+    const { data } = await supabase.auth.getSession();
+    const jwt = data.session?.access_token;
+    const resp = await fetch(`${env.API_URL}/v1/admin/users/${userId}`, {
+      method: "DELETE",
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    });
+    if (resp.ok) return;
+    type ErrorBody = { error?: string; message?: string; details?: unknown };
+    let body: ErrorBody | null = null;
+    try {
+      body = (await resp.json()) as ErrorBody;
+    } catch {
+      /* 5xx may not be JSON */
+    }
+    throw new ApiError(
+      resp.status,
+      body?.error ?? "unknown",
+      body?.message ?? `HTTP ${resp.status}`,
+      body?.details
+    );
+  },
+  /** Replace the project's member list (full-replace, idempotent). */
+  setProjectMembers: (
+    projectId: string,
+    members: Array<{ userId: string; role: "editor" | "viewer" }>
+  ) =>
+    request<import("@forensic/shared").SetProjectMembersResponse>(
+      `/v1/admin/projects/${projectId}/members`,
+      { method: "PUT", body: JSON.stringify({ members }) }
+    ),
 };
 
 // Re-export for callers that need the wire types.
