@@ -272,6 +272,8 @@ struct ProjectDetailView: View {
                         // Build #5.128.1: per-tab scope filters which
                         // sections render. .all (the default) keeps
                         // today's layout for any non-tabbed caller.
+                        // Build #5.129.1: Buckets gets its own tab;
+                        // Export folds into More.
                         if scope == .all || scope == .more {
                             metadataSection(project)
                         }
@@ -284,10 +286,10 @@ struct ProjectDetailView: View {
                         if scope == .all || scope == .ai {
                             aiTaggingSection(project)
                         }
-                        if scope == .all || scope == .more {
+                        if scope == .all || scope == .buckets {
                             bucketsSection(project)
                         }
-                        if scope == .all || scope == .export {
+                        if scope == .all || scope == .more {
                             exportSection(project)
                         }
                         if scope == .all || scope == .photos {
@@ -784,7 +786,7 @@ struct ProjectDetailView: View {
             if !project.floorPlans.isEmpty {
                 distressFAB
             }
-        case .export, .more:
+        case .buckets, .more:
             EmptyView()
         }
     }
