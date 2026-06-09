@@ -2169,14 +2169,12 @@ struct ProjectDetailView: View {
         let untaggedCount = project.photos.filter { $0.tags.isEmpty }.count
         let taggedCount   = project.photos.count - untaggedCount
 
+        // Build #5.130.1: split today's monolithic AI Tagging section
+        // into three visual subgroups (Vocabulary / Notes / Run) so the
+        // user can find what they're looking for at a glance. The
+        // misplaced "Filter photos by tag…" button is removed (filtering
+        // already lives in the photos-section filter chip bar).
         Section {
-            Button {
-                showingTagFilter = true
-            } label: {
-                Label("Filter photos by tag…", systemImage: "line.3.horizontal.decrease.circle")
-            }
-            .disabled(project.photos.isEmpty)
-
             Button {
                 showingTagSelection = true
             } label: {
@@ -2208,7 +2206,13 @@ struct ProjectDetailView: View {
                           ? "tag.circle.fill" : "tag.circle")
                 }
             }
+        } header: {
+            Text("Vocabulary")
+        } footer: {
+            Text("AI Tags scopes which contexts and tags this project sends to Claude. Job-Specific Vocabulary appends project-only tags without changing the team library.")
+        }
 
+        Section {
             Button {
                 showingAIInstructions = true
             } label: {
@@ -2224,7 +2228,13 @@ struct ProjectDetailView: View {
                           ? "note.text" : "square.dashed")
                 }
             }
+        } header: {
+            Text("Notes")
+        } footer: {
+            Text("One-off guidance appended to the AI prompt for this project (e.g. \"focus on the east elevation\"). Templates available from inside the editor.")
+        }
 
+        Section {
             Button {
                 batchTagConfirm = BatchTagPrompt(
                     candidateCount: untaggedCount,
@@ -2277,7 +2287,7 @@ struct ProjectDetailView: View {
             }
             .disabled(project.photos.isEmpty || batchTagTask != nil)
         } header: {
-            Text("AI Tagging")
+            Text("Run")
         } footer: {
             Text("Each photo is sent to Claude (~1¢ each with prompt caching, billed to your Anthropic account) using the project's tagging guide. Returned tags are auto-accepted. Cancel any time. \"Clear AI tagging\" lets you pick which AI tags to remove from selected photos while preserving manual entries and the photo's saved AI analysis.")
         }
