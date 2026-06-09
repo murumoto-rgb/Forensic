@@ -222,20 +222,28 @@ export const api = {
     return { urls: merged, expiresAt };
   },
   /**
-   * Write a mutated project manifest. Server uses `expectedRevision`
-   * for optimistic concurrency — pass the revision from the last
-   * GET; server returns 409 if the row has moved (someone else
-   * wrote in the meantime). On success, the response carries the
-   * new revision; echo it on the next PUT.
+   * Write a mutated project manifest.
+   *
+   * **Cloud-first (Build #5.118.1):** pass `baseManifest` — the
+   * manifest the client last successfully loaded/saved. The server
+   * runs a 3-way merge against current truth and returns the merged
+   * manifest in `resp.project` for the client to adopt. Both
+   * concurrent writers' edits survive.
+   *
+   * Without `baseManifest`, the legacy path runs: server uses
+   * `expectedRevision` for optimistic concurrency and returns 409 on
+   * mismatch. Kept as a defensive fallback while the server merge
+   * support is rolling out.
    */
   putProject: (
     projectId: string,
     project: Project,
-    expectedRevision: string | null
+    expectedRevision: string | null,
+    baseManifest?: Project
   ) =>
     request<PutManifestResponse>(`/v1/projects/${projectId}`, {
       method: "PUT",
-      body: JSON.stringify({ project, expectedRevision }),
+      body: JSON.stringify({ project, expectedRevision, baseManifest }),
     }),
   /**
    * Restore a trashed project. Server reads the manifest, flips
