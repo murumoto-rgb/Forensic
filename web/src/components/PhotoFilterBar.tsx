@@ -37,15 +37,17 @@ interface Props {
 export function PhotoFilterBar({ filters, project, total }: Props) {
   const { state, patch, setState, filtered, active } = filters;
 
-  // Distinct tag labels (above threshold) across all photos. Used
-  // as the menu of available chips for the Tag-AND axis.
-  const tagOptions = useMemo(() => {
-    const m = new Set<string>();
-    for (const photo of project.photos) {
-      for (const tag of photo.tags) m.add(tag.label);
-    }
-    return Array.from(m).sort();
-  }, [project.photos]);
+  // Tag labels across all photos, grouped by their primary
+  // (`parentTag === null`). Secondaries hang off the primary they
+  // were tagged under. A label that's tagged primary anywhere wins
+  // the primary role; orphan secondaries (parent never tagged) get
+  // their own group keyed on the parent label so the user still
+  // sees the hierarchy.
+  const tagGroups = useMemo(() => buildTagGroups(project.photos), [project.photos]);
+  const tagOptionsCount = useMemo(
+    () => tagGroups.reduce((n, g) => n + 1 + g.secondaries.length, 0),
+    [tagGroups]
+  );
 
   // Distinct recommended-uses across all photos.
   const useOptions = useMemo(() => {
@@ -197,12 +199,14 @@ export function PhotoFilterBar({ filters, project, total }: Props) {
           />
         ))}
 
-        {/* Tag multi-select (AND). Same shape as bucket. */}
-        {tagOptions.length > 0 && (
-          <MultiSelectChip
+        {/* Tag multi-select (AND). Grouped by primary so a project
+            with many distinct secondaries doesn't render a wall of
+            flat checkboxes. */}
+        {tagOptionsCount > 0 && (
+          <MultiSelectChipGrouped
             label="Tag"
             modeLabel="AND"
-            options={tagOptions.map((t) => ({ value: t, label: t }))}
+            groups={tagGroups}
             selected={state.tagLabels}
             onToggle={(v) => toggleArrayMember("tagLabels", v)}
             onClear={() => patch({ tagLabels: [] })}
@@ -427,6 +431,266 @@ function MultiSelectChip({
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tag grouping (Build #5.114.1)
+// ---------------------------------------------------------------------------
+
+export interface TagGroup {
+  primary: string;
+  secondaries: string[];
+}
+
+/**
+ * Walks `photos[].tags[]` and partitions the distinct label set into
+ * primary→secondaries groups. A label is treated as a primary if any
+ * photo carries it with `parentTag === null`; otherwise it's a
+ * secondary placed under the parent it's most frequently attributed
+ * to. Orphan parents (labels that only appear as another tag's
+ * `parentTag`) become primary headers even if no photo tags them
+ * directly — preserves the hierarchy view.
+ */
+function buildTagGroups(photos: Project["photos"]): TagGroup[] {
+  const isPrimary = new Set<string>();
+  const parentVotesByLabel = new Map<string, Map<string, number>>();
+  const allLabels = new Set<string>();
+  for (const photo of photos) {
+    for (const tag of photo.tags) {
+      allLabels.add(tag.label);
+      if (tag.parentTag === null) {
+        isPrimary.add(tag.label);
+      } else {
+        allLabels.add(tag.parentTag);
+        let votes = parentVotesByLabel.get(tag.label);
+        if (!votes) {
+          votes = new Map();
+          parentVotesByLabel.set(tag.label, votes);
+        }
+        votes.set(tag.parentTag, (votes.get(tag.parentTag) ?? 0) + 1);
+      }
+    }
+  }
+  const groups = new Map<string, Set<string>>();
+  for (const label of allLabels) {
+    if (isPrimary.has(label)) {
+      if (!groups.has(label)) groups.set(label, new Set());
+      continue;
+    }
+    const votes = parentVotesByLabel.get(label);
+    if (votes && votes.size > 0) {
+      let best = "";
+      let bestN = -1;
+      for (const [p, n] of votes) {
+        if (n > bestN) {
+          best = p;
+          bestN = n;
+        }
+      }
+      if (!groups.has(best)) groups.set(best, new Set());
+      groups.get(best)!.add(label);
+    } else {
+      // Orphan with no parent occurrences — treat as its own primary.
+      if (!groups.has(label)) groups.set(label, new Set());
+    }
+  }
+  const out: TagGroup[] = [];
+  for (const [primary, secondaries] of groups) {
+    out.push({
+      primary,
+      secondaries: Array.from(secondaries).sort((a, b) => a.localeCompare(b)),
+    });
+  }
+  out.sort((a, b) => a.primary.localeCompare(b.primary));
+  return out;
+}
+
+interface MultiSelectChipGroupedProps {
+  label: string;
+  modeLabel: string;
+  groups: TagGroup[];
+  selected: string[];
+  onToggle: (value: string) => void;
+  onClear: () => void;
+}
+
+/**
+ * Grouped variant of `MultiSelectChip` — same chip-button + popover
+ * shell, but the option list is rendered as primary sections with
+ * indented secondaries. Search matches against both levels; a group
+ * with a matching primary OR any matching secondary stays visible
+ * (when the primary matches, all of its secondaries are shown so
+ * the structure stays intact).
+ */
+function MultiSelectChipGrouped({
+  label,
+  modeLabel,
+  groups,
+  selected,
+  onToggle,
+  onClear,
+}: MultiSelectChipGroupedProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      const w = wrapperRef.current;
+      if (w && !w.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  const filteredGroups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return groups;
+    const out: TagGroup[] = [];
+    for (const g of groups) {
+      const primaryMatch = g.primary.toLowerCase().includes(q);
+      if (primaryMatch) {
+        out.push(g);
+        continue;
+      }
+      const matched = g.secondaries.filter((s) => s.toLowerCase().includes(q));
+      if (matched.length > 0) {
+        out.push({ primary: g.primary, secondaries: matched });
+      }
+    }
+    return out;
+  }, [groups, query]);
+
+  const hasSelection = selected.length > 0;
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={
+          hasSelection
+            ? "flex items-center gap-1 rounded border border-blue-500 bg-blue-950/40 px-2 py-1 text-xs text-blue-200"
+            : "flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/40 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+        }
+      >
+        <span className="text-neutral-500">{label}</span>
+        <span className="text-[10px] text-neutral-500">({modeLabel})</span>
+        {hasSelection && (
+          <span className="rounded bg-blue-600/70 px-1.5 text-[10px] font-medium text-white">
+            {selected.length}
+          </span>
+        )}
+        <span className="text-neutral-500">▾</span>
+      </button>
+
+      {open && (
+        <div
+          className="absolute left-0 top-full z-30 mt-1 w-72 rounded border border-neutral-700 bg-neutral-950 p-2 shadow-xl"
+          role="dialog"
+        >
+          <input
+            type="search"
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Filter ${label.toLowerCase()}s…`}
+            className="mb-2 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 placeholder:text-neutral-500"
+          />
+          <div className="max-h-72 overflow-y-auto">
+            {filteredGroups.length === 0 && (
+              <div className="px-2 py-1 text-xs text-neutral-500">No matches.</div>
+            )}
+            {filteredGroups.map((g) => {
+              const primaryOn = selectedSet.has(g.primary);
+              const selectedSecondaries = g.secondaries.filter((s) =>
+                selectedSet.has(s)
+              ).length;
+              return (
+                <div key={g.primary} className="mb-1 last:mb-0">
+                  <button
+                    type="button"
+                    onClick={() => onToggle(g.primary)}
+                    className={
+                      "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs font-semibold hover:bg-neutral-800 " +
+                      (primaryOn ? "text-blue-200" : "text-neutral-200")
+                    }
+                  >
+                    <Checkbox on={primaryOn} />
+                    <span className="flex-1 uppercase tracking-wide">
+                      {g.primary}
+                    </span>
+                    {selectedSecondaries > 0 && (
+                      <span className="rounded bg-blue-600/70 px-1.5 text-[10px] font-medium text-white">
+                        {selectedSecondaries}
+                      </span>
+                    )}
+                  </button>
+                  {g.secondaries.length > 0 && (
+                    <ul className="ml-4 border-l border-neutral-800 pl-2">
+                      {g.secondaries.map((s) => {
+                        const on = selectedSet.has(s);
+                        return (
+                          <li key={s}>
+                            <button
+                              type="button"
+                              onClick={() => onToggle(s)}
+                              className={
+                                "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-800 " +
+                                (on ? "text-blue-200" : "text-neutral-400")
+                              }
+                            >
+                              <Checkbox on={on} />
+                              <span className="flex-1">{s}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-neutral-800 pt-2 text-[11px]">
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={selected.length === 0}
+              className="text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear ({selected.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="text-neutral-400 hover:text-neutral-200"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Checkbox({ on }: { on: boolean }) {
+  return (
+    <span
+      className={
+        on
+          ? "inline-block h-3 w-3 shrink-0 rounded border border-blue-500 bg-blue-500 text-center text-[10px] leading-3 text-white"
+          : "inline-block h-3 w-3 shrink-0 rounded border border-neutral-600"
+      }
+      aria-hidden
+    >
+      {on ? "✓" : ""}
+    </span>
   );
 }
 
