@@ -20,12 +20,18 @@ import {
   mergeManifest,
   type GetManifestResponse,
   type Project,
+  type ProjectRole,
   type PutManifestResponse,
   type ApiError,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { deleteObjects } from "../r2.js";
+import {
+  assertProjectAccess,
+  isOrgAdmin,
+  sendAccessError,
+} from "../access.js";
 
 const PutBodySchema = z.object({
   project: ProjectSchema,
@@ -54,6 +60,8 @@ interface ProjectListItem {
   revision: string;
   createdAt: string;
   updatedAt: string;
+  /** Caller's effective role on this project (Build #5.123.1). */
+  role?: ProjectRole;
 }
 
 interface ProjectListResponse {
@@ -84,11 +92,43 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     Reply: ProjectListResponse | ApiError;
   }>("/v1/projects", async (request, reply) => {
     const trashed = request.query.trashed === "true";
+    const uid = request.user.id;
+
+    // Phase 3 (Build #5.123.1): the list is the union of
+    //   (admin: every project) OR
+    //   (non-admin: owned + member-projects).
+    // We run the query against `projects` once with the appropriate
+    // id-set filter rather than two queries + JS merge — keeps the
+    // sort + isDeleted filter on the database side.
+    const callerIsAdmin = await isOrgAdmin(uid);
+
     let query = supabaseAdmin
       .from("projects")
-      .select("id, name, manifest_schema_version, revision, created_at, updated_at")
-      .eq("owner_id", request.user.id)
+      .select("id, owner_id, name, manifest_schema_version, revision, created_at, updated_at")
       .order("updated_at", { ascending: false });
+
+    if (!callerIsAdmin) {
+      // Member project IDs first — `.in()` payload is bounded by the
+      // user's assignment count (typically tiny).
+      const { data: memberRows, error: memberErr } = await supabaseAdmin
+        .from("project_members")
+        .select("project_id, role")
+        .eq("user_id", uid);
+      if (memberErr) {
+        request.log.error({ err: memberErr }, "Failed to list member projects");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+      const memberIds = (memberRows ?? []).map((r) => r.project_id as string);
+      if (memberIds.length === 0) {
+        query = query.eq("owner_id", uid);
+      } else {
+        // Comma-separated IN for the `or` filter so we OR
+        // `owner_id = uid` with `id in (memberIds)`.
+        const inList = memberIds.map((id) => `"${id}"`).join(",");
+        query = query.or(`owner_id.eq.${uid},id.in.(${inList})`);
+      }
+    }
 
     if (trashed) {
       query = query.eq("manifest->>isDeleted", "true");
@@ -104,14 +144,38 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const projects: ProjectListItem[] = (data ?? []).map((row) => ({
-      id: row.id as string,
-      name: row.name as string,
-      manifestSchemaVersion: row.manifest_schema_version as number,
-      revision: row.revision as string,
-      createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
-    }));
+    // Build the per-user member-role lookup once so we can stamp each
+    // row's `role` without an N+1 query.
+    let memberRoleByProject = new Map<string, ProjectRole>();
+    if (!callerIsAdmin) {
+      const { data: roleRows } = await supabaseAdmin
+        .from("project_members")
+        .select("project_id, role")
+        .eq("user_id", uid);
+      memberRoleByProject = new Map(
+        (roleRows ?? []).map((r) => [
+          r.project_id as string,
+          (r.role as ProjectRole) ?? "viewer",
+        ])
+      );
+    }
+
+    const projects: ProjectListItem[] = (data ?? []).map((row) => {
+      const ownerId = row.owner_id as string;
+      let role: ProjectRole;
+      if (callerIsAdmin) role = "admin";
+      else if (ownerId === uid) role = "editor"; // owner = implicit editor
+      else role = memberRoleByProject.get(row.id as string) ?? "viewer";
+      return {
+        id: row.id as string,
+        name: row.name as string,
+        manifestSchemaVersion: row.manifest_schema_version as number,
+        revision: row.revision as string,
+        createdAt: row.created_at as string,
+        updatedAt: row.updated_at as string,
+        role,
+      };
+    });
     return { projects };
   });
 
@@ -123,11 +187,25 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     "/v1/projects/:id",
     async (request, reply) => {
       const { id } = request.params;
+
+      // viewer is the lowest read role. assertProjectAccess throws
+      // 404 on no-relationship (don't leak existence) and 403 on
+      // insufficient role (can't happen at viewer minRole; included
+      // for symmetry with write paths).
+      let role: ProjectRole;
+      try {
+        role = await assertProjectAccess(request.user.id, id, "viewer");
+      } catch (err) {
+        if (sendAccessError(reply, err)) return;
+        request.log.error({ err, projectId: id }, "Failed to check project access");
+        reply.code(500).send({ error: "internal", message: "Database error" });
+        return;
+      }
+
       const { data, error } = await supabaseAdmin
         .from("projects")
         .select("manifest, revision")
         .eq("id", id)
-        .eq("owner_id", request.user.id)
         .maybeSingle();
 
       if (error) {
@@ -140,16 +218,10 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         return;
       }
 
-      // The DB stores the manifest as jsonb; supabase-js returns it
-      // as an already-parsed object. Cast through unknown to the
-      // shared Project type — the data was written via PUT after
-      // ProjectSchema validation, so the shape is trusted.
       const manifest = data.manifest as unknown as GetManifestResponse["project"] & {
         isDeleted?: boolean;
       };
 
-      // Treat soft-deleted projects as 404 so deep-linking a deleted
-      // project's URL doesn't bypass the list-level filter above.
       if (manifest.isDeleted === true) {
         reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
         return;
@@ -158,6 +230,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       return {
         project: manifest,
         revision: data.revision as string,
+        role,
       };
     }
   );
@@ -251,6 +324,11 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // merge is idempotent, so retrying on a CAS miss is safe and
     // converges.
     if (baseManifest !== undefined) {
+      // Verify caller has editor-or-above on this project once, up
+      // front. We re-check inside the loop only via the CAS guard
+      // (which protects against revision races, not access changes).
+      let updateAccessChecked = false;
+
       for (let attempt = 0; attempt < MERGE_CAS_RETRIES; attempt++) {
         const { data: existing, error: fetchError } = await supabaseAdmin
           .from("projects")
@@ -271,9 +349,15 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
           // create cleanly (no row to merge against). Fall through.
           break;
         }
-        if (existing.owner_id !== request.user.id) {
-          reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
-          return;
+
+        if (!updateAccessChecked) {
+          try {
+            await assertProjectAccess(request.user.id, id, "editor");
+          } catch (err) {
+            if (sendAccessError(reply, err)) return;
+            throw err;
+          }
+          updateAccessChecked = true;
         }
 
         const serverCurrent = existing.manifest as unknown as Project;
@@ -362,13 +446,13 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     }
 
     if (existing) {
-      // Updating an existing row: caller must own it, and the
-      // revision must match.
-      if (existing.owner_id !== request.user.id) {
-        // Don't leak existence of someone else's project — return
-        // 404 just like an unrelated id would.
-        reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
-        return;
+      // Updating an existing row: caller must be editor-or-above
+      // (owner, admin, or member-editor), and the revision must match.
+      try {
+        await assertProjectAccess(request.user.id, id, "editor");
+      } catch (err) {
+        if (sendAccessError(reply, err)) return;
+        throw err;
       }
       if (expectedRevision !== existing.revision) {
         reply.code(409).send({
@@ -394,15 +478,18 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // Node 22 without an import.
     const newRevision = crypto.randomUUID();
 
+    // CRITICAL (Build #5.123.1): on UPDATE, preserve the existing
+    // owner_id so a member-editor's save can't quietly steal
+    // ownership. On CREATE, the caller becomes owner.
+    const ownerIdToWrite = existing ? (existing.owner_id as string) : request.user.id;
+
     const { error: writeError } = await supabaseAdmin.from("projects").upsert({
       id,
-      owner_id: request.user.id,
+      owner_id: ownerIdToWrite,
       name: project.name,
       manifest: project,
       manifest_schema_version: project.manifestSchemaVersion,
       revision: newRevision,
-      // created_at + updated_at default to now() in SQL; on update
-      // the trigger refreshes updated_at automatically.
     });
 
     if (writeError) {
@@ -436,9 +523,18 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
   }>("/v1/projects/:id/restore", async (request, reply) => {
     const { id } = request.params;
 
+    // Restore is a write — editor-or-above. 404 from the access
+    // helper covers both not-found and no-relationship.
+    try {
+      await assertProjectAccess(request.user.id, id, "editor");
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      throw err;
+    }
+
     const { data, error } = await supabaseAdmin
       .from("projects")
-      .select("manifest, owner_id")
+      .select("manifest")
       .eq("id", id)
       .maybeSingle();
 
@@ -447,7 +543,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
-    if (!data || data.owner_id !== request.user.id) {
+    if (!data) {
       reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
       return;
     }
@@ -475,8 +571,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         manifest: restored,
         revision: newRevision,
       })
-      .eq("id", id)
-      .eq("owner_id", request.user.id);
+      .eq("id", id);
 
     if (writeError) {
       request.log.error({ err: writeError, projectId: id }, "Failed to restore project");
@@ -509,9 +604,19 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
   }>("/v1/projects/:id", async (request, reply) => {
     const { id } = request.params;
 
+    // Hard-delete requires editor-or-above (owner, admin, or
+    // member-editor). The two-step soft-then-hard flow is the same
+    // intentional safety net as today.
+    try {
+      await assertProjectAccess(request.user.id, id, "editor");
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      throw err;
+    }
+
     const { data: existing, error: fetchError } = await supabaseAdmin
       .from("projects")
-      .select("manifest, owner_id")
+      .select("manifest")
       .eq("id", id)
       .maybeSingle();
     if (fetchError) {
@@ -519,7 +624,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
-    if (!existing || existing.owner_id !== request.user.id) {
+    if (!existing) {
       reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
       return;
     }
@@ -571,12 +676,12 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Step 5: drop project row.
+    // Step 5: drop project row. Access was already checked at the top
+    // of the handler; key on id alone here.
     const { error: projDeleteError } = await supabaseAdmin
       .from("projects")
       .delete()
-      .eq("id", id)
-      .eq("owner_id", request.user.id);
+      .eq("id", id);
     if (projDeleteError) {
       request.log.error({ err: projDeleteError, projectId: id }, "Failed to delete project row");
       reply.code(500).send({ error: "internal", message: "Database error" });

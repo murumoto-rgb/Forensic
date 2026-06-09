@@ -22,6 +22,7 @@ import type { ApiError, PhotoUrlResponse } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { presignedGet } from "../r2.js";
+import { assertProjectAccess, sendAccessError } from "../access.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 5 * 60;
 
@@ -37,22 +38,12 @@ export const plansRoute: FastifyPluginAsync = async (app) => {
     "/v1/projects/:projectId/plans/:planId/image",
     async (request, reply) => {
       const { projectId, planId } = request.params;
-      const userId = request.user.id;
 
-      const { data: project, error: projectErr } = await supabaseAdmin
-        .from("projects")
-        .select("id")
-        .eq("id", projectId)
-        .eq("owner_id", userId)
-        .maybeSingle();
-      if (projectErr) {
+      try {
+        await assertProjectAccess(request.user.id, projectId, "viewer");
+      } catch (err) {
+        if (sendAccessError(reply, err)) return;
         reply.code(500).send({ error: "internal", message: "Database error" });
-        return;
-      }
-      if (!project) {
-        reply
-          .code(404)
-          .send({ error: "not_found", message: `Project ${projectId} not found` });
         return;
       }
 

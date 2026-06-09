@@ -32,6 +32,7 @@ import type {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { assertProjectAccess, sendAccessError } from "../access.js";
 import { sendEmail } from "../email/resend.js";
 import {
   lockForceReleasedEmail,
@@ -100,22 +101,9 @@ function isLive(row: LockRow): boolean {
 export const locksRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
 
-  // Ownership check shared by every handler — same shape the other
-  // project routes use. Returns true when the caller owns the
-  // project (and it exists).
-  async function callerOwnsProject(
-    projectId: string,
-    userId: string
-  ): Promise<boolean> {
-    const { data, error } = await supabaseAdmin
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("owner_id", userId)
-      .maybeSingle();
-    if (error) throw error;
-    return data != null;
-  }
+  // Access check shared by every write handler. Lock acquisition is
+  // an edit intent → editor-or-above (viewers can't take the lock).
+  // Build #5.123.1 replaced the legacy owner-only check.
 
   // Name lookup for the notification-email subject lines. Pulls just
   // the column the templates need and is tolerant of a missing row
@@ -197,12 +185,10 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      if (!(await callerOwnsProject(projectId, request.user.id))) {
-        reply.code(404).send({ error: "not_found", message: `Project ${projectId} not found` });
-        return;
-      }
+      await assertProjectAccess(request.user.id, projectId, "editor");
     } catch (err) {
-      request.log.error({ err, projectId }, "lock acquire — ownership check failed");
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId }, "lock acquire — access check failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
