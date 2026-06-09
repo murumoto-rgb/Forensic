@@ -7,6 +7,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
 import { AdminReportBrandingPage } from "./pages/AdminReportBrandingPage";
 import { AdminAIPromptTemplatesPage } from "./pages/AdminAIPromptTemplatesPage";
@@ -83,6 +84,10 @@ export function App() {
         <Route
           path="/admin/ai-prompt-templates"
           element={session ? <AdminAIPromptTemplatesPage session={session} /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/admin/users"
+          element={session ? <AdminUsersPage session={session} /> : <Navigate to="/" replace />}
         />
         <Route
           path="/projects/:id/exports"

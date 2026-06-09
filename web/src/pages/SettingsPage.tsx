@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { signOutLocal, supabase } from "../lib/supabase";
 import { useUserPrefs } from "../lib/useUserPrefs";
 import { buildInfo } from "../lib/buildInfo";
 import { StorageStatusCard } from "../components/StorageStatusCard";
+import { api } from "../lib/api";
 
 /**
  * Settings page (Build #5.85.1).
@@ -237,12 +238,40 @@ function AIPreferencesSection({
 }
 
 function TeamConfigSection() {
+  // Build #5.125.1: surface the Team & access link only when the
+  // caller is an admin. Non-admins still see the rest of the team
+  // config (tag library, etc.) — those routes are unrestricted today
+  // (Phase 5 may admin-gate them later).
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMe()
+      .then((me) => {
+        if (!cancelled) setIsAdmin(me.isAdmin);
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <Card title="Team-wide configuration">
       <p className="mb-3 text-xs text-neutral-500">
         These settings affect everyone on your team — edit with care.
       </p>
       <div className="flex flex-wrap gap-2">
+        {isAdmin && (
+          <Link
+            to="/admin/users"
+            className="rounded border border-blue-700 bg-blue-900/40 px-3 py-1.5 text-sm text-blue-100 hover:bg-blue-900/70"
+          >
+            Team &amp; access →
+          </Link>
+        )}
         <Link
           to="/admin/tag-library"
           className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800"
