@@ -465,20 +465,40 @@ private struct FailureRow: View {
 
     /// Strip the worst noise out of common Claude error messages so the
     /// row reads as a one-liner cause rather than a stack-trace excerpt.
+    ///
+    /// Build #5.133.1: stop labelling every HTTP-status failure as a
+    /// transient "rate-limit; retry usually works." That was actively
+    /// wrong for 503s — when the team server is missing its
+    /// ANTHROPIC_API_KEY every photo fails 503 instantly, and "retry"
+    /// never helps. Now we branch on the status and, for the codes that
+    /// aren't transient, surface the server's own message instead of a
+    /// canned (misleading) one.
     private var friendlyMessage: String {
         let raw = failure.message
         if raw.lowercased().contains("network") {
             return raw
         }
-        if raw.lowercased().contains("api error") {
-            // "Anthropic API error (429): { ... }" → keep the status hint.
-            if let openParen = raw.firstIndex(of: "("),
-               let closeParen = raw.firstIndex(of: ")"),
-               openParen < closeParen {
-                let status = raw[raw.index(after: openParen)..<closeParen]
-                return "Anthropic API error \(status) — likely rate-limit or content filter; retry usually works."
+        if raw.lowercased().contains("api error") || httpStatus != nil {
+            switch httpStatus {
+            case 429:
+                return "Rate-limited by Anthropic (429). The app retries with backoff; lower \"Parallel AI requests\" in Settings if it persists."
+            case 529:
+                return "Anthropic is temporarily overloaded (529). Retry usually works."
+            case 503:
+                // Our server returns 503 when AI tagging isn't configured
+                // (no ANTHROPIC_API_KEY on the team server) — NOT a
+                // transient error, retrying won't help. Surface the
+                // server's actual message so the cause is visible.
+                return raw.isEmpty
+                    ? "AI tagging service unavailable (503). If you're on \"Use team server,\" an admin may need to set the server's Anthropic key."
+                    : raw
+            case 401, 403:
+                return "Server's Anthropic credentials were rejected (\(httpStatus!)). Check the team server's ANTHROPIC_API_KEY."
+            default:
+                // Unknown status — keep the server's message rather than
+                // inventing a cause.
+                return raw
             }
-            return raw
         }
         if raw.lowercased().contains("malformed") || raw.lowercased().contains("decode") {
             return "Claude returned an unparseable response. Retry usually fixes this."
@@ -487,6 +507,26 @@ private struct FailureRow: View {
             return "Couldn't read this photo file. The image may be corrupt."
         }
         return raw
+    }
+
+    /// Extract the HTTP status from a message like
+    /// "Anthropic API error (503): …" or "… error 503 …". Returns nil
+    /// when no 3-digit status is present.
+    private var httpStatus: Int? {
+        let raw = failure.message
+        if let openParen = raw.firstIndex(of: "("),
+           let closeParen = raw.firstIndex(of: ")"),
+           openParen < closeParen {
+            let inside = raw[raw.index(after: openParen)..<closeParen]
+                .trimmingCharacters(in: .whitespaces)
+            if let n = Int(inside) { return n }
+        }
+        // Fallback: first standalone 3-digit run in the message.
+        let digits = raw.split(whereSeparator: { !$0.isNumber })
+        for chunk in digits where chunk.count == 3 {
+            if let n = Int(chunk), (100...599).contains(n) { return n }
+        }
+        return nil
     }
 
     @ViewBuilder
