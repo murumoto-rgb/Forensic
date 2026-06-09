@@ -45,7 +45,7 @@ targets:
       path: SitePhoto/Info.plist
       properties:
         CFBundleDisplayName: SitePhoto
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "6.0.0"
         CFBundleVersion: "1"
         # SitePhoto uses only HTTPS (URLSession) — no custom crypto,
         # nothing that triggers US export-compliance review. Declaring
