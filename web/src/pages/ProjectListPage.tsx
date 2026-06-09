@@ -35,7 +35,7 @@ export function ProjectListPage({ session }: Props) {
     setError(null);
     api
       .listProjects()
-      .then((res) => setProjects(res.projects))
+      .then((res) => setProjects(sortByName(res.projects)))
       .catch((e: unknown) => {
         if (e instanceof ApiError) {
           setError(`${e.errorCode}: ${e.message}`);
@@ -45,7 +45,7 @@ export function ProjectListPage({ session }: Props) {
       });
     api
       .listProjects({ trashed: true })
-      .then((res) => setTrashedProjects(res.projects))
+      .then((res) => setTrashedProjects(sortByName(res.projects)))
       .catch(() => {
         // Trash is a nice-to-have; don't surface its errors over the
         // active list. They'll come back on next refresh.
@@ -180,6 +180,14 @@ export function ProjectListPage({ session }: Props) {
         <NewProjectModal onClose={() => setCreatingOpen(false)} />
       )}
     </div>
+  );
+}
+
+/** Sort a project list alphabetically by name, case- and
+ *  diacritic-insensitive (matches iOS `localizedCaseInsensitiveCompare`). */
+function sortByName(list: ProjectListItem[]): ProjectListItem[] {
+  return [...list].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
   );
 }
 

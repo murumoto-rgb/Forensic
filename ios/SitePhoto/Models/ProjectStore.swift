@@ -243,6 +243,13 @@ final class ProjectStore {
             .appending(path: "Projects", directoryHint: .isDirectory)
     }
 
+    /// Sort comparator used everywhere we order project lists. Case
+    /// and diacritic-insensitive via `localizedCaseInsensitiveCompare`
+    /// so "alpha" and "Alpha" co-locate correctly.
+    private static let projectNameAscending: (Project, Project) -> Bool = {
+        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+    }
+
     private static func ensureSubfolders(in root: URL) {
         let fm = FileManager.default
         try? fm.createDirectory(
@@ -1196,7 +1203,7 @@ final class ProjectStore {
                 #endif
             }
         }
-        return loaded.sorted { $0.createdAt > $1.createdAt }
+        return loaded.sorted(by: Self.projectNameAscending)
     }
 
     /// One-shot, idempotent migration: if `project` was loaded from a
@@ -1291,10 +1298,13 @@ final class ProjectStore {
         // Active Projects.
         if let idx = activeProjects.firstIndex(where: { $0.id == project.id }) {
             activeProjects[idx] = project
+            activeProjects.sort(by: Self.projectNameAscending)
         } else if let idx = deletedProjects.firstIndex(where: { $0.id == project.id }) {
             deletedProjects[idx] = project
+            deletedProjects.sort(by: Self.projectNameAscending)
         } else {
-            activeProjects.insert(project, at: 0)
+            activeProjects.append(project)
+            activeProjects.sort(by: Self.projectNameAscending)
         }
     }
 
@@ -1410,7 +1420,8 @@ final class ProjectStore {
 
         activeProjects.removeAll { $0.id == project.id }
         if !deletedProjects.contains(where: { $0.id == deletedManifest.id }) {
-            deletedProjects.insert(deletedManifest, at: 0)
+            deletedProjects.append(deletedManifest)
+            deletedProjects.sort(by: Self.projectNameAscending)
         }
     }
 
@@ -1496,7 +1507,8 @@ final class ProjectStore {
 
         deletedProjects.removeAll { $0.id == project.id }
         if !activeProjects.contains(where: { $0.id == restoredManifest.id }) {
-            activeProjects.insert(restoredManifest, at: 0)
+            activeProjects.append(restoredManifest)
+            activeProjects.sort(by: Self.projectNameAscending)
         }
     }
 
