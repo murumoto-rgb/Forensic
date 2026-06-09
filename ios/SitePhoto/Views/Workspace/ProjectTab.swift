@@ -10,28 +10,28 @@ enum ProjectTab: String, CaseIterable, Hashable, Identifiable {
     case photos
     case plan
     case ai
-    case export
+    case buckets
     case more
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .photos: return "Photos"
-        case .plan:   return "Plan"
-        case .ai:     return "AI"
-        case .export: return "Export"
-        case .more:   return "More"
+        case .photos:  return "Photos"
+        case .plan:    return "Plan"
+        case .ai:      return "AI"
+        case .buckets: return "Buckets"
+        case .more:    return "More"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .photos: return "photo.on.rectangle"
-        case .plan:   return "map"
-        case .ai:     return "wand.and.sparkles"
-        case .export: return "square.and.arrow.up"
-        case .more:   return "ellipsis.circle"
+        case .photos:  return "photo.on.rectangle"
+        case .plan:    return "map"
+        case .ai:      return "wand.and.sparkles"
+        case .buckets: return "folder.fill"
+        case .more:    return "ellipsis.circle"
         }
     }
 }

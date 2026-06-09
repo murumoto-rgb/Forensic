@@ -86,12 +86,12 @@ struct ProjectWorkspaceView: View {
                 }
                 .tag(ProjectTab.ai)
 
-            ProjectDetailView(projectID: projectID, scope: .export)
+            ProjectDetailView(projectID: projectID, scope: .buckets)
                 .tabItem {
-                    Label(ProjectTab.export.label,
-                          systemImage: ProjectTab.export.systemImage)
+                    Label(ProjectTab.buckets.label,
+                          systemImage: ProjectTab.buckets.systemImage)
                 }
-                .tag(ProjectTab.export)
+                .tag(ProjectTab.buckets)
 
             ProjectDetailView(projectID: projectID, scope: .more)
                 .tabItem {
