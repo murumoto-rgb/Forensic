@@ -13,14 +13,22 @@ import { api, ApiError } from "./api";
  * triggered in (say) the Photos tab is visible to the Floor Plan
  * tab without a round-trip.
  *
- * Save semantics:
+ * Save semantics (cloud-first, Build #5.118.1):
  *   - One PUT in flight at a time. Rapid `save(next)` calls
  *     coalesce — the latest snapshot wins (`pendingRef`).
- *   - Server's optimistic revision is tracked in `revisionRef`
- *     so the next PUT echoes the correct `expectedRevision`.
- *   - 409 from the server surfaces as `status.kind === "conflict"`
- *     — caller (typically the lock UI) decides recovery; we
- *     don't auto-reload (the user might lose unsaved changes).
+ *   - Every save sends `baseManifest` = the last manifest the
+ *     server confirmed we held (`baseRef`). The server runs a
+ *     3-way merge against current truth and returns the merged
+ *     manifest, which we adopt: `project` + `projectRef` + `baseRef`
+ *     all advance to the merged value. Concurrent edits from
+ *     another tab or iOS no longer clobber the user's work.
+ *   - If the user kept typing while the PUT was in flight,
+ *     `pendingRef` holds the newer edit; the loop re-sends with
+ *     `base = merged`. Idempotent merge converges.
+ *   - 409 from the server is now an unusual case (legacy path or
+ *     `merge_cas_exhausted` after server-side retries). Still
+ *     surfaced as `status.kind === "conflict"` for defensive
+ *     visibility.
  *   - Network errors (fetch threw) re-stash the snapshot so the
  *     next mutation retries it. ApiErrors (4xx/5xx) bail.
  *
@@ -70,6 +78,11 @@ export function useProjectManifest(
   const revisionRef = useRef<string | null>(null);
   const savingRef = useRef<boolean>(false);
   const pendingRef = useRef<Project | null>(null);
+  /** The manifest the server last confirmed we hold. Sent on every
+   *  PUT as `baseManifest` so the server can run a 3-way merge.
+   *  Advances to the server's returned `merged` after each successful
+   *  save (or to `resp.project` on load). */
+  const baseRef = useRef<Project | null>(null);
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
@@ -93,6 +106,7 @@ export function useProjectManifest(
       setRevisionState(resp.revision);
       projectRef.current = resp.project;
       revisionRef.current = resp.revision;
+      baseRef.current = resp.project;
       setStatus({ kind: "idle" });
     } catch (e: unknown) {
       setStatus({
@@ -118,14 +132,36 @@ export function useProjectManifest(
     while (pendingRef.current && revisionRef.current) {
       const toSave = pendingRef.current;
       pendingRef.current = null;
+      const base = baseRef.current ?? toSave;
       try {
         const resp = await api.putProject(
           projectId,
           toSave,
-          revisionRef.current
+          revisionRef.current,
+          base
         );
         revisionRef.current = resp.revision;
         setRevisionState(resp.revision);
+        // Cloud-first: adopt the server's merged manifest so future
+        // edits (from this tab or another) base on what the server
+        // now holds. If the user kept typing during the PUT,
+        // `pendingRef` already holds the newer snapshot; the loop
+        // re-sends with `base = merged` next iteration.
+        if (resp.project) {
+          baseRef.current = resp.project;
+          // Only adopt into UI state when no fresher edit is queued.
+          // Otherwise the merged value would briefly flash over the
+          // user's just-typed text before the next loop iteration
+          // re-applied it.
+          if (pendingRef.current === null) {
+            setProjectState(resp.project);
+            projectRef.current = resp.project;
+          }
+        } else {
+          // Legacy response (server pre-#5.117.1 or for some reason
+          // skipped merge): base advances to what we just pushed.
+          baseRef.current = toSave;
+        }
       } catch (e: unknown) {
         if (e instanceof ApiError && e.status === 409) {
           setStatus({
