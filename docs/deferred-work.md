@@ -167,7 +167,7 @@ rows here when items ship.
 | Offline manifest retry queue | iOS | 3–5 days | Open — dirty tracking verified sound; queue is additive |
 | Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
 | Start / stop project UI | Both | ~1 day tandem | Open — schema fields exist on both; no UI anywhere (matrix corrected #6.18.1) |
-| Reshoot-comparison discoverability (lineage badge) | iOS | 2–3 hrs | Open |
+| ~~Reshoot-comparison discoverability (lineage badge)~~ | iOS | — | **SHIPPED #6.25.1** — tappable ↻ badge on photo rows opens the comparison |
 | Dark/light theme toggle + shared UI primitives (Button/Card/Modal) | Web | 1–2 days | Needs product decision first |
 | Modal focus traps (a11y) | Web | ~half day | Open — pairs with the primitives work |
 | Bucket library sync (shared type + server key + editors) | Both | ~1 week | Blocked on design choices |
