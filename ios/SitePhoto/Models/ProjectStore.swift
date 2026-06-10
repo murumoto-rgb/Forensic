@@ -1171,18 +1171,28 @@ final class ProjectStore {
         }
     }
 
-    private func decoder() -> JSONDecoder {
+    // Build #6.4.1: shared coder instances. These were built fresh on
+    // every call — hundreds of allocations across a load / save burst
+    // (and four per photo during batch-tag checkpoints). Configuration
+    // is set once and never mutated afterwards, and every use runs on
+    // the MainActor, so sharing is safe. The `decoder()` / `encoder()`
+    // accessors keep the ~80 existing call sites untouched.
+    private static let sharedDecoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
-    }
+    }()
 
-    private func encoder() -> JSONEncoder {
+    private static let sharedEncoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         e.dateEncodingStrategy = .iso8601
         return e
-    }
+    }()
+
+    private func decoder() -> JSONDecoder { Self.sharedDecoder }
+
+    private func encoder() -> JSONEncoder { Self.sharedEncoder }
 
     func load() {
         activeProjects = loadProjects(in: activeRoot)

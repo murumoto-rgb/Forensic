@@ -1368,19 +1368,14 @@ struct ProjectDetailView: View {
         )
     }
 
-    @ViewBuilder
     private func planThumbnail(project: Project, planID: UUID) -> some View {
-        if let url = store.floorPlanURL(for: project, planID: planID),
-           let data = try? Data(contentsOf: url),
-           let img = UIImage(data: data) {
-            Image(uiImage: img)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Image(systemName: "doc")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        // Build #6.4.1: async cached load. Plans have no dedicated
+        // thumb file — the old code synchronously decoded the FULL
+        // plan image on the MainActor for a 56×42 row. Downsample via
+        // ImageIO so the cache holds a small bitmap instead.
+        CachedThumbnail(url: store.floorPlanURL(for: project, planID: planID),
+                        placeholderSystemImage: "doc",
+                        maxPixelSize: 240)
     }
 
     @ViewBuilder
@@ -3228,19 +3223,11 @@ private struct PhotoRow: View {
         return project.photos.contains(where: { $0.reshootsPhotoID == photo.id })
     }
 
-    @ViewBuilder
     private var thumbnail: some View {
-        if let url = store.thumbnailURL(for: photo, in: project),
-           let data = try? Data(contentsOf: url),
-           let img = UIImage(data: data) {
-            Image(uiImage: img)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Image(systemName: "photo")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        // Build #6.4.1: async cached load — the old synchronous
+        // Data(contentsOf:) + UIImage(data:) here ran a disk read +
+        // JPEG decode on the MainActor for every visible row.
+        CachedThumbnail(url: store.thumbnailURL(for: photo, in: project))
     }
 
     @ViewBuilder
