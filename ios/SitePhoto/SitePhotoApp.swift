@@ -54,6 +54,10 @@ struct SitePhotoApp: App {
     /// True once the white splash screen has faded out.
     @State private var splashDone = false
 
+    /// Drives the foreground retry of failed manifest pushes
+    /// (Build #6.30.1 — the offline retry queue).
+    @Environment(\.scenePhase) private var scenePhase
+
     /// Minimum time the splash stays visible — prevents a flash if iCloud
     /// is already warm and loadInitial finishes in milliseconds.
     private let minSplashDuration: TimeInterval = 1.0
@@ -95,6 +99,16 @@ struct SitePhotoApp: App {
                         .environment(toastCenter)
                 }
                 .animation(.easeInOut(duration: 0.5), value: splashDone)
+                // Build #6.30.1: a save that failed on a dead spot
+                // used to stay unsynced until relaunch or a manual
+                // "Sync now". Returning to the foreground is the
+                // natural "network is probably back" moment — retry
+                // the queue then. No-op when the queue is empty.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active, splashDone {
+                        syncer.retryPending()
+                    }
+                }
                 .task {
                     let start = Date()
                     // Auth bootstrap (restore persisted Supabase session
