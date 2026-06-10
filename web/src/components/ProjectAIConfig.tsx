@@ -6,6 +6,7 @@ import type {
   ProjectTagSelection,
 } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { useEscapeKey } from "../lib/useEscapeKey";
 import { ProjectTagSelectionPicker } from "./ProjectTagSelectionPicker";
 
 /**
@@ -62,6 +63,14 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [confirmTemplate, setConfirmTemplate] =
     useState<AIPromptTemplate | null>(null);
+
+  // Build #6.17.1: Escape closes any open modal/popover. Sites that
+  // share a parent (e.g. the template dropdown is nested inside the
+  // notes section) handle Escape one-by-one so closing the inner
+  // doesn't surprise the user with the outer also closing.
+  useEscapeKey(confirmClear !== null, () => setConfirmClear(null));
+  useEscapeKey(confirmTemplate !== null, () => setConfirmTemplate(null));
+  useEscapeKey(templatePickerOpen, () => setTemplatePickerOpen(false));
 
   // Reset local drafts if the project changes underneath us (e.g.
   // another tab edits the manifest and the shared hook re-renders).

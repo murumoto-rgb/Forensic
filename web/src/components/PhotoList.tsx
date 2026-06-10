@@ -77,6 +77,9 @@ export function PhotoList({
     cacheRef.current = { urls: new Map(), attempted: new Set() };
     lastProjectIdRef.current = projectId;
   }
+  // Build #6.17.1: bump to retry the URL fetch from the error UI
+  // without dropping the rest of the component's state.
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     if (photos.length === 0) {
@@ -134,7 +137,8 @@ export function PhotoList({
     // The effect re-fires when the visible photo set changes; the
     // cache check short-circuits when there's nothing new.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, photos.map((p) => p.id).join(",")]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, photos.map((p) => p.id).join(","), retryNonce]);
 
   if (photos.length === 0) {
     return (
@@ -147,8 +151,20 @@ export function PhotoList({
 
   if (urlsState.kind === "error") {
     return (
-      <div className="rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
-        Couldn't load thumbnails — {urlsState.message}
+      <div className="flex flex-col gap-2 rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
+        <div>Couldn't load thumbnails — {urlsState.message}</div>
+        <button
+          type="button"
+          onClick={() => {
+            // Build #6.17.1: re-trigger the fetch effect with the
+            // same project + photo set.
+            cacheRef.current.attempted.clear();
+            setRetryNonce((n) => n + 1);
+          }}
+          className="self-start rounded border border-red-700 bg-red-900/40 px-3 py-1 text-xs text-red-100 hover:bg-red-900/70"
+        >
+          Retry
+        </button>
       </div>
     );
   }

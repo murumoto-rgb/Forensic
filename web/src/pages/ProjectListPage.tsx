@@ -30,6 +30,25 @@ export function ProjectListPage({ session }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [trashedOpen, setTrashedOpen] = useState(false);
   const [creatingOpen, setCreatingOpen] = useState(false);
+  // Build #6.17.1: surface admin pages from the project list header.
+  // Non-admins see only the two non-gated links (Tag library + AI
+  // rules) as today; admins also get Team, Branding, Prompt templates.
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMe()
+      .then((me) => {
+        if (!cancelled) setIsAdmin(me.isAdmin);
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const reload = useCallback(() => {
     setError(null);
@@ -72,20 +91,77 @@ export function ProjectListPage({ session }: Props) {
           >
             + New project
           </button>
-          <Link
-            to="/admin/tag-library"
-            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-            title="Edit the team's app-wide AI tag library"
-          >
-            Tag library
-          </Link>
-          <Link
-            to="/admin/ai-rules"
-            className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-            title="Edit the team's app-wide AI rules / schema template"
-          >
-            AI rules
-          </Link>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setAdminMenuOpen((o) => !o)}
+              className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+              aria-haspopup="menu"
+              aria-expanded={adminMenuOpen}
+              title={
+                isAdmin
+                  ? "Team-wide configuration"
+                  : "Team configuration (non-admin views are read-only)"
+              }
+            >
+              Team config ▾
+            </button>
+            {adminMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setAdminMenuOpen(false)}
+                />
+                <div
+                  role="menu"
+                  className="absolute right-0 z-50 mt-1 w-56 overflow-hidden rounded border border-neutral-700 bg-neutral-900 shadow-2xl"
+                >
+                  <Link
+                    to="/admin/tag-library"
+                    role="menuitem"
+                    onClick={() => setAdminMenuOpen(false)}
+                    className="block px-3 py-2 text-sm text-neutral-200 hover:bg-neutral-800"
+                  >
+                    Tag library
+                  </Link>
+                  <Link
+                    to="/admin/ai-rules"
+                    role="menuitem"
+                    onClick={() => setAdminMenuOpen(false)}
+                    className="block px-3 py-2 text-sm text-neutral-200 hover:bg-neutral-800"
+                  >
+                    AI rules template
+                  </Link>
+                  <Link
+                    to="/admin/ai-prompt-templates"
+                    role="menuitem"
+                    onClick={() => setAdminMenuOpen(false)}
+                    className="block px-3 py-2 text-sm text-neutral-200 hover:bg-neutral-800"
+                  >
+                    AI prompt templates
+                  </Link>
+                  <Link
+                    to="/admin/report-branding"
+                    role="menuitem"
+                    onClick={() => setAdminMenuOpen(false)}
+                    className="block px-3 py-2 text-sm text-neutral-200 hover:bg-neutral-800"
+                  >
+                    Report branding
+                  </Link>
+                  {isAdmin && (
+                    <Link
+                      to="/admin/users"
+                      role="menuitem"
+                      onClick={() => setAdminMenuOpen(false)}
+                      className="block border-t border-neutral-800 px-3 py-2 text-sm text-blue-200 hover:bg-blue-900/30"
+                    >
+                      Team &amp; access →
+                    </Link>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           <Link
             to="/settings"
             className="rounded border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"

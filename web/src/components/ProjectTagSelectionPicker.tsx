@@ -8,6 +8,7 @@ import type {
   TagLibrary,
 } from "@forensic/shared";
 import { api } from "../lib/api";
+import { useEscapeKey } from "../lib/useEscapeKey";
 
 /**
  * Three-level tag-selection picker (Build #5.86.1).
@@ -39,6 +40,8 @@ export function ProjectTagSelectionPicker({
   onClose,
   onCommit,
 }: Props) {
+  // Build #6.17.1: Escape closes the picker.
+  useEscapeKey(true, onClose);
   const [library, setLibrary] = useState<TagLibrary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProjectTagSelection>(() =>
