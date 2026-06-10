@@ -51,15 +51,28 @@ struct ProjectDetailView: View {
     /// exit selection mode on completion.
     @State private var pendingPlanAssignment: Set<UUID> = []
     @State private var assignmentFromSelection: Bool = false
-    @State private var planFilter: PlanFilter = .all
-    /// One-line filter row toggle: when on, show only photos with no
-    /// bucket assigned. Useful when triaging fresh imports that
-    /// haven't been categorised yet.
-    @State private var notInBucketOnly: Bool = false
-    /// One-line filter row pill: limit visible photos to those with /
-    /// without a plan position. Orthogonal to the level filter
-    /// (which scopes by which plan, not whether placed).
-    @State private var locationFilter: LocationFilter = .all
+    /// All photo-list filters in one value (Build #6.5.1 —
+    /// consolidated from 11 independent `@State` vars). One reset
+    /// point, one `isActive` answer, and one `Equatable` key for the
+    /// `filteredPhotos` memo. Per-field docs live on
+    /// `PhotoFilterState` below.
+    @State private var filters = PhotoFilterState()
+
+    /// Memo for `filteredPhotos(_:)` (Build #6.5.1). The box is a
+    /// class held in `@State` so `body` can update its contents
+    /// without triggering "modifying state during view update" — a
+    /// mutation of the box doesn't invalidate the view.
+    private struct FilterMemoKey: Equatable {
+        let filters: PhotoFilterState
+        let threshold: Double
+        let photosCount: Int
+        let stamp: Date?
+    }
+    private final class FilterMemoBox {
+        var key: FilterMemoKey?
+        var ids: [UUID] = []
+    }
+    @State private var filterMemo = FilterMemoBox()
     private enum LocationFilter: Hashable {
         case all
         case located
@@ -95,47 +108,9 @@ struct ProjectDetailView: View {
     @State private var showingBucketManager: Bool = false
     @State private var showingBucketPicker: Bool = false
     @State private var showingBulkTagPicker: Bool = false
-    /// Bucket IDs currently active as filters on the photo list. Empty =
-    /// no bucket filter. OR semantics across selected buckets, ANDed with
-    /// the existing tag and recommended-use filters.
-    @State private var activeBucketFilter: Set<UUID> = []
-    /// Text in the search field. Empty = no text filter. Matched against
-    /// photo sequence number, location, caption (user or AI), observation
-    /// (user or AI), and tag labels. ANDed with the other filters.
-    @State private var searchText: String = ""
-    /// True when the "Favorites only" chip is on. Surfaces only photos
-    /// where `isFavorite == true`. ANDed with the other filters.
-    @State private var favoritesOnly: Bool = false
     @State private var showingAddressEditor = false
     @State private var addressUpdating = false
     @State private var taggingPhoto: PhotoTarget?
-    /// Tags currently active as filters on the photo list. Empty = no filter.
-    /// Compared case-insensitively. AND semantics: a photo must carry every
-    /// active filter tag to appear.
-    @State private var activeTagFilters: Set<String> = []
-    /// True when the "Needs review" chip is on. Surfaces every photo
-    /// where Claude self-rated low confidence, wrote a reviewer flag, or
-    /// returned a response that failed validation. ANDed with the tag
-    /// filter and the recommended-use filter.
-    @State private var showOnlyNeedsReview: Bool = false
-    /// True when the "Validation issues only" chip is on. Stricter than
-    /// `showOnlyNeedsReview` — surfaces only photos whose AI response
-    /// actually tripped a vocabulary or schema rule in
-    /// `AIResponseValidator`, ignoring reviewer flags / low confidence /
-    /// parse failures. Useful for triaging vocab regressions after a
-    /// rules-template change.
-    @State private var validationIssuesOnly: Bool = false
-    /// True when the "Has measurement" chip is on. Surfaces only photos
-    /// whose AI analysis transcribed a visible measurement readout
-    /// (level / moisture meter / ruler etc). ANDed with everything else.
-    @State private var measurementsOnly: Bool = false
-    /// Recommended-use bucket(s) to keep. Empty = no use-based filtering.
-    /// ANDed with the tag filter and the needs-review toggle.
-    @State private var recommendedUseFilter: Set<String> = []
-    /// Active date-window filter applied to the photo list. `.all` is
-    /// the default no-op state. `.custom` carries an inclusive start /
-    /// end pair (with timezone-naive day boundaries).
-    @State private var dateFilter: DateFilter = .all
     @State private var showingCustomDateSheet: Bool = false
 
     @State private var showingAIInstructions = false
@@ -194,6 +169,65 @@ struct ProjectDetailView: View {
 
     private struct PhotoTarget: Identifiable {
         let id: UUID
+    }
+
+    /// The photo-list filter state, consolidated from 11 independent
+    /// `@State` vars (Build #6.5.1). All filters AND together.
+    private struct PhotoFilterState: Equatable {
+        /// Tags active as filters. Empty = no filter. Compared
+        /// case-insensitively; a photo must carry every active tag.
+        var activeTagFilters: Set<String> = []
+        /// Recommended-use bucket(s) to keep. Empty = no filtering.
+        var recommendedUseFilter: Set<String> = []
+        /// Bucket IDs active as filters. Empty = none. OR semantics
+        /// across selected buckets.
+        var activeBucketFilter: Set<UUID> = []
+        /// Surfaces only photos where `isFavorite == true`.
+        var favoritesOnly: Bool = false
+        /// Surfaces every photo where Claude self-rated low
+        /// confidence, wrote a reviewer flag, or failed validation.
+        var showOnlyNeedsReview: Bool = false
+        /// Stricter than `showOnlyNeedsReview` — only photos whose AI
+        /// response tripped a vocabulary or schema rule in
+        /// `AIResponseValidator`.
+        var validationIssuesOnly: Bool = false
+        /// Only photos whose AI analysis transcribed a visible
+        /// measurement readout (level / moisture meter / ruler etc).
+        var measurementsOnly: Bool = false
+        /// Scope by which plan a photo is assigned to (or unassigned).
+        var planFilter: PlanFilter = .all
+        /// Show only photos with no bucket assigned — triage aid for
+        /// fresh imports.
+        var notInBucketOnly: Bool = false
+        /// Located / not-located pill. Orthogonal to `planFilter`
+        /// (which plan vs whether placed at all).
+        var locationFilter: LocationFilter = .all
+        /// Date-window filter. `.all` is the no-op default.
+        var dateFilter: DateFilter = .all
+        /// Search text. Matched against sequence number, location,
+        /// captions, observations, and tag labels.
+        var searchText: String = ""
+
+        var trimmedSearch: String {
+            searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        /// True when anything is narrowing the photo list — drives
+        /// the "· N shown" header annotation and the memo fast path.
+        var isActive: Bool {
+            !activeTagFilters.isEmpty
+                || !recommendedUseFilter.isEmpty
+                || !activeBucketFilter.isEmpty
+                || favoritesOnly
+                || showOnlyNeedsReview
+                || validationIssuesOnly
+                || measurementsOnly
+                || planFilter != .all
+                || notInBucketOnly
+                || locationFilter != .all
+                || dateFilter != .all
+                || !trimmedSearch.isEmpty
+        }
     }
 
     /// Time-window applied to the photo list. `.all` is the default
@@ -302,7 +336,7 @@ struct ProjectDetailView: View {
                 }
                 .modifier(SearchableIfPhotos(
                     show: scope == .all || scope == .photos,
-                    searchText: $searchText
+                    searchText: $filters.searchText
                 ))
                 .navigationTitle(project.name)
                 .navigationBarTitleDisplayMode(.inline)
@@ -420,8 +454,8 @@ struct ProjectDetailView: View {
                         .environment(store)
                 }
                 .sheet(isPresented: $showingCustomDateSheet) {
-                    CustomDateRangeSheet(current: dateFilter) { newFilter in
-                        dateFilter = newFilter
+                    CustomDateRangeSheet(current: filters.dateFilter) { newFilter in
+                        filters.dateFilter = newFilter
                     }
                     .presentationDetents([.medium])
                 }
@@ -1591,16 +1625,7 @@ struct ProjectDetailView: View {
                 .font(.caption)
             } else {
                 Text("Photos · \(project.photos.count)")
-                if !activeTagFilters.isEmpty
-                    || !recommendedUseFilter.isEmpty
-                    || !activeBucketFilter.isEmpty
-                    || showOnlyNeedsReview
-                    || validationIssuesOnly
-                    || favoritesOnly
-                    || planFilter != .all
-                    || notInBucketOnly
-                    || locationFilter != .all
-                    || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if filters.isActive {
                     Text("· \(visiblePhotos.count) shown")
                         .foregroundStyle(.secondary)
                 }
@@ -1744,25 +1769,41 @@ struct ProjectDetailView: View {
     }
 
     private func filteredPhotos(_ project: Project) -> [Photo] {
-        let tagFilterActive = !activeTagFilters.isEmpty
-        let useFilterActive = !recommendedUseFilter.isEmpty
-        let bucketFilterActive = !activeBucketFilter.isEmpty
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tagFilterActive = !filters.activeTagFilters.isEmpty
+        let useFilterActive = !filters.recommendedUseFilter.isEmpty
+        let bucketFilterActive = !filters.activeBucketFilter.isEmpty
+        let trimmedSearch = filters.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchActive = !trimmedSearch.isEmpty
-        let dateBounds = dateFilter.bounds()
-        let planFilterActive = planFilter != .all
-        let locationFilterActive = locationFilter != .all
+        let dateBounds = filters.dateFilter.bounds()
+        let planFilterActive = filters.planFilter != .all
+        let locationFilterActive = filters.locationFilter != .all
         if !tagFilterActive && !useFilterActive && !bucketFilterActive
-            && !showOnlyNeedsReview && !validationIssuesOnly
-            && !favoritesOnly && !measurementsOnly
+            && !filters.showOnlyNeedsReview && !filters.validationIssuesOnly
+            && !filters.favoritesOnly && !filters.measurementsOnly
             && !searchActive
-            && dateBounds == nil && !planFilterActive && !notInBucketOnly
+            && dateBounds == nil && !planFilterActive && !filters.notInBucketOnly
             && !locationFilterActive {
             return project.photos
         }
-        let lcFilters = Set(activeTagFilters.map { $0.lowercased() })
+        // Memo (Build #6.5.1): with filters active this chain re-ran
+        // on every body render — including unrelated state ticks like
+        // batch-tag progress — doing per-photo string work. Cache the
+        // membership + order (IDs, never Photo values, so rows always
+        // render fresh data) keyed on the filter state + threshold +
+        // a cheap content stamp (photos.count + lastSavedAt: any save
+        // invalidates).
+        let memoKey = FilterMemoKey(filters: filters,
+                                    threshold: tagConfidenceThreshold,
+                                    photosCount: project.photos.count,
+                                    stamp: store.lastSavedAt)
+        if filterMemo.key == memoKey {
+            let byID = Dictionary(project.photos.map { ($0.id, $0) },
+                                  uniquingKeysWith: { a, _ in a })
+            return filterMemo.ids.compactMap { byID[$0] }
+        }
+        let lcFilters = Set(filters.activeTagFilters.map { $0.lowercased() })
         let lcSearch = trimmedSearch.lowercased()
-        return project.photos.filter { photo in
+        let result = project.photos.filter { photo in
             if let bounds = dateBounds {
                 if photo.timestamp < bounds.start || photo.timestamp >= bounds.end {
                     return false
@@ -1776,28 +1817,28 @@ struct ProjectDetailView: View {
             }
             if useFilterActive {
                 let bucket = photo.aiAnalysis?.recommendedUse.bucketKey ?? ""
-                if !recommendedUseFilter.contains(bucket) { return false }
+                if !filters.recommendedUseFilter.contains(bucket) { return false }
             }
             if bucketFilterActive {
                 guard let bid = photo.bucketID,
-                      activeBucketFilter.contains(bid) else { return false }
+                      filters.activeBucketFilter.contains(bid) else { return false }
             }
-            if notInBucketOnly && photo.bucketID != nil {
+            if filters.notInBucketOnly && photo.bucketID != nil {
                 return false
             }
-            if showOnlyNeedsReview {
+            if filters.showOnlyNeedsReview {
                 if !needsReview(photo) { return false }
             }
-            if validationIssuesOnly {
+            if filters.validationIssuesOnly {
                 if !hasValidationIssue(photo) { return false }
             }
-            if favoritesOnly && !photo.isFavorite {
+            if filters.favoritesOnly && !photo.isFavorite {
                 return false
             }
-            if measurementsOnly && !hasMeasurement(photo) {
+            if filters.measurementsOnly && !hasMeasurement(photo) {
                 return false
             }
-            switch planFilter {
+            switch filters.planFilter {
             case .all:
                 break
             case .unassigned:
@@ -1805,7 +1846,7 @@ struct ProjectDetailView: View {
             case .plan(let id):
                 if photo.floorPlanID != id { return false }
             }
-            switch locationFilter {
+            switch filters.locationFilter {
             case .all:
                 break
             case .located:
@@ -1818,6 +1859,9 @@ struct ProjectDetailView: View {
             }
             return true
         }
+        filterMemo.key = memoKey
+        filterMemo.ids = result.map(\.id)
+        return result
     }
 
     /// Location filter pill — `All locations` / `Located` / `Not
@@ -1829,20 +1873,20 @@ struct ProjectDetailView: View {
     private func locationFilterMenu() -> some View {
         Menu {
             Picker("Location", selection: Binding(
-                get: { locationFilter },
-                set: { locationFilter = $0 }
+                get: { filters.locationFilter },
+                set: { filters.locationFilter = $0 }
             )) {
                 Text("All locations").tag(LocationFilter.all)
                 Text("Located").tag(LocationFilter.located)
                 Text("Not located").tag(LocationFilter.notLocated)
             }
         } label: {
-            if locationFilter == .all {
+            if filters.locationFilter == .all {
                 Image(systemName: "location")
                     .font(.caption)
             } else {
                 let short: String = {
-                    switch locationFilter {
+                    switch filters.locationFilter {
                     case .all:          return ""
                     case .located:      return "Located"
                     case .notLocated:   return "Not located"
@@ -1854,7 +1898,7 @@ struct ProjectDetailView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(locationFilter == .all ? .secondary : .accentColor)
+        .tint(filters.locationFilter == .all ? .secondary : .accentColor)
     }
 
     /// Level filter pill — "level" being the engineer's term for a
@@ -1864,8 +1908,8 @@ struct ProjectDetailView: View {
     private func planFilterMenu(project: Project) -> some View {
         Menu {
             Picker("Level", selection: Binding(
-                get: { planFilter },
-                set: { planFilter = $0 }
+                get: { filters.planFilter },
+                set: { filters.planFilter = $0 }
             )) {
                 Text("All levels").tag(PlanFilter.all)
                 Text("No level").tag(PlanFilter.unassigned)
@@ -1875,12 +1919,12 @@ struct ProjectDetailView: View {
                 }
             }
         } label: {
-            if planFilter == .all {
+            if filters.planFilter == .all {
                 Image(systemName: "map")
                     .font(.caption)
             } else {
                 let short: String = {
-                    switch planFilter {
+                    switch filters.planFilter {
                     case .all:           return ""
                     case .unassigned:    return "No level"
                     case .plan(let id):  return project.floorPlan(id: id)?.label ?? "Level"
@@ -1892,7 +1936,7 @@ struct ProjectDetailView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(planFilter == .all ? .secondary : .accentColor)
+        .tint(filters.planFilter == .all ? .secondary : .accentColor)
     }
 
     /// Check whether `photo` contains `lcSearch` (already lowercased) in
@@ -1954,36 +1998,36 @@ struct ProjectDetailView: View {
     private var dateFilterChip: some View {
         Menu {
             Button {
-                dateFilter = .all
+                filters.dateFilter = .all
             } label: {
-                if case .all = dateFilter {
+                if case .all = filters.dateFilter {
                     Label("Any date", systemImage: "checkmark")
                 } else {
                     Text("Any date")
                 }
             }
             Button {
-                dateFilter = .today
+                filters.dateFilter = .today
             } label: {
-                if case .today = dateFilter {
+                if case .today = filters.dateFilter {
                     Label("Today", systemImage: "checkmark")
                 } else {
                     Text("Today")
                 }
             }
             Button {
-                dateFilter = .last7Days
+                filters.dateFilter = .last7Days
             } label: {
-                if case .last7Days = dateFilter {
+                if case .last7Days = filters.dateFilter {
                     Label("Last 7 days", systemImage: "checkmark")
                 } else {
                     Text("Last 7 days")
                 }
             }
             Button {
-                dateFilter = .last30Days
+                filters.dateFilter = .last30Days
             } label: {
-                if case .last30Days = dateFilter {
+                if case .last30Days = filters.dateFilter {
                     Label("Last 30 days", systemImage: "checkmark")
                 } else {
                     Text("Last 30 days")
@@ -1994,8 +2038,8 @@ struct ProjectDetailView: View {
                 showingCustomDateSheet = true
             }
         } label: {
-            if dateFilter.isActive {
-                Label(dateFilter.chipLabel, systemImage: "calendar")
+            if filters.dateFilter.isActive {
+                Label(filters.dateFilter.chipLabel, systemImage: "calendar")
                     .font(.caption)
             } else {
                 Image(systemName: "calendar")
@@ -2004,7 +2048,7 @@ struct ProjectDetailView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(dateFilter.isActive ? .accentColor : .secondary)
+        .tint(filters.dateFilter.isActive ? .accentColor : .secondary)
     }
 
     @ViewBuilder
@@ -2016,37 +2060,37 @@ struct ProjectDetailView: View {
         let measurementCount = project?.photos.filter { hasMeasurement($0) }.count ?? 0
         let recommendedUseChips = bucketsInUseFor(projectID: projectID)
         let userBuckets = (project?.buckets ?? []).sorted { $0.sortOrder < $1.sortOrder }
-        let bucketFilterCount = activeBucketFilter.count
-            + recommendedUseFilter.count
-            + (notInBucketOnly ? 1 : 0)
-        let tagFilterCount = activeTagFilters.count
-        let anyFilterActive = !activeTagFilters.isEmpty
-            || !recommendedUseFilter.isEmpty
-            || !activeBucketFilter.isEmpty
-            || showOnlyNeedsReview
-            || validationIssuesOnly
-            || favoritesOnly
-            || measurementsOnly
-            || planFilter != .all
-            || notInBucketOnly
-            || locationFilter != .all
-            || dateFilter.isActive
+        let bucketFilterCount = filters.activeBucketFilter.count
+            + filters.recommendedUseFilter.count
+            + (filters.notInBucketOnly ? 1 : 0)
+        let tagFilterCount = filters.activeTagFilters.count
+        let anyFilterActive = !filters.activeTagFilters.isEmpty
+            || !filters.recommendedUseFilter.isEmpty
+            || !filters.activeBucketFilter.isEmpty
+            || filters.showOnlyNeedsReview
+            || filters.validationIssuesOnly
+            || filters.favoritesOnly
+            || filters.measurementsOnly
+            || filters.planFilter != .all
+            || filters.notInBucketOnly
+            || filters.locationFilter != .all
+            || filters.dateFilter.isActive
 
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 if anyFilterActive {
                     Button {
-                        activeTagFilters.removeAll()
-                        recommendedUseFilter.removeAll()
-                        activeBucketFilter.removeAll()
-                        showOnlyNeedsReview = false
-                        validationIssuesOnly = false
-                        favoritesOnly = false
-                        measurementsOnly = false
-                        planFilter = .all
-                        notInBucketOnly = false
-                        locationFilter = .all
-                        dateFilter = .all
+                        filters.activeTagFilters.removeAll()
+                        filters.recommendedUseFilter.removeAll()
+                        filters.activeBucketFilter.removeAll()
+                        filters.showOnlyNeedsReview = false
+                        filters.validationIssuesOnly = false
+                        filters.favoritesOnly = false
+                        filters.measurementsOnly = false
+                        filters.planFilter = .all
+                        filters.notInBucketOnly = false
+                        filters.locationFilter = .all
+                        filters.dateFilter = .all
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.caption)
@@ -2072,45 +2116,45 @@ struct ProjectDetailView: View {
                 tagFilterMenu(allTags: allTags, activeCount: tagFilterCount)
                     .disabled(allTags.isEmpty)
                 Button {
-                    favoritesOnly.toggle()
+                    filters.favoritesOnly.toggle()
                 } label: {
                     Image(systemName: "star.fill")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(favoritesOnly ? .yellow : .secondary)
-                .disabled(favoritesCount == 0 && !favoritesOnly)
+                .tint(filters.favoritesOnly ? .yellow : .secondary)
+                .disabled(favoritesCount == 0 && !filters.favoritesOnly)
                 Button {
-                    showOnlyNeedsReview.toggle()
+                    filters.showOnlyNeedsReview.toggle()
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(showOnlyNeedsReview ? .orange : .secondary)
-                .disabled(needsReviewCount == 0 && !showOnlyNeedsReview)
+                .tint(filters.showOnlyNeedsReview ? .orange : .secondary)
+                .disabled(needsReviewCount == 0 && !filters.showOnlyNeedsReview)
                 Button {
-                    validationIssuesOnly.toggle()
+                    filters.validationIssuesOnly.toggle()
                 } label: {
                     Image(systemName: "exclamationmark.octagon.fill")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(validationIssuesOnly ? .red : .secondary)
-                .disabled(validationIssuesCount == 0 && !validationIssuesOnly)
+                .tint(filters.validationIssuesOnly ? .red : .secondary)
+                .disabled(validationIssuesCount == 0 && !filters.validationIssuesOnly)
                 Button {
-                    measurementsOnly.toggle()
+                    filters.measurementsOnly.toggle()
                 } label: {
                     Image(systemName: "ruler")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(measurementsOnly ? .teal : .secondary)
-                .disabled(measurementCount == 0 && !measurementsOnly)
+                .tint(filters.measurementsOnly ? .teal : .secondary)
+                .disabled(measurementCount == 0 && !filters.measurementsOnly)
             }
             .padding(.vertical, 2)
         }
@@ -2140,12 +2184,12 @@ struct ProjectDetailView: View {
                                     activeCount: Int) -> some View {
         Menu {
             Button {
-                notInBucketOnly.toggle()
-                if notInBucketOnly {
-                    activeBucketFilter.removeAll()
+                filters.notInBucketOnly.toggle()
+                if filters.notInBucketOnly {
+                    filters.activeBucketFilter.removeAll()
                 }
             } label: {
-                if notInBucketOnly {
+                if filters.notInBucketOnly {
                     Label("Not in a bucket", systemImage: "checkmark")
                 } else {
                     Text("Not in a bucket")
@@ -2154,13 +2198,13 @@ struct ProjectDetailView: View {
             if !userBuckets.isEmpty {
                 Section("Buckets") {
                     ForEach(userBuckets) { bucket in
-                        let on = activeBucketFilter.contains(bucket.id)
+                        let on = filters.activeBucketFilter.contains(bucket.id)
                         Button {
                             if on {
-                                activeBucketFilter.remove(bucket.id)
+                                filters.activeBucketFilter.remove(bucket.id)
                             } else {
-                                activeBucketFilter.insert(bucket.id)
-                                notInBucketOnly = false
+                                filters.activeBucketFilter.insert(bucket.id)
+                                filters.notInBucketOnly = false
                             }
                         } label: {
                             if on {
@@ -2175,12 +2219,12 @@ struct ProjectDetailView: View {
             if !recommendedUseChips.isEmpty {
                 Section("Photo use") {
                     ForEach(recommendedUseChips, id: \.self) { bucket in
-                        let on = recommendedUseFilter.contains(bucket)
+                        let on = filters.recommendedUseFilter.contains(bucket)
                         Button {
                             if on {
-                                recommendedUseFilter.remove(bucket)
+                                filters.recommendedUseFilter.remove(bucket)
                             } else {
-                                recommendedUseFilter.insert(bucket)
+                                filters.recommendedUseFilter.insert(bucket)
                             }
                         } label: {
                             if on {
@@ -2209,10 +2253,10 @@ struct ProjectDetailView: View {
     private func tagFilterMenu(allTags: [String], activeCount: Int) -> some View {
         Menu {
             ForEach(allTags, id: \.self) { tag in
-                let on = activeTagFilters.contains(tag)
+                let on = filters.activeTagFilters.contains(tag)
                 Button {
-                    if on { activeTagFilters.remove(tag) }
-                    else  { activeTagFilters.insert(tag) }
+                    if on { filters.activeTagFilters.remove(tag) }
+                    else  { filters.activeTagFilters.insert(tag) }
                 } label: {
                     if on {
                         Label(tag, systemImage: "checkmark")
