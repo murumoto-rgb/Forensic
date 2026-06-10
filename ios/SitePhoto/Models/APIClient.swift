@@ -266,6 +266,19 @@ final class APIClient {
         return try await request("PUT", "/v1/config/reportBranding", body: body)
     }
 
+    /// Push the team AI prompt templates (Build #6.3.1). Whole-array
+    /// replace, same optimistic-concurrency semantics as the other
+    /// config keys.
+    @discardableResult
+    func putAIPromptTemplates(_ templates: [AIPromptTemplate],
+                              expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutAIPromptTemplatesRequest(
+            value: AIPromptTemplateLibraryWire(templates: templates),
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/aiPromptTemplates", body: body)
+    }
+
     /// Push the iOS-bundled tag library to the server's read-only
     /// `tagLibraryDefault` snapshot (Build #5.48.1). Only called by
     /// `AppConfigSyncer.pullAllFromServer()` at launch; nothing
@@ -640,6 +653,23 @@ struct AppConfigPutAIRulesTemplateRequest: Encodable {
 /// `expectedRevision` as the other config PUT bodies.
 struct AppConfigPutReportBrandingRequest: Encodable {
     let value: ReportBrandingWire
+    let expectedRevision: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case value, expectedRevision
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(value, forKey: .value)
+        try c.encode(expectedRevision, forKey: .expectedRevision)
+    }
+}
+
+/// PUT body for `aiPromptTemplates`. Same explicit-null discipline
+/// for `expectedRevision` as the other config PUT bodies.
+struct AppConfigPutAIPromptTemplatesRequest: Encodable {
+    let value: AIPromptTemplateLibraryWire
     let expectedRevision: String?
 
     private enum CodingKeys: String, CodingKey {

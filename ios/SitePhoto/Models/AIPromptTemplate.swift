@@ -22,6 +22,15 @@ struct AIPromptTemplate: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+/// Wire shape for the `aiPromptTemplates` app_config key — matches
+/// `AIPromptTemplateLibrary` in `packages/shared/src/appConfig.ts`
+/// (`{templates: [{id, name, prompt}]}`). The element struct above
+/// already mirrors the shared `AIPromptTemplate` field-for-field, so
+/// only the wrapper is needed (Build #6.3.1).
+struct AIPromptTemplateLibraryWire: Codable, Sendable {
+    var templates: [AIPromptTemplate]
+}
+
 extension AIPromptTemplate {
     /// Two starter templates seeded on first launch so the picker has
     /// useful content out of the box. The engineer can rename / edit /
