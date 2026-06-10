@@ -20,11 +20,21 @@ struct ProjectWorkspaceView: View {
 
     @Environment(ProjectStore.self) private var store
     @State private var workspace: ProjectWorkspaceModel?
+    /// Advisory edit-lock presence (Build #6.21.1). Created alongside
+    /// the workspace model; nil when the device has no API client
+    /// (signed out / previews) — the workspace then simply shows no
+    /// lock banner, exactly the pre-#6.21.1 behavior.
+    @State private var lockController: ProjectLockController?
 
     var body: some View {
         Group {
             if let workspace, let project = store.project(withID: projectID) {
-                workspaceTabs(project: project, workspace: workspace)
+                VStack(spacing: 0) {
+                    if case let .heldByOther(email, client) = lockController?.status ?? .unknown {
+                        lockAdvisoryBanner(email: email, client: client)
+                    }
+                    workspaceTabs(project: project, workspace: workspace)
+                }
             } else if store.project(withID: projectID) == nil {
                 EmptyStateView(
                     icon: "questionmark.folder",
@@ -45,7 +55,41 @@ struct ProjectWorkspaceView: View {
             if workspace == nil || workspace?.projectID != projectID {
                 workspace = ProjectWorkspaceModel(projectID: projectID)
             }
+            if lockController == nil, let api = store.apiClient {
+                let controller = ProjectLockController(api: api, projectID: projectID)
+                lockController = controller
+                controller.start()
+            }
         }
+        .onDisappear {
+            // Release the advisory lock when leaving the workspace so
+            // web reviewers regain editability promptly (the 10-min
+            // TTL is the backstop if this never runs).
+            lockController?.stop()
+            lockController = nil
+        }
+    }
+
+    /// Thin amber strip shown when a *different* account holds a live
+    /// edit lock. Advisory only — iOS editing stays enabled (the
+    /// server-side 3-way merge protects concurrent edits), and the
+    /// copy says so to preempt "will I lose my photos?" worry.
+    private func lockAdvisoryBanner(email: String, client: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "person.crop.circle.badge.clock")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(email) is editing on \(client == "ios" ? "another iPhone" : "web")")
+                    .font(.caption.weight(.semibold))
+                Text("You can keep working — changes from both sides merge on sync.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12))
     }
 
     @ViewBuilder
