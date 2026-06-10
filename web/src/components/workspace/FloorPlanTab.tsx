@@ -4,6 +4,7 @@ import { FloorPlanCanvas } from "../FloorPlanCanvas";
 import { FloorPlanManager } from "../FloorPlanManager";
 import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
+import { useUserPrefs } from "../../lib/useUserPrefs";
 
 /**
  * Floor Plan tab — the canvas viewer + pin drag + distress add/edit
@@ -83,24 +84,17 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
   const [pinsUnlocked, setPinsUnlocked] = useState(false);
   const [distressUnlocked, setDistressUnlocked] = useState(false);
   const [distressKind, setDistressKind] = useState<DistressKind>("outOfPlumbDoor");
-  // Persist bubble scale across navigation / reload so the user's
-  // last-chosen pin size sticks per browser. Build #5.103.1 makes
-  // this localStorage-backed; cross-device sync is a follow-on.
-  const BUBBLE_SCALE_KEY = "sitephoto.planBubbleScale";
-  const [bubbleScale, setBubbleScaleState] = useState<number>(() => {
-    if (typeof window === "undefined") return 1;
-    const raw = window.localStorage.getItem(BUBBLE_SCALE_KEY);
-    const parsed = raw == null ? NaN : Number.parseFloat(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-  });
-  const setBubbleScale: typeof setBubbleScaleState = (next) => {
-    setBubbleScaleState((cur) => {
-      const value = typeof next === "function" ? (next as (v: number) => number)(cur) : next;
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(BUBBLE_SCALE_KEY, String(value));
-      }
-      return value;
-    });
+  // Pin size — cross-device synced via useUserPrefs (Build #6.13.1
+  // moved this from a localStorage-only useState to the shared prefs
+  // hook so the user's last-chosen size follows them across browsers).
+  const userPrefs = useUserPrefs();
+  const bubbleScale = userPrefs.bubbleScale;
+  const setBubbleScale = (
+    next: number | ((cur: number) => number)
+  ): void => {
+    const value =
+      typeof next === "function" ? (next as (v: number) => number)(bubbleScale) : next;
+    userPrefs.setBubbleScale(value);
   };
   const BUBBLE_SCALE_MIN = 0.5;
   const BUBBLE_SCALE_MAX = 2.5;

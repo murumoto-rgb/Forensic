@@ -283,6 +283,10 @@ export interface UserPrefs {
   tagConfidenceThreshold: number | null;
   /** Parallel AI request concurrency cap (1–20). */
   aiConcurrency: number | null;
+  /** Floor-plan bubble (pin) size multiplier, 0.5–4 (Build #6.13.1).
+   *  Cross-device sync of the FloorPlanTab's `+ / −` zoom controls;
+   *  null = device default (1.5×, matching the iOS PDF default). */
+  planBubbleScale: number | null;
 }
 
 export interface GetUserPrefsResponse {

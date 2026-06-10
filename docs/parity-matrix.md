@@ -106,6 +106,7 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 | AI rules template management | ✅ | ✅ (PR #69) | `AIRulesTemplate` (app-wide) | AI rules editor on `/admin/ai-rules`; linked from settings page. |
 | Tag confidence threshold (per-user) | ✅ | ✅ Build #5.85.1 (server-synced #5.95.1) | localStorage `sitephoto.tagConfidenceThreshold` + `user_prefs.tagConfidenceThreshold` | Same default + storage key as iOS. Threshold slider on settings page; same hook (`useUserPrefs`) drives both settings and the existing `useTagConfidenceThreshold` callers. Server sync follows prefs across browsers. |
 | AI model / concurrency (per-user) | ✅ | ✅ Build #5.85.1 (server-synced #5.95.1) | localStorage `sitephoto.aiModel`, `sitephoto.aiConcurrency` + `user_prefs.{aiModel,aiConcurrency}` | localStorage instant-read + server sync (1-second debounce on writes; hydrate-on-mount). Defaults drive the Re-tag-all batch modal. |
+| Floor-plan pin size (per-user) | n/a (iOS PDF only) | ✅ Build #6.13.1 | localStorage `sitephoto.planBubbleScale` + `user_prefs.planBubbleScale` | Cross-device sync of the FloorPlanTab `+ / −` pin-size buttons; shares the established `useUserPrefs` hydrate + debounced PUT pattern. iOS uses the same key for its PDF bubble size; the on-screen iOS plan viewer reads a different setting. |
 
 ## Platform exclusions
 

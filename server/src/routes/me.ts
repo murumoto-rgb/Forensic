@@ -97,12 +97,22 @@ export const meRoute: FastifyPluginAsync = async (app) => {
             aiModel: null,
             tagConfidenceThreshold: null,
             aiConcurrency: null,
+            planBubbleScale: null,
           },
           revision: "",
         };
       }
+      // Existing rows may pre-date the planBubbleScale field
+      // (Build #6.13.1) — coerce undefined → null so the response
+      // matches the wire shape without a backfill migration.
+      const dbPrefs = data.prefs as Partial<GetUserPrefsResponse["prefs"]>;
       return {
-        prefs: data.prefs as GetUserPrefsResponse["prefs"],
+        prefs: {
+          aiModel: dbPrefs.aiModel ?? null,
+          tagConfidenceThreshold: dbPrefs.tagConfidenceThreshold ?? null,
+          aiConcurrency: dbPrefs.aiConcurrency ?? null,
+          planBubbleScale: dbPrefs.planBubbleScale ?? null,
+        },
         revision: data.revision as string,
       };
     }
