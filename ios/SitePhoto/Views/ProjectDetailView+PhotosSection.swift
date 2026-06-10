@@ -8,6 +8,7 @@ import SwiftUI
 
 extension ProjectDetailView {
 
+    @ViewBuilder
     func photosSection(_ project: Project) -> some View {
         let projectTags = store.tagsUsed(in: project, minConfidence: tagConfidenceThreshold)
         let visiblePhotos = filteredPhotos(project)
@@ -904,6 +905,4 @@ extension ProjectDetailView {
         out.append(contentsOf: extras)
         return out
     }
-
-    @ViewBuilder
 }
