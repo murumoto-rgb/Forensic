@@ -158,7 +158,7 @@ rows here when items ship.
 
 | Item | Platform | Size | Status / blocker |
 |---|---|---|---|
-| iOS edit-lock UI (lock banner + acquire/release/heartbeat) | iOS | 3–5 days | Open — server+web shipped (#5.59.1/#5.60.1/#5.120.1); advisory now that 3-way merge exists |
+| ~~iOS edit-lock UI (lock banner + acquire/release/heartbeat)~~ | iOS | — | **SHIPPED #6.21.1** — advisory model: auto-acquire while workspace open, holder banner, never blocks editing |
 | ProjectDetailView decomposition (~3,300 lines → per-tab files) | iOS | 2–4 PRs | Open — structural; reduces type-checker risk (Build-42 class) |
 | PhotoPreviewPanel split (1,614 lines → 4 files) | Web | ~1 day | Open |
 | Photo grid toggle (list ⇄ grid) | iOS | ~1 day | Open |

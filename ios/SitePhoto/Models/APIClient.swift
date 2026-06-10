@@ -305,6 +305,52 @@ final class APIClient {
         return try await request("PUT", "/v1/config/aiRulesTemplateDefault", body: body)
     }
 
+    // MARK: Phase 5 — project edit lock (Build #6.21.1)
+
+    /// Current lock state for a project, or `lock: nil` when free.
+    /// iOS sends no `clientSession` (that's a web per-tab concept),
+    /// so `heldByYou` is `"user"` whenever this account holds the
+    /// lock from any client.
+    func getLock(projectId: UUID) async throws -> GetLockResponseWire {
+        try await request(
+            "GET",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock",
+            body: Optional<Empty>.none
+        )
+    }
+
+    /// Take (or re-take) the edit lock. The server allows acquire
+    /// when the lock is free, expired, or already held by this
+    /// account; a live lock held by someone else returns 409.
+    @discardableResult
+    func acquireLock(projectId: UUID) async throws -> LockResponseWire {
+        try await request(
+            "POST",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock",
+            body: AcquireLockRequestWire(client: "ios")
+        )
+    }
+
+    /// Bump the lock's expiry window. Holder-only; 409 `lock_lost`
+    /// when the lock was force-released or taken over.
+    @discardableResult
+    func heartbeatLock(projectId: UUID) async throws -> LockResponseWire {
+        try await request(
+            "POST",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock/heartbeat",
+            body: Optional<Empty>.none
+        )
+    }
+
+    /// Release the lock. Idempotent server-side; holder-only.
+    func releaseLock(projectId: UUID) async throws {
+        let _: OkResponseWire = try await request(
+            "DELETE",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock",
+            body: Optional<Empty>.none
+        )
+    }
+
     // MARK: Phase 4 — AI tagging proxy (Build #5.32.1)
 
     /// Forward an AI-tagging call through the Forensic backend. The
@@ -534,6 +580,45 @@ struct CommitUploadRequest: Encodable {
 }
 
 struct CommitUploadResponse: Decodable {
+    let ok: Bool
+}
+
+// MARK: - Phase 5: edit-lock wire types (Build #6.21.1)
+// Field-for-field mirrors of `ProjectLock` / `GetLockResponse` /
+// `LockResponse` / `AcquireLockRequest` in
+// `packages/shared/src/api.ts`. Wire-only (DB-backed, not part of
+// the manifest), so no `manifestSchemaVersion` impact.
+
+struct ProjectLockWire: Decodable {
+    let projectId: String
+    let userId: String
+    let userEmail: String
+    /// "web" | "ios"
+    let client: String
+    let acquiredAt: String
+    let lastHeartbeat: String
+    let expiresAt: String
+    let clientSession: String?
+}
+
+struct GetLockResponseWire: Decodable {
+    let lock: ProjectLockWire?
+    /// "session" | "user" | nil. iOS sends no session token, so a
+    /// lock held by this account from ANY client reads "user".
+    let heldByYou: String?
+}
+
+struct LockResponseWire: Decodable {
+    let lock: ProjectLockWire
+}
+
+struct AcquireLockRequestWire: Encodable {
+    let client: String
+}
+
+/// Generic `{ok: true}` acknowledgment used by the lock DELETE (and
+/// other fire-and-forget endpoints).
+struct OkResponseWire: Decodable {
     let ok: Bool
 }
 
