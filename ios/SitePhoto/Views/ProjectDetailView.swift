@@ -157,6 +157,11 @@ struct ProjectDetailView: View {
     /// to back out before iCloud sees a full project's worth of
     /// renames.
     @State private var confirmingRenumberByDate: Bool = false
+
+    /// Build #6.1.1: confirm dialog for the More tab's "Lock Project
+    /// (Finalize)" action. Locking disables editing on every device,
+    /// so it warrants an explicit confirm; unlocking does not.
+    @State private var confirmingLock: Bool = false
     /// Comparison-view anchor — when non-nil, the comparison sheet opens
     /// for this photo's reshoot lineage.
     @State private var comparingPhoto: PhotoTarget?
@@ -691,17 +696,26 @@ struct ProjectDetailView: View {
         let showAI     = scope == .all || scope == .ai
         let showBuckets = scope == .all || scope == .buckets
         let showMore   = scope == .all || scope == .more
+        // Build #6.1.1: a locked/finalized project (`Project.isFrozen`,
+        // shipped in the #5.126.1 schema but UI-less on iOS until now)
+        // is read-only. Every tab shows the banner; edit-entry sections
+        // (import, AI runs) disappear; viewing + export stay available.
+        // `ProjectStore.save(_:)` backstops any path left visible.
+        let frozen = project.isFrozen
 
+        if frozen {
+            frozenBannerSection
+        }
         if showMore {
             metadataSection(project)
         }
-        if showPhotos {
+        if showPhotos && !frozen {
             actionsSection(project)
         }
         if showPlan {
             floorPlanSection(project)
         }
-        if showAI {
+        if showAI && !frozen {
             aiTaggingSection(project)
         }
         if showBuckets {
@@ -709,9 +723,74 @@ struct ProjectDetailView: View {
         }
         if showMore {
             exportSection(project)
+            projectLockSection(project)
         }
         if showPhotos {
             photosSection(project)
+        }
+    }
+
+    /// Read-only callout pinned to the top of every tab while the
+    /// project is locked/finalized. Mirrors web's banner above the
+    /// workspace tabs (Build #5.126.1).
+    private var frozenBannerSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Locked / finalized")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Read-only. Unlock from the More tab to edit.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .listRowBackground(Color.orange.opacity(0.12))
+    }
+
+    /// Lock/Unlock toggle on the More tab. Mirrors web's Info-tab
+    /// control: locking confirms first (it disables editing on every
+    /// device), unlocking is a direct toggle — and is deliberately NOT
+    /// gated by the frozen state, otherwise a locked project could
+    /// never be unlocked. The server enforces owner/admin on the flip.
+    @ViewBuilder
+    private func projectLockSection(_ project: Project) -> some View {
+        Section {
+            if project.isFrozen {
+                Button {
+                    store.setFrozen(project, frozen: false)
+                    Haptics.tap()
+                } label: {
+                    Label("Unlock Project", systemImage: "lock.open")
+                }
+            } else {
+                Button {
+                    confirmingLock = true
+                } label: {
+                    Label("Lock Project (Finalize)", systemImage: "lock")
+                }
+                .confirmationDialog(
+                    "Lock this project?",
+                    isPresented: $confirmingLock,
+                    titleVisibility: .visible
+                ) {
+                    Button("Lock Project", role: .destructive) {
+                        store.setFrozen(project, frozen: true)
+                        Haptics.tap()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Editing is disabled on every device until the project is unlocked. Viewing and export stay available.")
+                }
+            }
+        } header: {
+            Text("Project Lock")
+        } footer: {
+            Text(project.isFrozen
+                 ? "This project is locked / finalized. Unlocking re-enables editing on all devices."
+                 : "Locking marks the project finalized: read-only on iPhone and web until unlocked. Only the project owner or an org admin can lock or unlock — the server enforces this when the change syncs.")
         }
     }
 
@@ -734,18 +813,28 @@ struct ProjectDetailView: View {
                 }
             }
 
-            Button {
-                showingAddressEditor = true
-            } label: {
-                HStack {
-                    Text("Address")
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    addressTrailing(project)
+            // Build #6.1.1: the address stays visible but is no longer
+            // tappable-to-edit while the project is locked.
+            if project.isFrozen {
+                LabeledContent("Address") {
+                    Text(project.projectAddress ?? "—")
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(3)
                 }
-                .contentShape(Rectangle())
+            } else {
+                Button {
+                    showingAddressEditor = true
+                } label: {
+                    HStack {
+                        Text("Address")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        addressTrailing(project)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
     }
 
@@ -792,17 +881,22 @@ struct ProjectDetailView: View {
     ///   .all (legacy)    → both FABs (today's behavior, preserved)
     @ViewBuilder
     private func scopedFabStack(for project: Project) -> some View {
-        switch scope {
-        case .all:
-            fabStack(for: project)
-        case .photos, .ai:
-            takePhotoFAB
-        case .plan:
-            if !project.floorPlans.isEmpty {
-                distressFAB
-            }
-        case .buckets, .more:
+        // Build #6.1.1: no capture/markup FABs on a locked project.
+        if project.isFrozen {
             EmptyView()
+        } else {
+            switch scope {
+            case .all:
+                fabStack(for: project)
+            case .photos, .ai:
+                takePhotoFAB
+            case .plan:
+                if !project.floorPlans.isEmpty {
+                    distressFAB
+                }
+            case .buckets, .more:
+                EmptyView()
+            }
         }
     }
 
@@ -1117,13 +1211,15 @@ struct ProjectDetailView: View {
                     planRow(project: project, plan: plan)
                 }
             }
-            Button {
-                showingFloorPlanSetup = true
-            } label: {
-                Label(project.floorPlans.isEmpty
-                       ? "Set Up Floor Plan"
-                       : "Add Floor Plan",
-                      systemImage: "plus.circle")
+            if !project.isFrozen {
+                Button {
+                    showingFloorPlanSetup = true
+                } label: {
+                    Label(project.floorPlans.isEmpty
+                           ? "Set Up Floor Plan"
+                           : "Add Floor Plan",
+                          systemImage: "plus.circle")
+                }
             }
         }
     }
@@ -1162,63 +1258,67 @@ struct ProjectDetailView: View {
                         .padding(.vertical, 2)
                         .background(Color.accentColor, in: Capsule())
                 }
-                Menu {
-                    Button {
-                        renamingPlan = plan
-                        renamePlanDraft = plan.label
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-                    if !isActive {
+                // Build #6.1.1: a locked project hides the per-plan
+                // editor menu — rows stay tappable for viewing only.
+                if !project.isFrozen {
+                    Menu {
+                        Button {
+                            renamingPlan = plan
+                            renamePlanDraft = plan.label
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
+                        if !isActive {
+                            Button {
+                                _ = store.setActiveFloorPlan(project, planID: plan.id)
+                            } label: {
+                                Label("Set as active", systemImage: "checkmark.circle")
+                            }
+                        }
+                        Divider()
                         Button {
                             _ = store.setActiveFloorPlan(project, planID: plan.id)
+                            showingPlanOrigin = true
                         } label: {
-                            Label("Set as active", systemImage: "checkmark.circle")
+                            Label("Set Origin", systemImage: "scope")
                         }
-                    }
-                    Divider()
-                    Button {
-                        _ = store.setActiveFloorPlan(project, planID: plan.id)
-                        showingPlanOrigin = true
+                        Button {
+                            _ = store.setActiveFloorPlan(project, planID: plan.id)
+                            showingPlanNorth = true
+                        } label: {
+                            Label("Set North", systemImage: "location.north")
+                        }
+                        Button {
+                            editingDistanceFor = plan
+                            editDistanceDraft = trimmedFeet(plan.calibrationDistanceFeet)
+                        } label: {
+                            Label("Edit Calibration Distance", systemImage: "pencil")
+                        }
+                        Button {
+                            _ = store.setActiveFloorPlan(project, planID: plan.id)
+                            showingPlanRecalibrate = true
+                        } label: {
+                            Label("Re-calibrate Scale", systemImage: "ruler")
+                        }
+                        Button {
+                            _ = store.setActiveFloorPlan(project, planID: plan.id)
+                            showingPlanReplace = true
+                        } label: {
+                            Label("Replace Image", systemImage: "rectangle.2.swap")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            planPendingRemoval = plan
+                            confirmingPlanRemoval = true
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
                     } label: {
-                        Label("Set Origin", systemImage: "scope")
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(.secondary)
                     }
-                    Button {
-                        _ = store.setActiveFloorPlan(project, planID: plan.id)
-                        showingPlanNorth = true
-                    } label: {
-                        Label("Set North", systemImage: "location.north")
-                    }
-                    Button {
-                        editingDistanceFor = plan
-                        editDistanceDraft = trimmedFeet(plan.calibrationDistanceFeet)
-                    } label: {
-                        Label("Edit Calibration Distance", systemImage: "pencil")
-                    }
-                    Button {
-                        _ = store.setActiveFloorPlan(project, planID: plan.id)
-                        showingPlanRecalibrate = true
-                    } label: {
-                        Label("Re-calibrate Scale", systemImage: "ruler")
-                    }
-                    Button {
-                        _ = store.setActiveFloorPlan(project, planID: plan.id)
-                        showingPlanReplace = true
-                    } label: {
-                        Label("Replace Image", systemImage: "rectangle.2.swap")
-                    }
-                    Divider()
-                    Button(role: .destructive) {
-                        planPendingRemoval = plan
-                        confirmingPlanRemoval = true
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .contentShape(Rectangle())
         }
@@ -1510,7 +1610,9 @@ struct ProjectDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if !project.photos.isEmpty {
+                // Build #6.1.1: Select mode + renumber both mutate the
+                // project — hidden while locked.
+                if !project.photos.isEmpty && !project.isFrozen {
                     Button("Select") {
                         selectionMode = true
                     }
@@ -2314,20 +2416,24 @@ struct ProjectDetailView: View {
     private func bucketsSection(_ project: Project) -> some View {
         let sortedBuckets = project.buckets.sorted { $0.sortOrder < $1.sortOrder }
         Section {
-            Button {
-                showingBucketManager = true
-            } label: {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Manage Buckets")
-                        Text(sortedBuckets.isEmpty
-                             ? "No buckets yet — create some to group photos for export."
-                             : "\(sortedBuckets.count) bucket\(sortedBuckets.count == 1 ? "" : "s") defined")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            // Build #6.1.1: bucket CRUD is an edit — hidden while the
+            // project is locked. The counts row below stays (read-only).
+            if !project.isFrozen {
+                Button {
+                    showingBucketManager = true
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Manage Buckets")
+                            Text(sortedBuckets.isEmpty
+                                 ? "No buckets yet — create some to group photos for export."
+                                 : "\(sortedBuckets.count) bucket\(sortedBuckets.count == 1 ? "" : "s") defined")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "folder")
                     }
-                } icon: {
-                    Image(systemName: "folder")
                 }
             }
             if !sortedBuckets.isEmpty {
@@ -2335,6 +2441,10 @@ struct ProjectDetailView: View {
                 bucketCountsRow(buckets: sortedBuckets,
                                   photos: project.photos,
                                   unbucketedCount: unbucketedCount)
+            } else if project.isFrozen {
+                Text("No buckets defined.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Buckets")
