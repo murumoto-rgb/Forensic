@@ -1,19 +1,72 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { identifyUser, resetUser } from "./lib/observability";
+// Hot-path pages: stay in the main bundle so the login → list flow
+// doesn't pay a chunk fetch on the first click.
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
-import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
-import { AdminTagLibraryPage } from "./pages/AdminTagLibraryPage";
-import { AdminUsersPage } from "./pages/AdminUsersPage";
-import { AdminAIRulesPage } from "./pages/AdminAIRulesPage";
-import { AdminReportBrandingPage } from "./pages/AdminReportBrandingPage";
-import { AdminAIPromptTemplatesPage } from "./pages/AdminAIPromptTemplatesPage";
-import { ProjectExportsPage } from "./pages/ProjectExportsPage";
-import { SettingsPage } from "./pages/SettingsPage";
 import { BuildInfoFooter } from "./components/BuildInfoFooter";
+
+// Build #6.16.1: route-level code splitting. The workspace pulls in
+// `react-konva`, the photo preview panel (1.6k lines), and the markup
+// canvas; the five admin pages each weigh ~50–80 kB of editor code
+// most users never load. Lazy chunks shave the main bundle and let
+// the browser cache admin pages per-page instead of re-downloading
+// the whole app on a tag-library tweak.
+const ProjectWorkspacePage = lazy(() =>
+  import("./pages/ProjectWorkspacePage").then((m) => ({
+    default: m.ProjectWorkspacePage,
+  }))
+);
+const AdminTagLibraryPage = lazy(() =>
+  import("./pages/AdminTagLibraryPage").then((m) => ({
+    default: m.AdminTagLibraryPage,
+  }))
+);
+const AdminUsersPage = lazy(() =>
+  import("./pages/AdminUsersPage").then((m) => ({
+    default: m.AdminUsersPage,
+  }))
+);
+const AdminAIRulesPage = lazy(() =>
+  import("./pages/AdminAIRulesPage").then((m) => ({
+    default: m.AdminAIRulesPage,
+  }))
+);
+const AdminReportBrandingPage = lazy(() =>
+  import("./pages/AdminReportBrandingPage").then((m) => ({
+    default: m.AdminReportBrandingPage,
+  }))
+);
+const AdminAIPromptTemplatesPage = lazy(() =>
+  import("./pages/AdminAIPromptTemplatesPage").then((m) => ({
+    default: m.AdminAIPromptTemplatesPage,
+  }))
+);
+const ProjectExportsPage = lazy(() =>
+  import("./pages/ProjectExportsPage").then((m) => ({
+    default: m.ProjectExportsPage,
+  }))
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
+
+function RouteSuspense({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center text-neutral-500">
+          Loading…
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -67,35 +120,99 @@ export function App() {
         />
         <Route
           path="/projects/:id/*"
-          element={session ? <ProjectWorkspacePage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <ProjectWorkspacePage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/admin/tag-library"
-          element={session ? <AdminTagLibraryPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <AdminTagLibraryPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/admin/ai-rules"
-          element={session ? <AdminAIRulesPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <AdminAIRulesPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/admin/report-branding"
-          element={session ? <AdminReportBrandingPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <AdminReportBrandingPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/admin/ai-prompt-templates"
-          element={session ? <AdminAIPromptTemplatesPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <AdminAIPromptTemplatesPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/admin/users"
-          element={session ? <AdminUsersPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <AdminUsersPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/projects/:id/exports"
-          element={session ? <ProjectExportsPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <ProjectExportsPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/settings"
-          element={session ? <SettingsPage session={session} /> : <Navigate to="/" replace />}
+          element={
+            session ? (
+              <RouteSuspense>
+                <SettingsPage session={session} />
+              </RouteSuspense>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
