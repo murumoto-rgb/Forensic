@@ -579,6 +579,7 @@ struct ProjectDetailView: View {
                     progressCurrent: batchTagProgressCurrent,
                     progressTotal: batchTagProgressTotal,
                     progressSeq: batchTagProgressSeq,
+                    progressThumbURL: batchProgressThumbURL(project),
                     costFor: estimatedCostString,
                     onConfirm: { prompt, mode in
                         startBatchTagging(prompt, mode: mode)
@@ -609,6 +610,17 @@ struct ProjectDetailView: View {
         } message: {
             Text("Photos will be reordered by their capture timestamp and numbered 1…N. Tags, locations, buckets, AI analysis, and groupings stay attached to each photo. The on-disk image files are renamed, which may take a moment on large projects.")
         }
+    }
+
+    /// Thumbnail URL for the batch-tag progress overlay's in-flight
+    /// photo (Build #6.9.1). Resolved by sequence number — the
+    /// progress callback reports seq, not ID. O(n) once per progress
+    /// tick (~1/photo), not per frame.
+    private func batchProgressThumbURL(_ project: Project) -> URL? {
+        guard let seq = batchTagProgressSeq,
+              let photo = project.photos.first(where: { $0.sequenceNumber == seq })
+        else { return nil }
+        return store.thumbnailURL(for: photo, in: project)
     }
 
     private func renumberPhotosByDate() {
@@ -2439,6 +2451,17 @@ struct ProjectDetailView: View {
         }
 
         Section {
+            // Build #6.9.1: tagging without a tag selection used to
+            // fail at runtime ("Pick at least one investigation
+            // context first" toast). Disable the run buttons up
+            // front and say why — the only required configuration is
+            // AI Tags; Vocabulary extras and Notes are optional.
+            let tagsConfigured = !(project.tagSelection?.isEmpty ?? true)
+            if !tagsConfigured {
+                Text("Tagging is disabled until AI Tags is configured — pick at least one investigation context under Vocabulary above. (Job-Specific Vocabulary and AI Notes are optional.)")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Button {
                 batchTagConfirm = BatchTagPrompt(
                     candidateCount: untaggedCount,
@@ -2465,7 +2488,7 @@ struct ProjectDetailView: View {
                     Image(systemName: "wand.and.sparkles")
                 }
             }
-            .disabled(untaggedCount == 0 || batchTagTask != nil)
+            .disabled(untaggedCount == 0 || batchTagTask != nil || !tagsConfigured)
 
             if taggedCount > 0 && project.photos.count > 0 {
                 Button {
@@ -2480,7 +2503,7 @@ struct ProjectDetailView: View {
                     Label("Auto-tag every photo",
                           systemImage: "wand.and.sparkles.inverse")
                 }
-                .disabled(batchTagTask != nil)
+                .disabled(batchTagTask != nil || !tagsConfigured)
             }
 
             Button(role: .destructive) {
@@ -3014,6 +3037,9 @@ fileprivate struct BatchTagModifiers: ViewModifier {
     let progressCurrent: Int
     let progressTotal: Int
     let progressSeq: Int?
+    /// Thumbnail of the most recently started photo (Build #6.9.1) —
+    /// lets the user see *which* photo a stuck batch is sitting on.
+    let progressThumbURL: URL?
     let costFor: (Int) -> String
     let onConfirm: (BatchTagPrompt, ProjectStore.BatchTagMode) -> Void
     let onCancel: () -> Void
@@ -3054,6 +3080,7 @@ fileprivate struct BatchTagModifiers: ViewModifier {
                         current: progressCurrent,
                         total: progressTotal,
                         photoSeq: progressSeq,
+                        thumbURL: progressThumbURL,
                         onCancel: onCancel
                     )
                 }
@@ -3102,6 +3129,7 @@ private struct BatchTagProgressOverlay: View {
     let current: Int
     let total: Int
     let photoSeq: Int?
+    let thumbURL: URL?
     let onCancel: () -> Void
 
     var body: some View {
@@ -3120,10 +3148,23 @@ private struct BatchTagProgressOverlay: View {
                         .tint(.white)
                         .frame(width: 220)
                 }
-                if let photoSeq {
-                    Text("Photo #\(photoSeq)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.white.opacity(0.75))
+                // Build #6.9.1: show the in-flight photo, not just
+                // its number — a stuck batch becomes diagnosable at
+                // a glance.
+                if thumbURL != nil || photoSeq != nil {
+                    HStack(spacing: 8) {
+                        if let thumbURL {
+                            CachedThumbnail(url: thumbURL)
+                                .frame(width: 64, height: 48)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        if let photoSeq {
+                            Text("Photo #\(photoSeq)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.white.opacity(0.75))
+                        }
+                    }
                 }
                 Button("Cancel", role: .destructive, action: onCancel)
                     .buttonStyle(.borderedProminent)
