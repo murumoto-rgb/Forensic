@@ -435,19 +435,22 @@ function pointToXy(p: unknown): { x: number; y: number } | null {
   return null;
 }
 
-function distressOverlay(mark: DistressMark): string {
+function distressOverlay(mark: DistressMark, pinScale: number): string {
   const color = DISTRESS_COLORS[mark.kind] ?? "#ef4444";
   const pts = mark.points.map(pointToXy).filter((p): p is { x: number; y: number } => p != null);
   if (pts.length === 0) return "";
   if (mark.kind === "crackFloor") {
     // Polyline stroke. Stroke width set to a fraction of the
     // image's smaller dimension so it scales with zoom.
+    // Build #6.20.1: scaled by the user's pin-size setting so the
+    // PDF matches the on-screen plan (and the iOS exporter, which
+    // applies its bubbleScale the same way).
     const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
-    return `<path d="${d}" stroke="${color}" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`;
+    return `<path d="${d}" stroke="${color}" stroke-width="${6 * pinScale}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`;
   }
   // Point distress — circle marker at the first point.
   const p = pts[0]!;
-  return `<g><circle cx="${p.x}" cy="${p.y}" r="12" fill="${color}" opacity="0.85"/></g>`;
+  return `<g><circle cx="${p.x}" cy="${p.y}" r="${12 * pinScale}" fill="${color}" opacity="0.85"/></g>`;
 }
 
 /**
@@ -493,6 +496,9 @@ interface PlanSectionOptions {
   /** Optional subtitle suffix (e.g. "Photos" / "Distress") for the
    *  `photoAndDistressSeparate` mode's two pages. */
   subtitle?: string;
+  /** Pin/distress size multiplier (Build #6.20.1). Already clamped
+   *  to 0.5–4 by `applyOptionDefaults`. */
+  pinScale: number;
 }
 
 function planSection(
@@ -512,6 +518,11 @@ function planSection(
   }
   const W = planImage.width || 1000;
   const H = planImage.height || 1000;
+  // Build #6.20.1: pins scale with the user's pin-size preference —
+  // the web exporter previously hardcoded r=14 while iOS's exporter
+  // honored its bubbleScale, so the same project printed differently
+  // depending on which device exported it.
+  const s = sectionOptions.pinScale;
   const pinSvg = sectionOptions.includePhotos
     ? planPhotos
         .filter(
@@ -524,14 +535,14 @@ function planSection(
           const x = p.planPixelX!;
           const y = p.planPixelY!;
           return `<g>
-            <circle cx="${x}" cy="${y}" r="14" fill="#2563eb" stroke="#fff" stroke-width="2"/>
-            <text x="${x}" y="${y + 5}" text-anchor="middle" font-size="14" fill="#fff" font-weight="600">${p.sequenceNumber}</text>
+            <circle cx="${x}" cy="${y}" r="${14 * s}" fill="#2563eb" stroke="#fff" stroke-width="${2 * s}"/>
+            <text x="${x}" y="${y + 5 * s}" text-anchor="middle" font-size="${14 * s}" fill="#fff" font-weight="600">${p.sequenceNumber}</text>
           </g>`;
         })
         .join("")
     : "";
   const distressSvg = sectionOptions.includeDistress
-    ? plan.distress.map(distressOverlay).join("")
+    ? plan.distress.map((m) => distressOverlay(m, s)).join("")
     : "";
   // Legend only shows when distress is actually being rendered.
   const legend =
@@ -567,24 +578,28 @@ function planPages(
   plan: FloorPlan,
   planImage: ImageBlob | null,
   planPhotos: Photo[],
-  mode: PdfPlanMode
+  mode: PdfPlanMode,
+  pinScale: number
 ): string {
   if (mode === "photoAndDistressSeparate") {
     const photoPage = planSection(plan, planImage, planPhotos, {
       includePhotos: true,
       includeDistress: false,
       subtitle: "Photos",
+      pinScale,
     });
     const distressPage = planSection(plan, planImage, planPhotos, {
       includePhotos: false,
       includeDistress: true,
       subtitle: "Distress",
+      pinScale,
     });
     return `${photoPage}\n${distressPage}`;
   }
   return planSection(plan, planImage, planPhotos, {
     includePhotos: modeRendersPhotos(mode),
     includeDistress: modeRendersDistress(mode),
+    pinScale,
   });
 }
 
@@ -697,7 +712,7 @@ function renderPlanPages(
     const planPhotos = allPhotos.filter(
       (p) => p.floorPlanID === plan.id && p.trashedAt == null
     );
-    return planPages(plan, blob, planPhotos, options.planMode);
+    return planPages(plan, blob, planPhotos, options.planMode, options.pinScale);
   });
 }
 

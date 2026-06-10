@@ -720,6 +720,13 @@ export interface PdfExportOptions {
    *  renders the cover (not toggleable); web exposes it for the
    *  office staff who want a minimal printout. */
   includeCoverPage: boolean;
+  /** Floor-plan pin/bubble size multiplier on plan pages
+   *  (Build #6.20.1). Web sends the user's on-screen pin-size
+   *  setting (`planBubbleScale`) so the exported PDF matches what
+   *  they see — the same way the iOS exporter applies its
+   *  `sitephoto.bubbleScale`. 1 = the legacy fixed size; the server
+   *  clamps to 0.5–4. */
+  pinScale: number;
 
   // ----- Legacy fields (kept for backwards compat) -----
 

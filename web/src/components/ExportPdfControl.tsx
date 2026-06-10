@@ -6,6 +6,7 @@ import type {
   PdfSection,
 } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { useUserPrefs } from "../lib/useUserPrefs";
 
 /**
  * "Export PDF" button + iOS-parity options modal + status pill
@@ -68,6 +69,9 @@ const DEFAULT_OPTIONS: PdfExportOptions = {
   // Filters
   groupByBucket: false,
   includeTrashed: false,
+  // Build #6.20.1: overwritten at start() with the user's on-screen
+  // pin-size preference so the PDF matches the plan tab.
+  pinScale: 1,
 };
 
 /** Reorder helper: rebuild `sectionOrder` from the include flags
@@ -144,6 +148,10 @@ export function ExportPdfControl({
   const [state, setState] = useState<State>({ kind: "idle" });
   const [showModal, setShowModal] = useState(false);
   const [options, setOptions] = useState<PdfExportOptions>(DEFAULT_OPTIONS);
+  // Build #6.20.1: the plan-tab pin-size preference flows into the
+  // export so the PDF's pins match what the user sees on screen
+  // (iOS's exporter has always done the equivalent).
+  const userPrefs = useUserPrefs();
   const pollRef = useRef<number | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
   /** Wall-clock timestamp (ms) when polling for the active job
@@ -286,7 +294,7 @@ export function ExportPdfControl({
     clearPoll();
     setState({ kind: "queued", job: makePendingJob(projectId, "(pending)") });
     api
-      .createPdfExport(projectId, opts)
+      .createPdfExport(projectId, { ...opts, pinScale: userPrefs.bubbleScale })
       .then((res) => {
         const jobId = res.job.id;
         activeJobIdRef.current = jobId;
