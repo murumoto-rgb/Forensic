@@ -6,6 +6,7 @@ import {
   type BatchPhotoOutcome,
 } from "../lib/useBatchRetag";
 import { useUserPrefs } from "../lib/useUserPrefs";
+import { useEscapeKey } from "../lib/useEscapeKey";
 import type { MutableRefObject } from "react";
 
 /**
@@ -97,6 +98,15 @@ export function BatchRetagControl({
     state.kind === "preparing" ||
     state.kind === "running" ||
     state.kind === "saving";
+  // Build #6.17.1: Escape closes the modal — but only when the
+  // batch isn't actually running. A live batch keeps streaming on
+  // the server even if the user dismisses, so refusing Escape mid-
+  // run prevents an accidental wipe of progress that the user
+  // actually wants to watch.
+  useEscapeKey(showModal && !inFlight, () => {
+    setShowModal(false);
+    onClose?.();
+  });
   const finished =
     state.kind === "done" ||
     state.kind === "cancelled" ||

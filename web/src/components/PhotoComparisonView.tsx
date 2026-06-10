@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Photo } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { useEscapeKey } from "../lib/useEscapeKey";
 
 /**
  * Before/after comparison carousel for grouped photos (Build #5.102.1).
@@ -28,6 +29,8 @@ export function PhotoComparisonView({
   selectedPhoto,
   onClose,
 }: Props) {
+  // Build #6.17.1: Escape closes the comparison modal.
+  useEscapeKey(true, onClose);
   // Walk the group. Primary first, then reshoots ordered by their
   // sequenceNumber (matches iOS).
   const groupMembers = resolveGroup(photos, selectedPhoto);
