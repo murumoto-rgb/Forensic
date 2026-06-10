@@ -136,7 +136,6 @@ export function PhotoList({
     };
     // The effect re-fires when the visible photo set changes; the
     // cache check short-circuits when there's nothing new.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, photos.map((p) => p.id).join(","), retryNonce]);
 
@@ -179,8 +178,23 @@ export function PhotoList({
       }}
     >
       {photos.map((photo, idx) => (
-        <PhotoListRow
+        // Build #6.31.1: native lazy rendering. `content-visibility:
+        // auto` lets the browser skip layout + paint for off-screen
+        // cards entirely — on a 300-photo project that's ~95% of the
+        // grid at any scroll position. The intrinsic-size hint keeps
+        // the scrollbar stable before first render ("auto" makes the
+        // browser remember the real size afterwards). Chosen over
+        // react-window-style virtualization deliberately: same
+        // render-cost win, zero scroll-container rework, and it
+        // degrades to today's behavior where unsupported.
+        <div
           key={photo.id}
+          style={{
+            contentVisibility: "auto",
+            containIntrinsicSize: "auto 360px",
+          }}
+        >
+        <PhotoListRow
           projectId={projectId}
           project={project}
           photo={photo}
@@ -197,6 +211,7 @@ export function PhotoList({
           }
           onToggleSelected={() => onToggleSelected(photo.id)}
         />
+        </div>
       ))}
     </div>
   );

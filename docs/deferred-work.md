@@ -162,7 +162,7 @@ rows here when items ship.
 | ProjectDetailView decomposition (~3,300 lines → per-tab files) | iOS | 2–4 PRs | Open — structural; reduces type-checker risk (Build-42 class) |
 | PhotoPreviewPanel split (1,614 lines → 4 files) | Web | ~1 day | Open |
 | ~~Photo grid toggle (list ⇄ grid)~~ | iOS | — | **SHIPPED #6.29.1** — header toggle, 3-up grid with selection support |
-| Photo-grid virtualization | Web | 1–2 days | Open — matters at 500+ photos |
+| ~~Photo-grid virtualization~~ | Web | — | **SHIPPED #6.31.1** as `content-visibility: auto` lazy rendering (same render-cost win, zero scroll rework). Revisit react-window only if 1,000+-photo projects appear. |
 | ~~Plan color modes (web pins hardcoded blue)~~ | Web | — | **SHIPPED #6.26.1** — status/bucket/primaryTag picker on the plan toolbar, synced via user_prefs |
 | ~~Offline manifest retry queue~~ | iOS | — | **SHIPPED #6.30.1** — session-scoped pendingRetry set + foreground re-push; launch sweep already covers cold start |
 | Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
