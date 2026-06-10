@@ -200,7 +200,7 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
 
     // Project-access gate. viewer is the lowest read role.
     try {
-      await assertProjectAccess(request.user.id, projectId, "viewer");
+      await assertProjectAccess(request.user.id, projectId, "viewer", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "Project access check failed");

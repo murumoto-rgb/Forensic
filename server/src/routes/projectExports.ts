@@ -150,7 +150,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     try {
       // Create export is an edit intent → editor. List/read paths
       // below downgrade to viewer per route.
-      await assertProjectAccess(request.user.id, projectId, "editor");
+      await assertProjectAccess(request.user.id, projectId, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "project_exports — access check failed");
@@ -192,7 +192,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
 
     try {
       // List exports is a read → viewer is enough.
-      await assertProjectAccess(request.user.id, projectId, "viewer");
+      await assertProjectAccess(request.user.id, projectId, "viewer", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "project_exports list — access check failed");
@@ -246,7 +246,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
 
     // Any project viewer can read the export's status + download URL.
     try {
-      await assertProjectAccess(request.user.id, row.project_id, "viewer");
+      await assertProjectAccess(request.user.id, row.project_id, "viewer", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, exportId }, "project_exports read — access check failed");
@@ -304,7 +304,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     try {
       // Folder export manifest is a read of presigned-GET URLs →
       // viewer suffices.
-      await assertProjectAccess(request.user.id, projectId, "viewer");
+      await assertProjectAccess(request.user.id, projectId, "viewer", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "folder-export-manifest — access check failed");
@@ -480,7 +480,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     // project (so admins / owners / member-editors can clean up).
     if (row.created_by !== request.user.id) {
       try {
-        await assertProjectAccess(request.user.id, row.project_id, "editor");
+        await assertProjectAccess(request.user.id, row.project_id, "editor", request);
       } catch (err) {
         if (sendAccessError(reply, err)) return;
         request.log.error({ err, exportId }, "project_exports delete — access check failed");

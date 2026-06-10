@@ -40,7 +40,7 @@ export const plansRoute: FastifyPluginAsync = async (app) => {
       const { projectId, planId } = request.params;
 
       try {
-        await assertProjectAccess(request.user.id, projectId, "viewer");
+        await assertProjectAccess(request.user.id, projectId, "viewer", request);
       } catch (err) {
         if (sendAccessError(reply, err)) return;
         reply.code(500).send({ error: "internal", message: "Database error" });

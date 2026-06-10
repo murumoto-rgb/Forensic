@@ -95,7 +95,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
 
     // Upload-url provisioning is an edit intent → editor-or-above.
     try {
-      await assertProjectAccess(request.user.id, projectId, "editor");
+      await assertProjectAccess(request.user.id, projectId, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "files upload-url — access check failed");
@@ -160,7 +160,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
 
     // Commit is an edit intent.
     try {
-      await assertProjectAccess(request.user.id, projectId, "editor");
+      await assertProjectAccess(request.user.id, projectId, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "files commit — access check failed");
@@ -242,7 +242,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     // set once so the per-row filter is a Map lookup, not an
     // owner_id string compare.
     const uid = request.user.id;
-    const callerIsAdmin = await isOrgAdmin(uid);
+    const callerIsAdmin = await isOrgAdmin(uid, request);
     let memberIds = new Set<string>();
     if (!callerIsAdmin) {
       const { data: memberRows, error: memberErr } = await supabaseAdmin
