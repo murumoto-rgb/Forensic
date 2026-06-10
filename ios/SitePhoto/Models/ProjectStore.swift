@@ -1428,6 +1428,24 @@ final class ProjectStore {
     }
 
     func applyServerProject(_ project: Project) {
+        // Build #6.19.1: a server-side freeze flip (admin locked or
+        // unlocked the project from web) used to land silently — the
+        // device's banner just appeared/disappeared with no
+        // explanation. Surface it. `ToastCenter` is @MainActor and
+        // this method isn't; hop, same pattern as the freeze guard
+        // in `save(_:)`.
+        if let current = activeProjects.first(where: { $0.id == project.id })
+            ?? deletedProjects.first(where: { $0.id == project.id }),
+           current.isFrozen != project.isFrozen {
+            let message = project.isFrozen
+                ? "\"\(project.name)\" was locked (finalized) from another device."
+                : "\"\(project.name)\" was unlocked from another device."
+            if let toast = toastCenter {
+                Task { @MainActor in
+                    toast.post(message, kind: .info)
+                }
+            }
+        }
         let dir = projectURL(project)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: photosFolder(for: project),

@@ -75,6 +75,17 @@ const AITagPhotoBodySchema = z.object({
     .optional(),
 });
 
+// Build #6.19.1: module-level cache for the server-driven-mode
+// app_config reads (tagLibrary + aiRulesTemplate). See the fetch
+// site below for rationale. Single-process server, so a plain
+// module variable is the whole story.
+let aiConfigCache: {
+  tagLibrary: TagLibrary;
+  rulesText: string;
+  fetchedAt: number;
+} | null = null;
+const AI_CONFIG_CACHE_TTL_MS = 60_000;
+
 // Lazy-init the Anthropic client so the module can still load when
 // ANTHROPIC_API_KEY isn't set (server starts cleanly; the route
 // itself 503s on call).
@@ -210,24 +221,40 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       // is required; rules template falls back to empty string
       // when not pushed yet (rare, since iOS auto-pushes on first
       // edit).
-      const { data: configRows, error: configErr } = await supabaseAdmin
-        .from("app_config")
-        .select("key, value")
-        .in("key", ["tagLibrary", "aiRulesTemplate"]);
-      if (configErr) {
-        request.log.error({ err: configErr }, "AI tag — app_config fetch failed");
-        reply.code(500).send({ error: "internal", message: "Database error" });
-        return;
-      }
+      //
+      // Build #6.19.1: 60s module-level cache. The config rarely
+      // changes, but every server-driven tag-photo request was
+      // re-reading it — a 229-photo batch issued 229 identical
+      // queries. Admin edits propagate within a minute, which is
+      // faster than a typical batch finishes anyway; a failed or
+      // empty fetch is never cached.
       let tagLibrary: TagLibrary | null = null;
       let rulesText = "";
-      for (const row of (configRows ?? []) as { key: string; value: unknown }[]) {
-        if (row.key === "tagLibrary") {
-          const tlParse = TagLibrarySchema.safeParse(row.value);
-          if (tlParse.success) tagLibrary = tlParse.data;
-        } else if (row.key === "aiRulesTemplate") {
-          const arParse = AIRulesTemplateSchema.safeParse(row.value);
-          if (arParse.success) rulesText = arParse.data.text;
+      const cached = aiConfigCache;
+      if (cached && Date.now() - cached.fetchedAt < AI_CONFIG_CACHE_TTL_MS) {
+        tagLibrary = cached.tagLibrary;
+        rulesText = cached.rulesText;
+      } else {
+        const { data: configRows, error: configErr } = await supabaseAdmin
+          .from("app_config")
+          .select("key, value")
+          .in("key", ["tagLibrary", "aiRulesTemplate"]);
+        if (configErr) {
+          request.log.error({ err: configErr }, "AI tag — app_config fetch failed");
+          reply.code(500).send({ error: "internal", message: "Database error" });
+          return;
+        }
+        for (const row of (configRows ?? []) as { key: string; value: unknown }[]) {
+          if (row.key === "tagLibrary") {
+            const tlParse = TagLibrarySchema.safeParse(row.value);
+            if (tlParse.success) tagLibrary = tlParse.data;
+          } else if (row.key === "aiRulesTemplate") {
+            const arParse = AIRulesTemplateSchema.safeParse(row.value);
+            if (arParse.success) rulesText = arParse.data.text;
+          }
+        }
+        if (tagLibrary) {
+          aiConfigCache = { tagLibrary, rulesText, fetchedAt: Date.now() };
         }
       }
       if (!tagLibrary) {
