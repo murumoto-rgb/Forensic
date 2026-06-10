@@ -80,6 +80,24 @@ struct PhotoRow: View {
                             .font(.caption.bold())
                             .foregroundStyle(.blue)
                     }
+                    // Build #6.25.1: surface the reshoot lineage —
+                    // the compare view was only reachable through
+                    // the overflow menu, so it went undiscovered.
+                    // Tapping the badge opens the comparison
+                    // directly; the menu entry stays as well.
+                    if let onCompare, hasReshootLineage {
+                        Button {
+                            onCompare()
+                        } label: {
+                            let n = project.photos.filter {
+                                $0.reshootsPhotoID == photo.id
+                            }.count
+                            badge(text: n > 0 ? "↻\(n)" : "↻ reshoot",
+                                  color: .teal)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Compare with reshoots")
+                    }
                     let livePending = photo.pendingSuggestions.filter { $0.source == .claude }
                     if !livePending.isEmpty {
                         badge(text: "AI \(livePending.count)", color: .purple)
