@@ -28,12 +28,16 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 
 ## Phase status
 
+(Corrected in Build #6.18.1 — this section had lagged reality by four
+phases. The feature rows below are the live truth; this list is the
+historical phase ledger.)
+
 - **Phase 0** — Parity machinery (✅ closed). Shared TS package, parity contract test, matrix doc, CLAUDE.md addendum, iOS `manifestSchemaVersion` field.
-- **Phase 1** — Server foundation + auth + iOS↔server manifest sync (✅ closed). Supabase project + DB schema, Fastify server on Render, React+Vite web app on Vercel, iOS Supabase Auth + manifest push. End-to-end verified: saving a project on iPhone makes it appear in the web project list within seconds.
-- **Phase 2** — Photos visible on web (📋 planned). Photo file upload to Supabase Storage, web photo viewer.
-- **Phase 3** — Floor plans + distress visible on web (📋 planned).
-- **Phase 4** — AI tagging + PDF export on web (📋 planned).
-- **Phase 5** — Multi-user collaboration + edit-lock (📋 planned).
+- **Phase 1** — Server foundation + auth + iOS↔server manifest sync (✅ closed). Supabase + Fastify on Render + React/Vite on Vercel + iOS auth/manifest push.
+- **Phase 2** — Photos visible + editable on web (✅ closed — uploads #5.90.1, markup #5.91.1, trash/favorites/rotation/tags shipped through the Path P series #5.76.1–#5.83.1).
+- **Phase 3** — Floor plans + distress on web (✅ closed — canvas + pins + distress CRUD, calibration-on-add #5.94.1).
+- **Phase 4** — AI tagging + exports on web + project freeze (✅ closed at #5.126.1 — web AI runs/suggestions, PDF/folder/CSV exports, `isFrozen` tandem).
+- **Phase 5** — Multi-user collaboration (✅ server+web: roles/admin #5.121.1–#5.125.1, edit lock #5.60.1 + self-lock fix #5.120.1, force-release gated #6.11.1. 📋 iOS edit-lock UI still open — tracked in `docs/deferred-work.md`).
 
 ## Features
 
@@ -46,7 +50,7 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 | List projects | ✅ | ✅ Phase 1A | server: `projects.manifest`, list endpoint at `GET /v1/projects` | iOS pushes manifests to server in Phase 1B-2; web reads them from `GET /v1/projects` |
 | Create / rename project | ✅ | ✅ Build #5.84.1 | `Project.name` | "+ New project" modal on web list page; rename via Info-tab text input. Server `PUT /v1/projects/:id` already accepts create (expectedRevision: null) and update. iOS exposes create via `ProjectStore.create(named:)`; rename via swipe-leading "Rename" + alert TextField (Build #5.96.1). |
 | Project GPS + address | ✅ | ✅ Build #5.83.1 | `Project.projectGPS`, `Project.projectAddress` | Address edit on Info tab (Path P #8/8); forward-geocoding to fill `projectGPS` stays iOS-only. |
-| Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |
+| Start / stop project | 🚧 (fields only) | 📋 | `Project.startedAt`, `Project.stopped` | Corrected #6.18.1: both platforms carry the schema fields and iOS sets `startedAt` automatically, but **neither platform has a start/stop UI control**. The previous iOS ✅ was a doc error. Tracked in `docs/deferred-work.md`. |
 | Soft-delete / restore project | ✅ | ✅ (Build #5.84.1) | `Project.isDeleted` (bool, default false), `POST /v1/projects/:id/restore` | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`. Web list filters trashed rows out of the active section and shows them in a collapsible "Trashed projects" section with a Restore button per row. Info tab's "Move to trash" sets `isDeleted=true` and navigates back to the list. |
 | Permanently delete trashed project | ✅ (swipe) | ✅ Build #5.93.1 | `DELETE /v1/projects/:id` | New server endpoint reaps R2 blobs + `files` rows + project row in one shot; requires `isDeleted=true` first (409 otherwise — same two-step iOS swipe gesture). Web confirm dialog quotes the project name; iOS button is in the trashed-row swipe action. |
 | Lock / finalize project (read-only) | ✅ Build #6.1.1 | ✅ Build #5.126.1 | `Project.isFrozen` (bool, default false; schema v3) | Persistent owner/admin-toggled "finalized" state, distinct from the transient edit lock. Web: banner + `canEdit` gate + Info-tab toggle (#5.126.1). iOS: banner on every tab, edit affordances hidden, `ProjectStore.save` chokepoint rejects edits while frozen, Lock/Unlock in the More tab (#6.1.1). Server enforces owner/admin on the flip; merge rule is true-wins. |
