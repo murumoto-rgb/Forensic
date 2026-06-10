@@ -1332,35 +1332,47 @@ struct ProjectDetailView: View {
                             }
                         }
                         Divider()
-                        Button {
-                            _ = store.setActiveFloorPlan(project, planID: plan.id)
-                            showingPlanOrigin = true
+                        // Build #6.8.1: the five calibration-class
+                        // actions fold into one drill-in submenu —
+                        // the row menu had grown to 8 items, and the
+                        // "Edit Distance" vs "Re-calibrate" pair was
+                        // hard to tell apart in a flat list. Every
+                        // action's flow is unchanged; only its spot
+                        // in the menu moved.
+                        Menu {
+                            Button {
+                                _ = store.setActiveFloorPlan(project, planID: plan.id)
+                                showingPlanOrigin = true
+                            } label: {
+                                Label("Set Origin", systemImage: "scope")
+                            }
+                            Button {
+                                _ = store.setActiveFloorPlan(project, planID: plan.id)
+                                showingPlanNorth = true
+                            } label: {
+                                Label("Set North", systemImage: "location.north")
+                            }
+                            Button {
+                                editingDistanceFor = plan
+                                editDistanceDraft = trimmedFeet(plan.calibrationDistanceFeet)
+                            } label: {
+                                Label("Edit Calibration Distance", systemImage: "pencil")
+                            }
+                            Button {
+                                _ = store.setActiveFloorPlan(project, planID: plan.id)
+                                showingPlanRecalibrate = true
+                            } label: {
+                                Label("Re-calibrate Scale", systemImage: "ruler")
+                            }
+                            Divider()
+                            Button {
+                                _ = store.setActiveFloorPlan(project, planID: plan.id)
+                                showingPlanReplace = true
+                            } label: {
+                                Label("Replace Image", systemImage: "rectangle.2.swap")
+                            }
                         } label: {
-                            Label("Set Origin", systemImage: "scope")
-                        }
-                        Button {
-                            _ = store.setActiveFloorPlan(project, planID: plan.id)
-                            showingPlanNorth = true
-                        } label: {
-                            Label("Set North", systemImage: "location.north")
-                        }
-                        Button {
-                            editingDistanceFor = plan
-                            editDistanceDraft = trimmedFeet(plan.calibrationDistanceFeet)
-                        } label: {
-                            Label("Edit Calibration Distance", systemImage: "pencil")
-                        }
-                        Button {
-                            _ = store.setActiveFloorPlan(project, planID: plan.id)
-                            showingPlanRecalibrate = true
-                        } label: {
-                            Label("Re-calibrate Scale", systemImage: "ruler")
-                        }
-                        Button {
-                            _ = store.setActiveFloorPlan(project, planID: plan.id)
-                            showingPlanReplace = true
-                        } label: {
-                            Label("Replace Image", systemImage: "rectangle.2.swap")
+                            Label("Calibrate & Image", systemImage: "ruler")
                         }
                         Divider()
                         Button(role: .destructive) {
@@ -1374,6 +1386,7 @@ struct ProjectDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Plan actions")
                 }
             }
             .contentShape(Rectangle())
