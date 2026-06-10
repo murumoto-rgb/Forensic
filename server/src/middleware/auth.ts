@@ -71,7 +71,10 @@ export async function requireAdmin(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
-  if (!(await isOrgAdmin(request.user.id))) {
+  // Pass `request` so the admin status is cached for the rest of
+  // this request — admin routes commonly do a follow-up RBAC lookup
+  // (Build #6.14.1).
+  if (!(await isOrgAdmin(request.user.id, request))) {
     reply.code(403).send({
       error: "forbidden",
       message: "Admin role required.",

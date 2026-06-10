@@ -101,7 +101,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // We run the query against `projects` once with the appropriate
     // id-set filter rather than two queries + JS merge — keeps the
     // sort + isDeleted filter on the database side.
-    const callerIsAdmin = await isOrgAdmin(uid);
+    const callerIsAdmin = await isOrgAdmin(uid, request);
 
     let query = supabaseAdmin
       .from("projects")
@@ -195,7 +195,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // for symmetry with write paths).
       let role: ProjectRole;
       try {
-        role = await assertProjectAccess(request.user.id, id, "viewer");
+        role = await assertProjectAccess(request.user.id, id, "viewer", request);
       } catch (err) {
         if (sendAccessError(reply, err)) return;
         request.log.error({ err, projectId: id }, "Failed to check project access");
@@ -353,7 +353,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
         if (!updateAccessChecked) {
           try {
-            await assertProjectAccess(request.user.id, id, "editor");
+            await assertProjectAccess(request.user.id, id, "editor", request);
           } catch (err) {
             if (sendAccessError(reply, err)) return;
             throw err;
@@ -368,8 +368,10 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         // ran above for any save, so we only need the extra check
         // when the flag is actually changing.
         if ((serverCurrent.isFrozen ?? false) !== (project.isFrozen ?? false)) {
+          // Build #6.14.1: pass `request` so the admin check reuses
+          // the cached value `assertProjectAccess` populated above.
           const allowed =
-            (await isOrgAdmin(request.user.id)) ||
+            (await isOrgAdmin(request.user.id, request)) ||
             (await isProjectOwner(request.user.id, id));
           if (!allowed) {
             reply.code(403).send({
@@ -468,7 +470,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // Updating an existing row: caller must be editor-or-above
       // (owner, admin, or member-editor), and the revision must match.
       try {
-        await assertProjectAccess(request.user.id, id, "editor");
+        await assertProjectAccess(request.user.id, id, "editor", request);
       } catch (err) {
         if (sendAccessError(reply, err)) return;
         throw err;
@@ -478,8 +480,10 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // OR Admin on the legacy path too.
       const existingManifest = existing.manifest as unknown as Project;
       if ((existingManifest.isFrozen ?? false) !== (project.isFrozen ?? false)) {
+        // Build #6.14.1: pass `request` so the admin check reuses
+        // the cached value `assertProjectAccess` populated above.
         const allowed =
-          (await isOrgAdmin(request.user.id)) ||
+          (await isOrgAdmin(request.user.id, request)) ||
           (await isProjectOwner(request.user.id, id));
         if (!allowed) {
           reply.code(403).send({
@@ -562,7 +566,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // Restore is a write — editor-or-above. 404 from the access
     // helper covers both not-found and no-relationship.
     try {
-      await assertProjectAccess(request.user.id, id, "editor");
+      await assertProjectAccess(request.user.id, id, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       throw err;
@@ -644,7 +648,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // member-editor). The two-step soft-then-hard flow is the same
     // intentional safety net as today.
     try {
-      await assertProjectAccess(request.user.id, id, "editor");
+      await assertProjectAccess(request.user.id, id, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       throw err;

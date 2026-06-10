@@ -27,10 +27,34 @@
  * `sendAccessError(reply, err)`.
  */
 
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { supabaseAdmin } from "./supabase.js";
 
 export type ProjectRole = "admin" | "editor" | "viewer";
+
+/**
+ * Per-request memoization (Build #6.14.1).
+ *
+ * `isOrgAdmin` runs an indexed point lookup on `profiles.is_admin`,
+ * which is cheap individually but called multiple times on the same
+ * request hot path: `assertProjectAccess` already calls it once, and
+ * routes that need elevated-role gating (freeze flip, force-release,
+ * admin endpoints) call it a second time. With Render-free-tier round
+ * trips, the second call adds latency for no fresh information — the
+ * caller's admin status doesn't change mid-request.
+ *
+ * Pattern: stash a `cache` Map on the FastifyRequest (Fastify allows
+ * decorating but a per-call assertion works without registering at
+ * boot). `isOrgAdmin(userId, request)` consults it first; existing
+ * call sites that don't pass `request` keep working unchanged.
+ */
+type RequestAccessCache = { orgAdmin?: boolean };
+
+function getRequestCache(req: FastifyRequest): RequestAccessCache {
+  const r = req as FastifyRequest & { __access?: RequestAccessCache };
+  if (!r.__access) r.__access = {};
+  return r.__access;
+}
 
 export class AccessError extends Error {
   constructor(
@@ -54,15 +78,20 @@ const RANK: Record<ProjectRole, number> = {
  * `AccessError`. Returns the role on success.
  *
  * Up to two reads against the DB (admin check + owner-or-member
- * resolution); both are point queries on indexed columns.
+ * resolution); both are point queries on indexed columns. When called
+ * with the FastifyRequest, the admin check is memoized for the
+ * remainder of the request (Build #6.14.1) — subsequent calls to
+ * `isOrgAdmin(uid, request)` (e.g. for the freeze-flip elevated-role
+ * gate) reuse the cached answer.
  */
 export async function assertProjectAccess(
   userId: string,
   projectId: string,
-  minRole: ProjectRole
+  minRole: ProjectRole,
+  request?: FastifyRequest
 ): Promise<ProjectRole> {
   // 1) Org Admin — bypass everything.
-  if (await isOrgAdmin(userId)) return "admin";
+  if (await isOrgAdmin(userId, request)) return "admin";
 
   // 2) Owner-or-member, resolved together via two cheap point lookups.
   const { data: proj, error: projErr } = await supabaseAdmin
@@ -101,15 +130,28 @@ export async function assertProjectAccess(
 }
 
 /** Light-weight existence check used by `requireAdmin` and by
- *  callers that need to surface org-admin UI affordances. */
-export async function isOrgAdmin(userId: string): Promise<boolean> {
+ *  callers that need to surface org-admin UI affordances.
+ *
+ *  When called with the FastifyRequest, the answer is memoized for
+ *  the remainder of that request (Build #6.14.1) — repeated calls
+ *  hit the cached boolean instead of re-querying `profiles`. */
+export async function isOrgAdmin(
+  userId: string,
+  request?: FastifyRequest
+): Promise<boolean> {
+  if (request) {
+    const cache = getRequestCache(request);
+    if (cache.orgAdmin !== undefined) return cache.orgAdmin;
+  }
   const { data, error } = await supabaseAdmin
     .from("profiles")
     .select("is_admin")
     .eq("id", userId)
     .maybeSingle();
   if (error) throw error;
-  return data?.is_admin === true;
+  const result = data?.is_admin === true;
+  if (request) getRequestCache(request).orgAdmin = result;
+  return result;
 }
 
 /** Returns true when `userId` is the literal `projects.owner_id`. Used

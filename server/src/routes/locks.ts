@@ -191,7 +191,7 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      await assertProjectAccess(request.user.id, projectId, "editor");
+      await assertProjectAccess(request.user.id, projectId, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "lock acquire — access check failed");
@@ -426,7 +426,7 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     const projectId = request.params.id;
 
     const allowed =
-      (await isOrgAdmin(request.user.id)) ||
+      (await isOrgAdmin(request.user.id, request)) ||
       (await isProjectOwner(request.user.id, projectId));
     if (!allowed) {
       reply.code(403).send({

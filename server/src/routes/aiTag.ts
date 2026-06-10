@@ -163,7 +163,7 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
     // have available for future audit-row enrichment).
     // AI re-tag mutates analysis → editor-or-above.
     try {
-      await assertProjectAccess(request.user.id, projectId, "editor");
+      await assertProjectAccess(request.user.id, projectId, "editor", request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "AI tag — access check failed");
