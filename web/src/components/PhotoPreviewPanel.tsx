@@ -1313,10 +1313,12 @@ function ReTagWithAIControl({
       });
     } catch (e: unknown) {
       if (e instanceof PromptCompileError) {
+        // Build #6.12.1: web has its own picker — point users to the
+        // AI tab here instead of telling them to switch to iOS.
         setStatus({
           kind: "error",
           message:
-            "This project has no AI tag selection yet. Pick contexts on iOS (project → AI Tags) first.",
+            "This project has no AI tag selection yet. Open the AI tab → Tag selection to pick contexts.",
         });
       } else if (e instanceof ApiError) {
         setStatus({
