@@ -122,6 +122,13 @@ function progressLabel(job: PdfExportJob): string {
 }
 
 const POLL_MS = 2_000;
+/** Stop polling after this long even if the server still says running
+ *  (Build #6.15.1). A stuck render would otherwise poll forever; this
+ *  caps it at 10 minutes — long enough that legitimate large exports
+ *  finish, short enough that a dead job surfaces an error. The job
+ *  itself keeps existing server-side; the user can refresh or open
+ *  the exports page to see its final state. */
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** localStorage key for the in-flight job id, scoped per project so
  *  two project tabs don't clobber each other (Build #5.75.1). */
@@ -139,12 +146,17 @@ export function ExportPdfControl({
   const [options, setOptions] = useState<PdfExportOptions>(DEFAULT_OPTIONS);
   const pollRef = useRef<number | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
+  /** Wall-clock timestamp (ms) when polling for the active job
+   *  started. `poll` uses it to time out a stuck render
+   *  (Build #6.15.1). */
+  const pollStartedAtRef = useRef<number | null>(null);
 
   function clearPoll() {
     if (pollRef.current !== null) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    pollStartedAtRef.current = null;
   }
 
   // Persist / clear the active job id so a refresh or navigate-away
@@ -183,6 +195,10 @@ export function ExportPdfControl({
     }
     if (!resumedJobId) return;
     activeJobIdRef.current = resumedJobId;
+    // Build #6.15.1: a resumed job's clock starts now — we don't
+    // know how long it's already been running on the server, but
+    // the 10-min budget covers further waiting from this tab.
+    pollStartedAtRef.current = Date.now();
     setState({
       kind: "running",
       job: makePendingJob(projectId, resumedJobId),
@@ -197,6 +213,22 @@ export function ExportPdfControl({
 
   function poll(jobId: string) {
     if (activeJobIdRef.current !== jobId) return;
+    // Build #6.15.1: bail out of a stuck render so the spinner can't
+    // hang the UI forever. The poll task already self-guards on
+    // activeJobIdRef mismatch, so this branch only fires when the
+    // current job has run past the wall-clock budget.
+    const startedAt = pollStartedAtRef.current;
+    if (startedAt !== null && Date.now() - startedAt > POLL_TIMEOUT_MS) {
+      clearPoll();
+      activeJobIdRef.current = null;
+      forgetActiveJob();
+      setState({
+        kind: "error",
+        message:
+          "Export is taking longer than 10 minutes. Check the Exports page for the final status — the render keeps running on the server.",
+      });
+      return;
+    }
     api
       .getPdfExport(jobId)
       .then((res) => {
@@ -258,6 +290,7 @@ export function ExportPdfControl({
       .then((res) => {
         const jobId = res.job.id;
         activeJobIdRef.current = jobId;
+        pollStartedAtRef.current = Date.now();
         rememberActiveJob(jobId);
         setState({ kind: "queued", job: res.job });
         pollRef.current = window.setInterval(() => poll(jobId), POLL_MS);
