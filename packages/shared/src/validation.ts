@@ -240,6 +240,8 @@ export const UserPrefsSchema = z.object({
   aiModel: nullable(z.string()),
   tagConfidenceThreshold: nullable(z.number().min(0).max(1)),
   aiConcurrency: nullable(z.number().int().min(1).max(20)),
+  /** Build #6.13.1: cross-device floor-plan bubble size. */
+  planBubbleScale: nullable(z.number().min(0.5).max(4)),
 });
 
 /** Folder-by-bucket export options. All fields optional on the wire;

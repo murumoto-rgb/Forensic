@@ -34,10 +34,17 @@ import { api, ApiError } from "./api";
 const MODEL_KEY = "sitephoto.aiModel";
 const CONCURRENCY_KEY = "sitephoto.aiConcurrency";
 const THRESHOLD_KEY = "sitephoto.tagConfidenceThreshold";
+// Build #6.13.1: was localStorage-only inside FloorPlanTab; now
+// surfaced through useUserPrefs so it follows the user across browsers
+// and devices alongside the existing AI prefs.
+const BUBBLE_SCALE_KEY = "sitephoto.planBubbleScale";
 
 const DEFAULT_MODEL: AITagPhotoModel = "claude-sonnet-4-6";
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_THRESHOLD = 0.5;
+const DEFAULT_BUBBLE_SCALE = 1.5;
+const BUBBLE_SCALE_MIN = 0.5;
+const BUBBLE_SCALE_MAX = 4;
 
 const VALID_MODELS: AITagPhotoModel[] = [
   "claude-sonnet-4-6",
@@ -73,13 +80,24 @@ function readThreshold(): number {
   return Math.max(0, Math.min(1, parsed));
 }
 
+function readBubbleScale(): number {
+  if (typeof window === "undefined") return DEFAULT_BUBBLE_SCALE;
+  const raw = window.localStorage.getItem(BUBBLE_SCALE_KEY);
+  if (raw == null) return DEFAULT_BUBBLE_SCALE;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_BUBBLE_SCALE;
+  return Math.max(BUBBLE_SCALE_MIN, Math.min(BUBBLE_SCALE_MAX, parsed));
+}
+
 export interface UserPrefs {
   model: AITagPhotoModel;
   concurrency: number;
   threshold: number;
+  bubbleScale: number;
   setModel: (next: AITagPhotoModel) => void;
   setConcurrency: (next: number) => void;
   setThreshold: (next: number) => void;
+  setBubbleScale: (next: number) => void;
 }
 
 // Module-scoped state so multiple useUserPrefs callers in the same
@@ -107,7 +125,8 @@ async function hydrateOnce(refresh: () => void): Promise<void> {
   try {
     const resp = await api.getUserPrefs();
     serverState.revision = resp.revision;
-    const { aiModel, tagConfidenceThreshold, aiConcurrency } = resp.prefs;
+    const { aiModel, tagConfidenceThreshold, aiConcurrency, planBubbleScale } =
+      resp.prefs;
     if (
       aiModel != null &&
       typeof window !== "undefined" &&
@@ -128,6 +147,13 @@ async function hydrateOnce(refresh: () => void): Promise<void> {
       window.localStorage.getItem(THRESHOLD_KEY) == null
     ) {
       window.localStorage.setItem(THRESHOLD_KEY, String(tagConfidenceThreshold));
+    }
+    if (
+      planBubbleScale != null &&
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(BUBBLE_SCALE_KEY) == null
+    ) {
+      window.localStorage.setItem(BUBBLE_SCALE_KEY, String(planBubbleScale));
     }
     refresh();
   } catch (e: unknown) {
@@ -165,6 +191,12 @@ function scheduleSync(): void {
             const v = window.localStorage.getItem(THRESHOLD_KEY);
             return v == null ? null : Number.parseFloat(v);
           })(),
+      planBubbleScale: typeof window === "undefined"
+        ? null
+        : (() => {
+            const v = window.localStorage.getItem(BUBBLE_SCALE_KEY);
+            return v == null ? null : Number.parseFloat(v);
+          })(),
     };
     api
       .putUserPrefs({
@@ -187,6 +219,9 @@ export function useUserPrefs(): UserPrefs {
     readConcurrency()
   );
   const [threshold, setThresholdState] = useState<number>(() => readThreshold());
+  const [bubbleScale, setBubbleScaleState] = useState<number>(() =>
+    readBubbleScale()
+  );
   const refreshRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
@@ -194,13 +229,15 @@ export function useUserPrefs(): UserPrefs {
       setModelState(readModel());
       setConcurrencyState(readConcurrency());
       setThresholdState(readThreshold());
+      setBubbleScaleState(readBubbleScale());
     }
     refreshRef.current = refresh;
     function onStorage(e: StorageEvent) {
       if (
         e.key === MODEL_KEY ||
         e.key === CONCURRENCY_KEY ||
-        e.key === THRESHOLD_KEY
+        e.key === THRESHOLD_KEY ||
+        e.key === BUBBLE_SCALE_KEY
       ) {
         refresh();
       }
@@ -250,12 +287,25 @@ export function useUserPrefs(): UserPrefs {
     scheduleSync();
   }
 
+  function setBubbleScale(next: number) {
+    const clamped = Math.max(
+      BUBBLE_SCALE_MIN,
+      Math.min(BUBBLE_SCALE_MAX, next)
+    );
+    setBubbleScaleState(clamped);
+    window.localStorage.setItem(BUBBLE_SCALE_KEY, String(clamped));
+    window.dispatchEvent(new Event(EVENT_NAME));
+    scheduleSync();
+  }
+
   return {
     model,
     concurrency,
     threshold,
+    bubbleScale,
     setModel,
     setConcurrency,
     setThreshold,
+    setBubbleScale,
   };
 }
