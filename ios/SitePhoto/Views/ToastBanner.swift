@@ -72,11 +72,14 @@ struct ToastBanner: View {
     }
 
     private func background(for kind: Toast.Kind) -> Color {
+        // Build #6.7.1: info/error were hardcoded light-mode RGB
+        // values; the system blue/red adapt to dark mode like the
+        // green/orange the other two kinds already used.
         switch kind {
         case .success: return Color.green.opacity(0.92)
-        case .info:    return Color(red: 0.10, green: 0.40, blue: 0.70)
+        case .info:    return Color.blue.opacity(0.92)
         case .warning: return Color.orange.opacity(0.95)
-        case .error:   return Color(red: 0.78, green: 0.20, blue: 0.20)
+        case .error:   return Color.red.opacity(0.92)
         }
     }
 }
