@@ -1304,8 +1304,16 @@ final class ProjectStore {
            let current = activeProjects.first(where: { $0.id == project.id })
                 ?? deletedProjects.first(where: { $0.id == project.id }),
            current.isFrozen {
-            toastCenter?.post("Project is locked — unlock it in the More tab to edit.",
-                              kind: .warning)
+            // `ToastCenter` is @MainActor and `save` is nonisolated —
+            // hop for the banner (same pattern as the iCloud-conflict
+            // toast in `checkForUnresolvedConflicts`). The rejection
+            // itself stays synchronous.
+            if let toast = toastCenter {
+                Task { @MainActor in
+                    toast.post("Project is locked — unlock it in the More tab to edit.",
+                               kind: .warning)
+                }
+            }
             return current
         }
         isSaving = true
