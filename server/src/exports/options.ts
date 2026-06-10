@@ -45,6 +45,7 @@ export const DEFAULT_PDF_EXPORT_OPTIONS: PdfExportOptions = {
   pageSize: "letter",
   includeTrashed: false,
   includeCoverPage: true,
+  pinScale: 1,
 };
 
 /** Clamp the iOS-parity `perPage` Int to the renderer's supported
@@ -59,6 +60,19 @@ function clampPerPage(value: number | undefined): number {
   if (rounded < MIN_PER_PAGE) return MIN_PER_PAGE;
   if (rounded > MAX_PER_PAGE) return MAX_PER_PAGE;
   return rounded;
+}
+
+/** Clamp the plan-page pin scale (Build #6.20.1). Matches the
+ *  shared `UserPrefs.planBubbleScale` zod range. */
+const MIN_PIN_SCALE = 0.5;
+const MAX_PIN_SCALE = 4;
+function clampPinScale(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value)) {
+    return DEFAULT_PDF_EXPORT_OPTIONS.pinScale;
+  }
+  if (value < MIN_PIN_SCALE) return MIN_PIN_SCALE;
+  if (value > MAX_PIN_SCALE) return MAX_PIN_SCALE;
+  return value;
 }
 
 function mergeAnnotations(
@@ -125,6 +139,7 @@ export function applyOptionDefaults(
       partial.includeTrashed ?? DEFAULT_PDF_EXPORT_OPTIONS.includeTrashed,
     includeCoverPage:
       partial.includeCoverPage ?? DEFAULT_PDF_EXPORT_OPTIONS.includeCoverPage,
+    pinScale: clampPinScale(partial.pinScale),
 
     // Legacy fields — preserved when sent. When the caller is a new
     // client that didn't include them, we synthesize the #5.64.1
