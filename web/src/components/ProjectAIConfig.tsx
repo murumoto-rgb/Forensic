@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import type {
+  AIPromptTemplate,
   Project,
   ProjectExtraVocabulary,
   ProjectTagSelection,
 } from "@forensic/shared";
+import { api, ApiError } from "../lib/api";
 import { ProjectTagSelectionPicker } from "./ProjectTagSelectionPicker";
 
 /**
@@ -52,6 +54,14 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
     alsoAnalysis: boolean;
   } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Build #6.12.1: team-wide AI prompt templates ("Load template…"
+  // dropdown on the AI notes section). Fetched once on mount; they
+  // change rarely. If the admin edits one, a page reload picks it up.
+  const [templates, setTemplates] = useState<AIPromptTemplate[] | null>(null);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [confirmTemplate, setConfirmTemplate] =
+    useState<AIPromptTemplate | null>(null);
 
   // Reset local drafts if the project changes underneath us (e.g.
   // another tab edits the manifest and the shared hook re-renders).
@@ -62,6 +72,50 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
     setVocabDraft(formatVocab(project.aiExtraVocabulary));
     setVocabError(null);
   }, [project.aiExtraVocabulary]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getAIPromptTemplatesConfig()
+      .then((resp) => {
+        if (cancelled) return;
+        setTemplates(resp?.value.templates ?? []);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setTemplatesError(
+          e instanceof ApiError ? e.message : "Couldn't load templates"
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function applyTemplate(t: AIPromptTemplate) {
+    const trimmedNew = t.prompt.trim();
+    setNotes(trimmedNew);
+    // Mirror commitNotes' empty→null normalisation so a template load
+    // looks the same on disk as a manual edit.
+    onProjectChanged({
+      ...project,
+      aiInstructions: trimmedNew === "" ? null : trimmedNew,
+    });
+    setTemplatePickerOpen(false);
+    setConfirmTemplate(null);
+  }
+
+  function handleTemplatePick(t: AIPromptTemplate) {
+    const existing = (project.aiInstructions ?? "").trim();
+    if (existing.length > 0) {
+      // Confirm before overwriting an in-flight note — loading a
+      // template replaces the entire AI notes field, it doesn't
+      // append. iOS's loader has the same two-step behavior.
+      setConfirmTemplate(t);
+    } else {
+      applyTemplate(t);
+    }
+  }
 
   function commitNotes() {
     const next = notes.trim();
@@ -130,8 +184,56 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
     <div className="flex flex-col gap-4">
       {/* AI notes */}
       <section className="rounded border border-neutral-800 bg-neutral-900/40 p-3">
-        <div className="mb-2 text-xs uppercase tracking-wide text-neutral-500">
-          AI notes
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">
+            AI notes
+          </div>
+          {/* Build #6.12.1: load from a team-wide AI prompt template. */}
+          {canEdit && templates !== null && templates.length > 0 && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setTemplatePickerOpen((o) => !o)}
+                className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800"
+                aria-haspopup="menu"
+                aria-expanded={templatePickerOpen}
+              >
+                Load template…
+              </button>
+              {templatePickerOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setTemplatePickerOpen(false)}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-50 mt-1 max-h-72 w-72 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 p-1 shadow-2xl"
+                  >
+                    {templates.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => handleTemplatePick(t)}
+                        className="block w-full rounded px-2 py-1.5 text-left text-xs text-neutral-200 hover:bg-neutral-800"
+                      >
+                        <div className="font-medium">{t.name}</div>
+                        <div className="line-clamp-2 text-neutral-500">
+                          {t.prompt.slice(0, 140)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {templatesError && (
+            <span className="text-xs text-amber-300" title={templatesError}>
+              templates unavailable
+            </span>
+          )}
         </div>
         <p className="mb-2 text-xs text-neutral-400">
           Free-text instructions prepended to the AI tag prompt. Use
@@ -283,6 +385,43 @@ export function ProjectAIConfig({ project, canEdit, onProjectChanged }: Props) {
                 className="rounded border border-amber-600 bg-amber-700/40 px-4 py-1.5 text-sm text-amber-100 hover:bg-amber-700/60"
               >
                 Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Build #6.12.1: overwrite-existing-notes confirm. */}
+      {confirmTemplate && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Replace AI notes with template"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-neutral-700 bg-neutral-900 p-5 shadow-2xl">
+            <h3 className="text-sm font-semibold text-neutral-100">
+              Replace AI notes?
+            </h3>
+            <p className="text-xs text-neutral-300">
+              This project already has AI notes. Loading{" "}
+              <span className="font-medium">{confirmTemplate.name}</span>{" "}
+              will overwrite them.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmTemplate(null)}
+                className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => applyTemplate(confirmTemplate)}
+                className="rounded border border-blue-700 bg-blue-900/40 px-3 py-1 text-xs text-blue-100 hover:bg-blue-900/70"
+              >
+                Replace
               </button>
             </div>
           </div>
