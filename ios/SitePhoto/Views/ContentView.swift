@@ -1,11 +1,6 @@
 import SwiftUI
 
 struct ContentView: View {
-    /// Reports whether the navigation stack is at its root — wired through
-    /// to SitePhotoApp so the App-level Baykal logo footer can hide itself
-    /// while a project detail or sheet is open.
-    @Binding var atRoot: Bool
-
     @Environment(ProjectStore.self) private var store
     @Environment(AuthService.self) private var auth
     @Environment(BinaryBackfillService.self) private var backfill
@@ -17,6 +12,10 @@ struct ContentView: View {
     @State private var pendingRename: Project?
     @State private var renameDraft: String = ""
     @State private var showingSettings = false
+    /// Deleted Projects starts collapsed (Build #6.28.1) — on long-
+    /// running installs the trash can outnumber the active list and
+    /// pushed the storage footer below the fold. Expand on demand.
+    @State private var deletedExpanded = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -50,25 +49,48 @@ struct ContentView: View {
                         }
 
                         if !store.deletedProjects.isEmpty {
-                            Section("Deleted Projects") {
-                                ForEach(store.deletedProjects) { project in
-                                    DeletedProjectRow(project: project)
-                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                            Button(role: .destructive) {
-                                                pendingPermanentDelete = project
-                                            } label: {
-                                                Label("Delete Forever", systemImage: "trash.fill")
+                            // Build #6.28.1: collapsed by default,
+                            // expandable from the header. Same chevron
+                            // affordance the web list's trashed
+                            // section uses.
+                            Section {
+                                if deletedExpanded {
+                                    ForEach(store.deletedProjects) { project in
+                                        DeletedProjectRow(project: project)
+                                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                                Button(role: .destructive) {
+                                                    pendingPermanentDelete = project
+                                                } label: {
+                                                    Label("Delete Forever", systemImage: "trash.fill")
+                                                }
                                             }
-                                        }
-                                        .swipeActions(edge: .leading) {
-                                            Button {
-                                                store.restore(project)
-                                            } label: {
-                                                Label("Restore", systemImage: "arrow.uturn.backward")
+                                            .swipeActions(edge: .leading) {
+                                                Button {
+                                                    store.restore(project)
+                                                } label: {
+                                                    Label("Restore", systemImage: "arrow.uturn.backward")
+                                                }
+                                                .tint(.green)
                                             }
-                                            .tint(.green)
-                                        }
+                                    }
                                 }
+                            } header: {
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        deletedExpanded.toggle()
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text("Deleted Projects · \(store.deletedProjects.count)")
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2.bold())
+                                            .rotationEffect(.degrees(deletedExpanded ? 90 : 0))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(deletedExpanded
+                                                     ? "Collapse deleted projects"
+                                                     : "Expand deleted projects")
                             }
                         }
 
@@ -167,11 +189,6 @@ struct ContentView: View {
                 }
             } message: {
                 Text("Enter a new name for this project.")
-            }
-            .onChange(of: path.isEmpty) { _, isEmpty in
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    atRoot = isEmpty
-                }
             }
         }
     }
@@ -355,7 +372,7 @@ private struct StorageStatusFooter: View {
                                           auth: auth,
                                           store: store,
                                           toast: toast)
-    return ContentView(atRoot: .constant(true))
+    return ContentView()
         .environment(store)
         .environment(LocationService())
         .environment(auth)

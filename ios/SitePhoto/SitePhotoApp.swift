@@ -54,11 +54,6 @@ struct SitePhotoApp: App {
     /// True once the white splash screen has faded out.
     @State private var splashDone = false
 
-    /// Reported by ContentView via .onChange(path.isEmpty). True only when
-    /// the navigation stack is at its root (the projects list). Drives
-    /// whether the white logo banner is shown at the bottom.
-    @State private var atRoot: Bool = true
-
     /// Minimum time the splash stays visible — prevents a flash if iCloud
     /// is already warm and loadInitial finishes in milliseconds.
     private let minSplashDuration: TimeInterval = 1.0
@@ -74,7 +69,7 @@ struct SitePhotoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(atRoot: $atRoot)
+            ContentView()
                 .environment(store)
                 .environment(location)
                 .environment(toastCenter)
@@ -84,11 +79,6 @@ struct SitePhotoApp: App {
                 .environment(appConfigSyncer)
                 .environment(backfillService)
                 .tint(accent)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if atRoot {
-                        FooterLogoBar()
-                    }
-                }
                 .overlay {
                     if !splashDone {
                         // SplashScreen is rendered inside `.overlay`,
@@ -271,15 +261,3 @@ private struct SplashScreen: View {
     }
 }
 
-/// Permanent footer at the bottom of the projects list. The logo
-/// floats on a thin material strip — small enough that it doesn't
-/// crowd the projects list, but opaque enough that content scrolling
-/// at the bottom of the list doesn't visually bleed through the logo.
-private struct FooterLogoBar: View {
-    var body: some View {
-        BaykalLogo(maxHeight: 32, maxWidth: nil)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
-            .background(.thinMaterial)
-    }
-}
