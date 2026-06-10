@@ -24,7 +24,7 @@ fails CI if iOS adds a field without updating the TS types (or vice
 versa). Every schema change bumps `manifestSchemaVersion` and lands in
 **both** stacks in one PR.
 
-Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Project.isDeleted: boolean`)
+Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Project.isFrozen: boolean`)
 
 ## Phase status
 
@@ -49,6 +49,7 @@ Current `manifestSchemaVersion`: **2** (bumped in Build #5.6.1 — added `Projec
 | Start / stop project | ✅ | 📋 Phase 2 | `Project.startedAt`, `Project.stopped` | |
 | Soft-delete / restore project | ✅ | ✅ (Build #5.84.1) | `Project.isDeleted` (bool, default false), `POST /v1/projects/:id/restore` | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`. Web list filters trashed rows out of the active section and shows them in a collapsible "Trashed projects" section with a Restore button per row. Info tab's "Move to trash" sets `isDeleted=true` and navigates back to the list. |
 | Permanently delete trashed project | ✅ (swipe) | ✅ Build #5.93.1 | `DELETE /v1/projects/:id` | New server endpoint reaps R2 blobs + `files` rows + project row in one shot; requires `isDeleted=true` first (409 otherwise — same two-step iOS swipe gesture). Web confirm dialog quotes the project name; iOS button is in the trashed-row swipe action. |
+| Lock / finalize project (read-only) | ✅ Build #6.1.1 | ✅ Build #5.126.1 | `Project.isFrozen` (bool, default false; schema v3) | Persistent owner/admin-toggled "finalized" state, distinct from the transient edit lock. Web: banner + `canEdit` gate + Info-tab toggle (#5.126.1). iOS: banner on every tab, edit affordances hidden, `ProjectStore.save` chokepoint rejects edits while frozen, Lock/Unlock in the More tab (#6.1.1). Server enforces owner/admin on the flip; merge rule is true-wins. |
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
 | Import floor plan (PDF / image) | ✅ | ✅ Build #5.90.1 / calibration #5.94.1 (image only) | `FloorPlan.imageFilename`, plus calibration / anchor / north fields | Web "+ Add plan" button → file picker → calibration sheet: pick origin + scale points A and B, type real-world distance, optional north heading + label. Pan + scroll-zoom + 2.5× magnifier loupe for pixel-precise placement. PDF import remains iOS-only (uses Apple PDFKit). |

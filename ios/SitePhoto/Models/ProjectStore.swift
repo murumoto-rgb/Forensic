@@ -1265,6 +1265,21 @@ final class ProjectStore {
 
     @discardableResult
     func save(_ project: Project) -> Project {
+        // Freeze guard (Build #6.1.1). A locked/finalized project rejects
+        // every local edit in one chokepoint — photo mutations, plan
+        // edits, distress strokes, batch tagging checkpoints — except
+        // the unlock flip itself (`isFrozen` false on a currently-frozen
+        // project), otherwise it could never be unlocked. Server pulls
+        // bypass this via `applyServerProject`, so sync adoption of a
+        // frozen manifest still lands.
+        if project.isFrozen,
+           let current = activeProjects.first(where: { $0.id == project.id })
+                ?? deletedProjects.first(where: { $0.id == project.id }),
+           current.isFrozen {
+            toastCenter?.post("Project is locked — unlock it in the More tab to edit.",
+                              kind: .warning)
+            return current
+        }
         isSaving = true
         defer {
             isSaving = false
@@ -1286,6 +1301,19 @@ final class ProjectStore {
         checkForUnresolvedConflicts(at: manifest, projectName: project.name)
         onAfterSave?(project)
         return project
+    }
+
+    /// Flip the persistent lock/finalized state (`Project.isFrozen`).
+    /// The freeze guard in `save(_:)` deliberately lets both directions
+    /// through: freezing starts from an unfrozen `current`; unfreezing
+    /// writes `isFrozen == false`. The server enforces that only the
+    /// project owner or an org admin may flip the flag — a rejected
+    /// push surfaces through the normal sync error toast.
+    @discardableResult
+    func setFrozen(_ project: Project, frozen: Bool) -> Project {
+        var updated = project
+        updated.isFrozen = frozen
+        return save(updated)
     }
 
     /// Update the in-memory `activeProjects` / `deletedProjects` arrays
