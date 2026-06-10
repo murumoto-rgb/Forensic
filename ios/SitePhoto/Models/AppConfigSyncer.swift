@@ -2,10 +2,11 @@ import Foundation
 import Observation
 
 /// Syncs the app-wide config keys iOS knows how to push and pull
-/// — `tagLibrary`, `aiRulesTemplate`, and (Build #6.2.1)
-/// `reportBranding` — between this device's `ProjectStore` and the
-/// Forensic server's `/v1/config` endpoint (Build #5.36.1; backed by
-/// the `app_config` Supabase table from migration 0004).
+/// — `tagLibrary`, `aiRulesTemplate`, `reportBranding` (#6.2.1),
+/// and `aiPromptTemplates` (#6.3.1) — between this device's
+/// `ProjectStore` and the Forensic server's `/v1/config` endpoint
+/// (Build #5.36.1; backed by the `app_config` Supabase table from
+/// migration 0004).
 ///
 /// Sync model:
 /// - **Pull on launch.** After the auth bootstrap finishes, fetch
@@ -44,6 +45,7 @@ final class AppConfigSyncer {
     private var pendingTagLibrary: TagLibrary?
     private var pendingAIRulesTemplate: String?
     private var pendingReportBranding: ReportBranding?
+    private var pendingAIPromptTemplates: [AIPromptTemplate]?
 
     /// Debounce window. Matches the 300 ms `ProjectStore` save
     /// cadence so a coalesced burst of "edit, edit, edit" produces
@@ -52,6 +54,7 @@ final class AppConfigSyncer {
     private var pendingTagLibraryTask: Task<Void, Never>?
     private var pendingAIRulesTemplateTask: Task<Void, Never>?
     private var pendingReportBrandingTask: Task<Void, Never>?
+    private var pendingAIPromptTemplatesTask: Task<Void, Never>?
 
     /// Keys currently mid-push. Lets the UI surface a "syncing"
     /// indicator later without races. Same pattern `ManifestSyncer`
@@ -80,6 +83,9 @@ final class AppConfigSyncer {
         }
         store.onReportBrandingChanged = { [weak self] branding in
             self?.queuePushReportBranding(branding)
+        }
+        store.onAIPromptTemplatesChanged = { [weak self] templates in
+            self?.queuePushAIPromptTemplates(templates)
         }
     }
 
@@ -154,6 +160,22 @@ final class AppConfigSyncer {
             await pushReportBranding(store.reportBranding)
         }
 
+        if let entry = bundle.entries["aiPromptTemplates"] {
+            do {
+                let wire = try entry.value.decode(as: AIPromptTemplateLibraryWire.self)
+                store.applyServerAIPromptTemplates(wire.templates)
+                storeRevision(entry.revision, for: "aiPromptTemplates")
+            } catch {
+                surfaceError(error, label: "AI prompt templates")
+            }
+        } else {
+            // Seed-on-empty — same philosophy as tagLibrary: a fresh
+            // team gets this device's templates (the bundled starter
+            // pack on a fresh install, or the engineer's customised
+            // set) as the baseline the web admin page shows.
+            await pushAIPromptTemplates(store.aiPromptTemplates)
+        }
+
         // Read-only default mirrors (Build #5.48.1). iOS Swift owns
         // the canonical defaults (`AIRulesTemplate.defaultText` and
         // `TagLibrary.defaultSeeds`); on every launch we push them
@@ -178,9 +200,11 @@ final class AppConfigSyncer {
         pendingTagLibrary = nil
         pendingAIRulesTemplate = nil
         pendingReportBranding = nil
+        pendingAIPromptTemplates = nil
         pendingTagLibraryTask?.cancel()
         pendingAIRulesTemplateTask?.cancel()
         pendingReportBrandingTask?.cancel()
+        pendingAIPromptTemplatesTask?.cancel()
     }
 
     // MARK: Queue + debounce
@@ -234,6 +258,23 @@ final class AppConfigSyncer {
         guard let branding = pendingReportBranding else { return }
         pendingReportBranding = nil
         await pushReportBranding(branding)
+    }
+
+    private func queuePushAIPromptTemplates(_ templates: [AIPromptTemplate]) {
+        guard auth.session != nil else { return }
+        pendingAIPromptTemplates = templates
+        pendingAIPromptTemplatesTask?.cancel()
+        pendingAIPromptTemplatesTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.debounceDelay)
+            guard !Task.isCancelled else { return }
+            await self?.pushAIPromptTemplatesIfPending()
+        }
+    }
+
+    private func pushAIPromptTemplatesIfPending() async {
+        guard let templates = pendingAIPromptTemplates else { return }
+        pendingAIPromptTemplates = nil
+        await pushAIPromptTemplates(templates)
     }
 
     // MARK: Push + 409 retry
@@ -305,6 +346,28 @@ final class AppConfigSyncer {
         }
     }
 
+    private func pushAIPromptTemplates(_ templates: [AIPromptTemplate]) async {
+        let key = "aiPromptTemplates"
+        guard !inFlight.contains(key) else {
+            queuePushAIPromptTemplates(templates)
+            return
+        }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+
+        do {
+            let resp = try await api.putAIPromptTemplates(templates,
+                                                           expectedRevision: storedRevision(for: key))
+            storeRevision(resp.revision, for: key)
+        } catch APIClient.APIError.http(status: 409, _, _) {
+            await refetchAndRetryAIPromptTemplates(templates)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, label: "AI prompt templates")
+        }
+    }
+
     private func refetchAndRetryTagLibrary(_ library: TagLibrary) async {
         do {
             let bundle = try await api.getAppConfigBundle()
@@ -368,6 +431,22 @@ final class AppConfigSyncer {
             }
         } catch {
             surfaceError(error, label: "report branding")
+        }
+    }
+
+    private func refetchAndRetryAIPromptTemplates(_ templates: [AIPromptTemplate]) async {
+        do {
+            let bundle = try await api.getAppConfigBundle()
+            if let entry = bundle.entries["aiPromptTemplates"] {
+                storeRevision(entry.revision, for: "aiPromptTemplates")
+            } else {
+                clearRevision(for: "aiPromptTemplates")
+            }
+            let resp = try await api.putAIPromptTemplates(templates,
+                                                           expectedRevision: storedRevision(for: "aiPromptTemplates"))
+            storeRevision(resp.revision, for: "aiPromptTemplates")
+        } catch {
+            surfaceError(error, label: "AI prompt templates")
         }
     }
 

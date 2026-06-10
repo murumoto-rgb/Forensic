@@ -78,7 +78,7 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 | **AI tagging** | | | | |
 | Run AI analysis on photo | ✅ | 📋 Phase 4 | request via server `/v1/ai/tag-photo` | Same prompt template both platforms |
 | Accept / reject tag suggestions | ✅ | 📋 Phase 4 | `Photo.pendingSuggestions[]` | |
-| AI prompt templates | ✅ | 📋 Phase 4 | `AIPromptTemplate` | Local-only today; sync in Phase 4 |
+| AI prompt templates | ✅ (synced #6.3.1) | ✅ Build #5.104.1 | `app_config.aiPromptTemplates` (shared `AIPromptTemplateLibrary`) | Web admin editor at `/admin/ai-prompt-templates` (#5.104.1 — row was stale until #6.3.1). Build #6.3.1: iOS pulls at launch, pushes template add/rename/edit/delete (debounced, 409 → refetch-retry). iOS element struct mirrors shared `AIPromptTemplate` field-for-field. |
 | AI rules templates | ✅ | 📋 Phase 4 | `AIRulesTemplate` | Local-only today; sync in Phase 4 |
 | Recommended-use chip | ✅ | 📋 Phase 4 | `AIPhotoAnalysis.recommendedUse` | |
 | Reviewer flag | ✅ | 📋 Phase 4 | `AIPhotoAnalysis.reviewerFlag` | |

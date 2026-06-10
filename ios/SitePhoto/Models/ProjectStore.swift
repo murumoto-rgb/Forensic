@@ -82,6 +82,13 @@ final class ProjectStore {
     /// the new value to the server (Build #6.2.1). Same wiring shape
     /// as `onTagLibraryChanged`.
     var onReportBrandingChanged: ((ReportBranding) -> Void)?
+    /// Fired by the four AI-prompt-template mutators (add / rename /
+    /// update / delete) so an external syncer can push the new array
+    /// to the server (Build #6.3.1). Deliberately NOT fired by
+    /// `persistAIPromptTemplates()` itself — the fresh-install seed
+    /// path also persists, and a seed must never race the launch
+    /// pull by pushing bundled defaults over the team's templates.
+    var onAIPromptTemplatesChanged: (([AIPromptTemplate]) -> Void)?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -755,6 +762,7 @@ final class ProjectStore {
         let template = AIPromptTemplate(name: name, prompt: body)
         aiPromptTemplates.append(template)
         persistAIPromptTemplates()
+        onAIPromptTemplatesChanged?(aiPromptTemplates)
         return template
     }
 
@@ -767,6 +775,7 @@ final class ProjectStore {
         }
         aiPromptTemplates[idx].name = name
         persistAIPromptTemplates()
+        onAIPromptTemplatesChanged?(aiPromptTemplates)
         return true
     }
 
@@ -779,6 +788,7 @@ final class ProjectStore {
         }
         aiPromptTemplates[idx].prompt = body
         persistAIPromptTemplates()
+        onAIPromptTemplatesChanged?(aiPromptTemplates)
         return true
     }
 
@@ -787,7 +797,10 @@ final class ProjectStore {
         let before = aiPromptTemplates.count
         aiPromptTemplates.removeAll { $0.id == id }
         let changed = aiPromptTemplates.count != before
-        if changed { persistAIPromptTemplates() }
+        if changed {
+            persistAIPromptTemplates()
+            onAIPromptTemplatesChanged?(aiPromptTemplates)
+        }
         return changed
     }
 
@@ -1384,6 +1397,16 @@ final class ProjectStore {
             try? data.write(to: brandingURL, options: .atomic)
         }
         reportBranding = merged
+    }
+
+    /// Replace the on-disk AI prompt templates + in-memory state with
+    /// a value pulled from the server (Build #6.3.1). Safe to call
+    /// `persistAIPromptTemplates()` here — the change hook lives in
+    /// the user-facing mutators, not in persist, so a pull never
+    /// echoes back as a push.
+    func applyServerAIPromptTemplates(_ templates: [AIPromptTemplate]) {
+        aiPromptTemplates = templates
+        persistAIPromptTemplates()
     }
 
     func applyServerProject(_ project: Project) {
