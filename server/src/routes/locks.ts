@@ -17,9 +17,10 @@
  * well inside that window (web every 90s; TTL is 10 min) so normal
  * editing keeps the lock alive while a closed tab lets it lapse.
  *
- * Force-release is currently allowed for any signed-in user — there's
- * no admin role yet (Phase 5). The audit_log row records who forced
- * it so it's traceable. Tighten to admin-only when roles land.
+ * Force-release requires project Owner or Org Admin (Build #6.11.1 —
+ * closes the deferred-work item; the gate became possible when roles
+ * landed in #5.121–#5.125). The log line records who forced it so it
+ * stays traceable.
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -32,7 +33,12 @@ import type {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
-import { assertProjectAccess, sendAccessError } from "../access.js";
+import {
+  assertProjectAccess,
+  isOrgAdmin,
+  isProjectOwner,
+  sendAccessError,
+} from "../access.js";
 import { sendEmail } from "../email/resend.js";
 import {
   lockForceReleasedEmail,
@@ -408,13 +414,28 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
   // -----------------------------------------------------------------
   // POST /v1/projects/:id/lock/force — force-release any lock
   // -----------------------------------------------------------------
-  // No admin role yet (Phase 5), so any signed-in user can force.
-  // Logged for traceability.
+  // Owner-or-Admin only (Build #6.11.1). Same elevated-role rule as
+  // flipping `isFrozen` (#5.126.1): taking someone's in-flight edit
+  // session away is a deliberate administrative act, not something a
+  // member-editor (or a viewer) should be able to do. Logged for
+  // traceability either way.
   app.post<{
     Params: { id: string };
     Reply: { ok: true } | ApiError;
   }>("/v1/projects/:id/lock/force", async (request, reply) => {
     const projectId = request.params.id;
+
+    const allowed =
+      (await isOrgAdmin(request.user.id)) ||
+      (await isProjectOwner(request.user.id, projectId));
+    if (!allowed) {
+      reply.code(403).send({
+        error: "forbidden",
+        message:
+          "Only the project owner or an org admin can force-release an edit lock.",
+      });
+      return;
+    }
 
     // Capture the prior holder's email before we delete, so the
     // Build #5.61.1 notification has somewhere to send. Errors here
