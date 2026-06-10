@@ -70,6 +70,18 @@ final class ManifestSyncer {
     /// "syncing" indicator later without races.
     private(set) var inFlight: Set<UUID> = []
 
+    /// Project IDs whose last push failed on a transient error
+    /// (Build #6.30.1 — the offline retry queue). Retried on app
+    /// foreground via `retryPending()`. Deliberately session-scoped
+    /// (not persisted): the launch sweep's `pushAllToServer()`
+    /// already re-pushes everything on cold start, and the disk-vs-
+    /// base dirty check protects those projects from pulls in the
+    /// meantime — so persistence would duplicate an existing
+    /// guarantee. What was missing was the *within-session* retry:
+    /// a field save that failed on a dead spot used to stay
+    /// unsynced until relaunch or a manual "Sync now".
+    private(set) var pendingRetry: Set<UUID> = []
+
     init(api: APIClient, auth: AuthService, toast: ToastCenter) {
         self.api = api
         self.auth = auth
@@ -93,13 +105,39 @@ final class ManifestSyncer {
             do {
                 try await pushOnce(project: project)
                 dirty.remove(id)
+                pendingRetry.remove(id)
             } catch APIClient.APIError.notAuthenticated {
                 // Silently skip when not signed in — the sign-in
                 // sheet is already (or about to be) present.
                 return
             } catch {
+                // Build #6.30.1: queue for the foreground retry. The
+                // toast still fires so the user knows the save hasn't
+                // synced yet; the retry clears it silently when the
+                // network returns.
+                pendingRetry.insert(id)
                 surfaceError(error, projectName: project.name)
             }
+        }
+    }
+
+    /// Re-push every project whose last push failed (Build #6.30.1).
+    /// Called when the app returns to the foreground. Each retry uses
+    /// the project's *current* in-memory state (not a stale snapshot)
+    /// so edits made since the failure ride along; `pushOnce`'s merge
+    /// path keeps it lossless against server-side changes.
+    func retryPending() {
+        guard auth.session != nil, let store, !pendingRetry.isEmpty else { return }
+        let ids = pendingRetry
+        for id in ids {
+            guard let project = store.project(withID: id)
+                    ?? store.deletedProjects.first(where: { $0.id == id }) else {
+                // Project vanished locally (e.g. permanently deleted)
+                // — nothing to push.
+                pendingRetry.remove(id)
+                continue
+            }
+            sync(project)
         }
     }
 

@@ -164,7 +164,7 @@ rows here when items ship.
 | ~~Photo grid toggle (list ⇄ grid)~~ | iOS | — | **SHIPPED #6.29.1** — header toggle, 3-up grid with selection support |
 | Photo-grid virtualization | Web | 1–2 days | Open — matters at 500+ photos |
 | ~~Plan color modes (web pins hardcoded blue)~~ | Web | — | **SHIPPED #6.26.1** — status/bucket/primaryTag picker on the plan toolbar, synced via user_prefs |
-| Offline manifest retry queue | iOS | 3–5 days | Open — dirty tracking verified sound; queue is additive |
+| ~~Offline manifest retry queue~~ | iOS | — | **SHIPPED #6.30.1** — session-scoped pendingRetry set + foreground re-push; launch sweep already covers cold start |
 | Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
 | Start / stop project UI | Both | ~1 day tandem | Open — schema fields exist on both; no UI anywhere (matrix corrected #6.18.1) |
 | ~~Reshoot-comparison discoverability (lineage badge)~~ | iOS | — | **SHIPPED #6.25.1** — tappable ↻ badge on photo rows opens the comparison |
