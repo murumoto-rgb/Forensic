@@ -92,7 +92,7 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 | **Export** | | | | |
 | PDF export (authoritative, multi-floor) | ✅ | 📋 Phase 4 | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer (preview-grade) |
 | Folder export (one dir per bucket) | ✅ | ✅ Build #5.98.1 | server-side ZIP via `project_exports` table | Web Folder-by-Bucket + AI Analysis CSV both land here (Round 3 PR #2). Streamed `archiver` ZIP, EXIF preserved bit-for-bit. Folder structure matches iOS (`01 Bucket/...`, `99 Unbucketed/...` + per-folder captions.txt). Persistent listing at `/projects/:id/exports` with Download + Delete. |
-| Report branding | ✅ | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. |
+| Report branding | ✅ (synced #6.2.1) | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. Build #6.2.1: iOS pulls the key at launch and pushes edits from Settings → Report Branding (text fields two-way; `logoStoragePath` round-trips opaquely — iOS logo binary sync is a follow-on). |
 | **Collaboration** | | | | |
 | Multi-user project access | 📋 Phase 1 | 📋 Phase 1 | `manifest.access[]` | Supabase RLS |
 | Checkout / edit lock | 📋 Phase 5 | 📋 Phase 5 | `manifest.lock` | Heartbeat-based, 10-min timeout |
@@ -172,7 +172,7 @@ Follow-ons still tracked (Phase 4+):
 - ~~**Re-tag-with-AI on a selection.**~~ — shipped Build #5.88.1. `useBatchRetag.start()` accepts an optional `photoIds` filter; the Photos-tab `SelectionActionBar` exposes a "Re-tag with AI" button that mounts a transient `BatchRetagControl` scoped to the snapshot of `selectedIds`.
 - ~~**Web file-upload "add photos".**~~ — shipped Build #5.90.1. Photos tab "+ Add photos" + Floor Plan tab "+ Add plan", both via existing presigned-PUT endpoints.
 - ~~**Web canvas markup drawing.**~~ — shipped Build #5.91.1 via Konva. The PencilKit stroke data side (`markupDrawingFilename`) stays iOS-only.
-- ~~**Report branding.**~~ — shipped Build #5.92.1. New `app_config.reportBranding` key + admin editor at `/admin/report-branding`. iOS-side struct + read-at-render-time integration is a follow-on iOS-only PR.
+- ~~**Report branding.**~~ — shipped Build #5.92.1. New `app_config.reportBranding` key + admin editor at `/admin/report-branding`. iOS-side sync shipped in Build #6.2.1 (text two-way; logo binary follow-on).
 - ~~**Drag-and-drop bucket reorder.**~~ — shipped Build #5.87.1.
 
 ## Update procedure

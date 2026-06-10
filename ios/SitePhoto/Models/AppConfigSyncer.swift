@@ -1,11 +1,11 @@
 import Foundation
 import Observation
 
-/// Syncs the two app-wide config keys iOS knows how to push and pull
-/// — `tagLibrary` and `aiRulesTemplate` — between this device's
-/// `ProjectStore` and the Forensic server's `/v1/config` endpoint
-/// (Build #5.36.1; backed by the `app_config` Supabase table from
-/// migration 0004).
+/// Syncs the app-wide config keys iOS knows how to push and pull
+/// — `tagLibrary`, `aiRulesTemplate`, and (Build #6.2.1)
+/// `reportBranding` — between this device's `ProjectStore` and the
+/// Forensic server's `/v1/config` endpoint (Build #5.36.1; backed by
+/// the `app_config` Supabase table from migration 0004).
 ///
 /// Sync model:
 /// - **Pull on launch.** After the auth bootstrap finishes, fetch
@@ -43,6 +43,7 @@ final class AppConfigSyncer {
     /// state hits the network).
     private var pendingTagLibrary: TagLibrary?
     private var pendingAIRulesTemplate: String?
+    private var pendingReportBranding: ReportBranding?
 
     /// Debounce window. Matches the 300 ms `ProjectStore` save
     /// cadence so a coalesced burst of "edit, edit, edit" produces
@@ -50,6 +51,7 @@ final class AppConfigSyncer {
     private static let debounceDelay: Duration = .milliseconds(300)
     private var pendingTagLibraryTask: Task<Void, Never>?
     private var pendingAIRulesTemplateTask: Task<Void, Never>?
+    private var pendingReportBrandingTask: Task<Void, Never>?
 
     /// Keys currently mid-push. Lets the UI surface a "syncing"
     /// indicator later without races. Same pattern `ManifestSyncer`
@@ -75,6 +77,9 @@ final class AppConfigSyncer {
         }
         store.onAIRulesTemplateChanged = { [weak self] text in
             self?.queuePushAIRulesTemplate(text)
+        }
+        store.onReportBrandingChanged = { [weak self] branding in
+            self?.queuePushReportBranding(branding)
         }
     }
 
@@ -133,6 +138,22 @@ final class AppConfigSyncer {
             await pushAIRulesTemplate(store.aiRulesTemplate)
         }
 
+        if let entry = bundle.entries["reportBranding"] {
+            do {
+                let wire = try entry.value.decode(as: ReportBrandingWire.self)
+                store.applyServerReportBranding(wire)
+                storeRevision(entry.revision, for: "reportBranding")
+            } catch {
+                surfaceError(error, label: "report branding")
+            }
+        } else if store.reportBranding.hasContent {
+            // Seed-on-empty, but only when this device actually has
+            // customised branding. Unlike tagLibrary there is no
+            // bundled default worth pushing — seeding an all-null
+            // row would serve nobody.
+            await pushReportBranding(store.reportBranding)
+        }
+
         // Read-only default mirrors (Build #5.48.1). iOS Swift owns
         // the canonical defaults (`AIRulesTemplate.defaultText` and
         // `TagLibrary.defaultSeeds`); on every launch we push them
@@ -156,8 +177,10 @@ final class AppConfigSyncer {
         }
         pendingTagLibrary = nil
         pendingAIRulesTemplate = nil
+        pendingReportBranding = nil
         pendingTagLibraryTask?.cancel()
         pendingAIRulesTemplateTask?.cancel()
+        pendingReportBrandingTask?.cancel()
     }
 
     // MARK: Queue + debounce
@@ -194,6 +217,23 @@ final class AppConfigSyncer {
         guard let text = pendingAIRulesTemplate else { return }
         pendingAIRulesTemplate = nil
         await pushAIRulesTemplate(text)
+    }
+
+    private func queuePushReportBranding(_ branding: ReportBranding) {
+        guard auth.session != nil else { return }
+        pendingReportBranding = branding
+        pendingReportBrandingTask?.cancel()
+        pendingReportBrandingTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.debounceDelay)
+            guard !Task.isCancelled else { return }
+            await self?.pushReportBrandingIfPending()
+        }
+    }
+
+    private func pushReportBrandingIfPending() async {
+        guard let branding = pendingReportBranding else { return }
+        pendingReportBranding = nil
+        await pushReportBranding(branding)
     }
 
     // MARK: Push + 409 retry
@@ -243,6 +283,28 @@ final class AppConfigSyncer {
         }
     }
 
+    private func pushReportBranding(_ branding: ReportBranding) async {
+        let key = "reportBranding"
+        guard !inFlight.contains(key) else {
+            queuePushReportBranding(branding)
+            return
+        }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+
+        do {
+            let resp = try await api.putReportBranding(branding.wireValue,
+                                                        expectedRevision: storedRevision(for: key))
+            storeRevision(resp.revision, for: key)
+        } catch APIClient.APIError.http(status: 409, _, _) {
+            await refetchAndRetryReportBranding(branding)
+        } catch APIClient.APIError.notAuthenticated {
+            return
+        } catch {
+            surfaceError(error, label: "report branding")
+        }
+    }
+
     private func refetchAndRetryTagLibrary(_ library: TagLibrary) async {
         do {
             let bundle = try await api.getAppConfigBundle()
@@ -272,6 +334,40 @@ final class AppConfigSyncer {
             storeRevision(resp.revision, for: "aiRulesTemplate")
         } catch {
             surfaceError(error, label: "AI rules template")
+        }
+    }
+
+    private func refetchAndRetryReportBranding(_ branding: ReportBranding) async {
+        do {
+            let bundle = try await api.getAppConfigBundle()
+            var toPush = branding
+            if let entry = bundle.entries["reportBranding"] {
+                storeRevision(entry.revision, for: "reportBranding")
+                // Adopt the server's logo path on conflict — iOS can't
+                // change the logo over the wire, so the server's value
+                // is by definition the newer intent for that field.
+                // Text overrides stay local-wins (the active editor).
+                if let wire = try? entry.value.decode(as: ReportBrandingWire.self) {
+                    toPush.logoStoragePath = wire.logoStoragePath
+                }
+            } else {
+                clearRevision(for: "reportBranding")
+            }
+            let resp = try await api.putReportBranding(toPush.wireValue,
+                                                        expectedRevision: storedRevision(for: "reportBranding"))
+            storeRevision(resp.revision, for: "reportBranding")
+            // Keep the adopted logo path locally so the next push
+            // round-trips the value the server now holds — but build
+            // it from the store's *current* state, not `toPush`, so
+            // any text edit the user made while this retry was in
+            // flight isn't rolled back.
+            if let storeRef = store {
+                var local = storeRef.reportBranding
+                local.logoStoragePath = toPush.logoStoragePath
+                storeRef.applyServerReportBranding(local.wireValue)
+            }
+        } catch {
+            surfaceError(error, label: "report branding")
         }
     }
 

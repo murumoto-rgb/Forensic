@@ -78,6 +78,10 @@ final class ProjectStore {
     /// push the new value to the server. Same wiring shape as
     /// `onTagLibraryChanged`.
     var onAIRulesTemplateChanged: ((String) -> Void)?
+    /// Fired by `updateBranding(_:)` so an external syncer can push
+    /// the new value to the server (Build #6.2.1). Same wiring shape
+    /// as `onTagLibraryChanged`.
+    var onReportBrandingChanged: ((ReportBranding) -> Void)?
     /// True once `loadInitial()` has finished — the App scene's splash
     /// keeps showing until this flips, so the slow first-launch iCloud
     /// probe doesn't push the splash render back behind a blank screen.
@@ -481,6 +485,7 @@ final class ProjectStore {
             try? data.write(to: brandingURL, options: .atomic)
         }
         reportBranding = branding
+        onReportBrandingChanged?(branding)
         return branding
     }
 
@@ -1365,6 +1370,20 @@ final class ProjectStore {
         if let data = aiRulesTemplate.data(using: .utf8) {
             try? data.write(to: aiRulesTemplateURL, options: .atomic)
         }
+    }
+
+    /// Replace the branding text overrides + R2 logo path with a
+    /// value pulled from the server (Build #6.2.1). Preserves the
+    /// local logo PNG (`logoFilename`) — the wire doesn't carry it.
+    /// Writes via the same disk path as `updateBranding` but skips
+    /// `onReportBrandingChanged` so a pull doesn't echo back as a
+    /// push (same discipline as `applyServerTagLibrary`).
+    func applyServerReportBranding(_ wire: ReportBrandingWire) {
+        let merged = reportBranding.applying(wire)
+        if let data = try? encoder().encode(merged) {
+            try? data.write(to: brandingURL, options: .atomic)
+        }
+        reportBranding = merged
     }
 
     func applyServerProject(_ project: Project) {

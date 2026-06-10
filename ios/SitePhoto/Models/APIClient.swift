@@ -253,6 +253,19 @@ final class APIClient {
         return try await request("PUT", "/v1/config/aiRulesTemplate", body: body)
     }
 
+    /// Push the team report branding (Build #6.2.1). Text overrides
+    /// plus the opaque R2 logo path — see `ReportBrandingWire` for
+    /// the local↔wire field mapping.
+    @discardableResult
+    func putReportBranding(_ value: ReportBrandingWire,
+                           expectedRevision: String?) async throws -> AppConfigPutResponse {
+        let body = AppConfigPutReportBrandingRequest(
+            value: value,
+            expectedRevision: expectedRevision
+        )
+        return try await request("PUT", "/v1/config/reportBranding", body: body)
+    }
+
     /// Push the iOS-bundled tag library to the server's read-only
     /// `tagLibraryDefault` snapshot (Build #5.48.1). Only called by
     /// `AppConfigSyncer.pullAllFromServer()` at launch; nothing
@@ -610,6 +623,23 @@ struct AppConfigPutTagLibraryRequest: Encodable {
 /// PUT body for `aiRulesTemplate`.
 struct AppConfigPutAIRulesTemplateRequest: Encodable {
     let value: AIRulesTemplateWire
+    let expectedRevision: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case value, expectedRevision
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(value, forKey: .value)
+        try c.encode(expectedRevision, forKey: .expectedRevision)
+    }
+}
+
+/// PUT body for `reportBranding`. Same explicit-null discipline for
+/// `expectedRevision` as the other config PUT bodies.
+struct AppConfigPutReportBrandingRequest: Encodable {
+    let value: ReportBrandingWire
     let expectedRevision: String?
 
     private enum CodingKeys: String, CodingKey {
