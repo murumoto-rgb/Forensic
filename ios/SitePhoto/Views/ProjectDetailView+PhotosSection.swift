@@ -6,7 +6,17 @@
 
 import SwiftUI
 
+/// Photos tab layout (Build #6.29.1).
+enum PhotoLayout: String {
+    case list
+    case grid
+}
+
 extension ProjectDetailView {
+
+    var photoLayout: PhotoLayout {
+        PhotoLayout(rawValue: photoLayoutRaw) ?? .list
+    }
 
     @ViewBuilder
     func photosSection(_ project: Project) -> some View {
@@ -43,6 +53,12 @@ extension ProjectDetailView {
                 if selectionMode {
                     selectionActionRow(visiblePhotos: visiblePhotos)
                 }
+                if photoLayout == .grid {
+                    // Build #6.29.1: 3-up thumbnail grid. Tap opens
+                    // the photo editor (selection mode: toggles).
+                    // Swipe/context actions stay list-mode features.
+                    photoGrid(visiblePhotos: visiblePhotos, project: project)
+                } else {
                 ForEach(visiblePhotos) { photo in
                     Group {
                     if selectionMode {
@@ -91,6 +107,7 @@ extension ProjectDetailView {
                     // the row in any selection / filter state.
                     .id(photo.id)
                 }
+                }
             }
         } header: {
             photosSectionHeader(project: project, visiblePhotos: visiblePhotos)
@@ -98,6 +115,84 @@ extension ProjectDetailView {
         if !project.trashedPhotos.isEmpty {
             trashSection(project)
         }
+    }
+
+    /// 3-up thumbnail grid (Build #6.29.1). Rendered as a single
+    /// List row so the surrounding Section / scroll behavior is
+    /// unchanged; LazyVGrid keeps off-screen cells cheap.
+    @ViewBuilder
+    func photoGrid(visiblePhotos: [Photo], project: Project) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 108), spacing: 4)],
+            spacing: 4
+        ) {
+            ForEach(visiblePhotos) { photo in
+                photoGridCell(photo: photo, project: project)
+                    .id(photo.id)
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+        .listRowBackground(Color.clear)
+    }
+
+    @ViewBuilder
+    func photoGridCell(photo: Photo, project: Project) -> some View {
+        let isSelected = selectedPhotoIDs.contains(photo.id)
+        Button {
+            if selectionMode {
+                if isSelected {
+                    selectedPhotoIDs.remove(photo.id)
+                } else {
+                    selectedPhotoIDs.insert(photo.id)
+                }
+            } else {
+                taggingPhoto = PhotoTarget(id: photo.id)
+            }
+        } label: {
+            CachedThumbnail(url: store.thumbnailURL(for: photo, in: project))
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .aspectRatio(4 / 3, contentMode: .fill)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(alignment: .bottomLeading) {
+                    Text("\(photo.sequenceNumber)")
+                        .font(.caption2.bold().monospaced())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(4)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if photo.isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                            .padding(4)
+                    }
+                }
+                .overlay {
+                    if selectionMode {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : Color.white.opacity(0.6),
+                                lineWidth: isSelected ? 3 : 1
+                            )
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    if selectionMode {
+                        Image(systemName: isSelected
+                              ? "checkmark.circle.fill"
+                              : "circle")
+                            .foregroundStyle(isSelected ? Color.accentColor : .white)
+                            .background(Circle().fill(.black.opacity(0.4)))
+                            .padding(4)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Photo \(photo.sequenceNumber)")
     }
 
     @ViewBuilder
@@ -237,6 +332,25 @@ extension ProjectDetailView {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                // Build #6.29.1: list ⇄ grid toggle. Available even
+                // on frozen projects (it's a view preference, not an
+                // edit) but only when there are photos to lay out.
+                if !project.photos.isEmpty {
+                    Button {
+                        photoLayoutRaw = (photoLayout == .grid)
+                            ? PhotoLayout.list.rawValue
+                            : PhotoLayout.grid.rawValue
+                    } label: {
+                        Image(systemName: photoLayout == .grid
+                              ? "list.bullet"
+                              : "square.grid.2x2")
+                    }
+                    .textCase(nil)
+                    .font(.caption)
+                    .accessibilityLabel(photoLayout == .grid
+                                         ? "Switch to list layout"
+                                         : "Switch to grid layout")
+                }
                 // Build #6.1.1: Select mode + renumber both mutate the
                 // project — hidden while locked.
                 if !project.photos.isEmpty && !project.isFrozen {

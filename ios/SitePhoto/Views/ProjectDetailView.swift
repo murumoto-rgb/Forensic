@@ -31,6 +31,12 @@ struct ProjectDetailView: View {
     @Environment(ToastCenter.self) var toastCenter
     @AppStorage("sitephoto.tagConfidenceThreshold")
     var tagConfidenceThreshold: Double = 0.5
+    /// Photos tab layout (Build #6.29.1): "list" (the classic rows)
+    /// or "grid" (3-up thumbnails). Stored as the raw string so
+    /// @AppStorage can persist it; `photoLayout` in the Photos
+    /// extension wraps it in the enum.
+    @AppStorage("sitephoto.photoLayout")
+    var photoLayoutRaw: String = "list"
     let projectID: UUID
     var scope: ProjectDetailScope = .all
 
