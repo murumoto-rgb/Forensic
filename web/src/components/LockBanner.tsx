@@ -30,7 +30,9 @@ interface Props {
   status: LockStatus;
   acquire: () => Promise<void>;
   release: () => Promise<void>;
-  force: () => Promise<void>;
+  /** Resolves true when the force landed; false when the server
+   *  rejected it (e.g. the #6.11.1 owner-or-admin 403). */
+  force: () => Promise<boolean>;
   refresh: () => Promise<void>;
   acknowledgeLost: () => void;
 }
@@ -141,8 +143,12 @@ export function LockBanner({
                 type="button"
                 onClick={async () => {
                   setConfirmingForce(false);
-                  await force();
-                  await acquire();
+                  // Only chain the acquire when the force landed —
+                  // otherwise the acquire's re-fetch would replace
+                  // the 403 error banner before it could be read.
+                  if (await force()) {
+                    await acquire();
+                  }
                 }}
                 className="rounded border border-red-600 bg-red-950/60 px-3 py-1 text-xs text-red-100 hover:bg-red-900/60"
               >

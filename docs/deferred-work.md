@@ -127,14 +127,14 @@ either way.
    address on the verified domain (e.g.
    `noreply@mail.baykalconsulting.com`). Save → redeploy.
 
-### 3. Tighten lock force-release authorization
+### 3. ~~Tighten lock force-release authorization~~ — CLOSED #6.11.1
 
-**Status:** Any signed-in user can call `POST /lock/force`.
-Documented in `server/src/routes/locks.ts` and the iOS/web banner
-copy. Audit-logged but not gated.
-
-**Why deferred:** Phase 5 will introduce an admin role; gating
-force-release on it lands as part of that same PR.
+**Status:** Done. `POST /lock/force` now requires project Owner or
+Org Admin (`isOrgAdmin || isProjectOwner` in
+`server/src/routes/locks.ts`) — the same elevated-role rule as
+flipping `isFrozen`. Web's LockBanner surfaces the 403 message
+instead of silently re-fetching over it. The gate became possible
+when roles landed in #5.121–#5.125; #6.11.1 closed the gap.
 
 ### 4. Stage / production split
 

@@ -73,7 +73,7 @@ export function useProjectLock(projectId: string | null | undefined): {
   status: LockStatus;
   acquire: () => Promise<void>;
   release: () => Promise<void>;
-  force: () => Promise<void>;
+  force: () => Promise<boolean>;
   refresh: () => Promise<void>;
   acknowledgeLost: () => void;
 } {
@@ -247,17 +247,28 @@ export function useProjectLock(projectId: string | null | undefined): {
     setStatus({ kind: "free" });
   }, [projectId]);
 
-  const force = useCallback(async () => {
-    if (!projectId) return;
+  // Returns true on success so the caller (LockBanner) only chains
+  // the follow-up acquire when the force actually landed — otherwise
+  // the acquire's re-fetch would instantly overwrite the error
+  // banner (e.g. the Build #6.11.1 owner-or-admin 403) before the
+  // user could read it.
+  const force = useCallback(async (): Promise<boolean> => {
+    if (!projectId) return false;
     try {
       await api.forceReleaseProjectLock(projectId);
       setStatus({ kind: "free" });
+      return true;
     } catch (e: unknown) {
       setStatus({
         kind: "error",
         message:
-          e instanceof ApiError ? `${e.errorCode}: ${e.message}` : "Force-release failed",
+          e instanceof ApiError
+            ? e.status === 403
+              ? e.message
+              : `${e.errorCode}: ${e.message}`
+            : "Force-release failed",
       });
+      return false;
     }
   }, [projectId]);
 

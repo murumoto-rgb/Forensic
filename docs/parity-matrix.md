@@ -51,52 +51,52 @@ Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Proj
 | Permanently delete trashed project | ✅ (swipe) | ✅ Build #5.93.1 | `DELETE /v1/projects/:id` | New server endpoint reaps R2 blobs + `files` rows + project row in one shot; requires `isDeleted=true` first (409 otherwise — same two-step iOS swipe gesture). Web confirm dialog quotes the project name; iOS button is in the trashed-row swipe action. |
 | Lock / finalize project (read-only) | ✅ Build #6.1.1 | ✅ Build #5.126.1 | `Project.isFrozen` (bool, default false; schema v3) | Persistent owner/admin-toggled "finalized" state, distinct from the transient edit lock. Web: banner + `canEdit` gate + Info-tab toggle (#5.126.1). iOS: banner on every tab, edit affordances hidden, `ProjectStore.save` chokepoint rejects edits while frozen, Lock/Unlock in the More tab (#6.1.1). Server enforces owner/admin on the flip; merge rule is true-wins. |
 | **Floor plans** | | | | |
-| View floor plan (read-only) + pins + distress | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva; pins + distress rendered in plan-pixel coords (identical to iOS). Plan image fetched via `GET /v1/projects/:id/plans/:planId/image`; 404 = "pending upload from iPhone" placeholder. Editing lands in PR-B. |
+| View floor plan (read-only) + pins + distress | ✅ | ✅ (#6.11.1 truth pass — shipped, row was stale) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva (`FloorPlanCanvas.tsx` + `FloorPlanTab.tsx`); pins + distress rendered in plan-pixel coords (identical to iOS). Editing shipped too (see rows below). |
 | Import floor plan (PDF / image) | ✅ | ✅ Build #5.90.1 / calibration #5.94.1 (image only) | `FloorPlan.imageFilename`, plus calibration / anchor / north fields | Web "+ Add plan" button → file picker → calibration sheet: pick origin + scale points A and B, type real-world distance, optional north heading + label. Pan + scroll-zoom + 2.5× magnifier loupe for pixel-precise placement. PDF import remains iOS-only (uses Apple PDFKit). |
 | Calibrate plan (scale + origin + north) | ✅ | ✅ on add only (Build #5.94.1) | `FloorPlan.pixelsPerFoot`, `anchorPixelX/Y`, `anchorLocalXFeet/YFeet`, `northDeg` | Web calibration walks the user through origin → point A → point B → distance → north on upload. Re-calibrating an existing plan stays iOS-only (the canvas pinch/tap UI lives there). |
 | iPhone uploads plan image binary to R2 | ✅ Build #5.9.1 | n/a | n/a | PhotoSyncer extended to iterate `project.floorPlans` alongside photos; same iOS → R2 direct upload pattern. Plan binaries fill in the floor plan canvas backgrounds on web. |
-| Calibrate scale | ✅ | 📋 Phase 3 PR-C | `FloorPlan.pixelsPerFoot` | |
-| Set north heading | ✅ | 📋 Phase 3 PR-C | `FloorPlan.northDeg` | |
-| Multiple plans per project | ✅ | 🚧 Phase 3 PR-A (#34) | `Project.floorPlans[]`, `activeFloorPlanID` | Plan picker tabs on `/projects/:id/plan` |
+| Calibrate scale (re-calibrate existing plan) | ✅ | 📋 | `FloorPlan.pixelsPerFoot` | On-add calibration shipped on web (#5.94.1); re-calibrating an *existing* plan stays iOS-only by design (pinch/tap canvas UI). |
+| Set north heading (existing plan) | ✅ | 📋 | `FloorPlan.northDeg` | Same as above — web sets north during initial calibration only. |
+| Multiple plans per project | ✅ | ✅ (#6.11.1 truth pass) | `Project.floorPlans[]`, `activeFloorPlanID` | Plan picker tabs on `/projects/:id/plan` |
 | Rename / remove plans | ✅ | ✅ Build #5.89.1 | `FloorPlan.label`, `Project.floorPlans[]`, `Project.activeFloorPlanID` | Collapsible "Manage plans · N" disclosure above the picker chips; per-row label input (commit on blur), Set active, Remove (confirm + photo-impact preview; nulls `floorPlanID` + `planPixelX/Y` on photos that referenced the removed plan; falls back to the first remaining plan as active). Adding a brand-new plan ships with the file-upload PR. |
 | **Photos** | | | | |
 | Capture photo with camera | ✅ | ❌ | n/a | Web is desktop / tablet; capture is iOS-only |
 | Import from photo library | ✅ | ✅ Build #5.90.1 | uses `POST /v1/projects/:id/files/upload-url` + commit | Web "+ Add photos" button on Photos tab — file picker (multi-select, `image/*`), 3-way concurrency, no client-side thumb generation (server falls back to `kind=photo` on thumb endpoint). Photos appended to manifest after all uploads finish. |
-| Place photo on plan (drag) | ✅ | 📋 Phase 3 | `Photo.planPixelX/Y`, `Photo.localXFeet/Y` | Same pixel coordinates both platforms |
-| Re-locate photo | ✅ | 📋 Phase 3 | same as above | |
-| Soft-delete / restore photo | ✅ | 📋 Phase 2 | `Project.trashedPhotos`, `Photo.trashedAt` | |
-| Photo groups (primary + reshoots) | ✅ | 📋 Phase 3 | `Photo.groupID`, `Photo.reshootsPhotoID` | |
-| Favorite photo | ✅ | 📋 Phase 2 | `Photo.isFavorite` | |
-| Preview rotation (90° increments) | ✅ | 📋 Phase 2 | `Photo.previewRotation` | |
+| Place photo on plan (drag) | ✅ | ✅ (#6.11.1 truth pass) | `Photo.planPixelX/Y`, `Photo.localXFeet/Y` | Pin drag + confirm in `FloorPlanTab.tsx`; same pixel coordinates both platforms |
+| Re-locate photo | ✅ | ✅ (#6.11.1 truth pass) | same as above | |
+| Soft-delete / restore photo | ✅ | ✅ (#6.11.1 truth pass) | `Project.trashedPhotos`, `Photo.trashedAt` | `TrashSection.tsx`: restore + delete-permanently + empty trash |
+| Photo groups (primary + reshoots) | ✅ | ✅ (#6.11.1 truth pass) | `Photo.groupID`, `Photo.reshootsPhotoID` | `PhotoComparisonView.tsx` before/after carousel |
+| Favorite photo | ✅ | ✅ (#6.11.1 truth pass) | `Photo.isFavorite` | Star toggle in `PhotoListRow.tsx` + favorites filter |
+| Preview rotation (90° increments) | ✅ | ✅ (#6.11.1 truth pass) | `Photo.previewRotation` | Cycle button in `PhotoPreviewPanel.tsx` editor |
 | **Tags & buckets** | | | | |
-| Edit photo tags (manual) | ✅ | 📋 Phase 2 | `Photo.tags[]` | Same vocabulary both platforms |
-| Hierarchical tags (primary / secondary) | ✅ | 📋 Phase 2 | `Tag.parentTag` | |
-| Tag confidence threshold | ✅ | 📋 Phase 2 | `Tag.confidence` | |
+| Edit photo tags (manual) | ✅ | ✅ (#6.11.1 truth pass) | `Photo.tags[]` | Add/remove in `PhotoPreviewPanel.tsx` editor; same vocabulary both platforms |
+| Hierarchical tags (primary / secondary) | ✅ | ✅ (#6.11.1 truth pass) | `Tag.parentTag` | Grouped by parent in the viewer + 3-level picker (#5.86.1) |
+| Tag confidence threshold | ✅ | ✅ (#6.11.1 truth pass) | `Tag.confidence` | `useTagConfidenceThreshold` filters visible chips; per-user setting server-synced (#5.95.1) |
 | Buckets (project-scoped categories) | ✅ | ✅ (Build #5.80.1, drag-reorder #5.87.1) | `Project.buckets[]`, `Photo.bucketID` | CRUD + ↑/↓ buttons shipped in Path P #5/8; HTML5 drag-and-drop reorder via per-row grip handle added separately. Renumbers `sortOrder` contiguously from 0 on drop. |
 | Per-project tag selection | ✅ | ✅ Build #5.86.1 | `Project.tagSelection` | Three-column context → primary → secondary picker. Reads canonical library via `GET /v1/config/tagLibrary`; commit writes `tagSelection` through standard manifest PUT. Empty draft commits as `null` (means "use entire library"). |
-| Per-project extra vocabulary | ✅ | 📋 Phase 4 | `Project.aiExtraVocabulary` | |
+| Per-project extra vocabulary | ✅ | ✅ (#6.11.1 truth pass; editor shipped #5.81.1) | `Project.aiExtraVocabulary` | JSON editor in `ProjectAIConfig.tsx` on the AI tab |
 | **AI tagging** | | | | |
-| Run AI analysis on photo | ✅ | 📋 Phase 4 | request via server `/v1/ai/tag-photo` | Same prompt template both platforms |
-| Accept / reject tag suggestions | ✅ | 📋 Phase 4 | `Photo.pendingSuggestions[]` | |
+| Run AI analysis on photo | ✅ | ✅ (#6.11.1 truth pass) | request via server `/v1/ai/tag-photo` | Single-photo re-tag in `PhotoPreviewPanel.tsx` + batch via `useBatchRetag` / `BatchRetagControl`; same prompt template both platforms |
+| Accept / reject tag suggestions | ✅ | ✅ (#6.11.1 truth pass) | `Photo.pendingSuggestions[]` | Per-chip accept/reject + bulk accept-all/reject-all in the viewer |
 | AI prompt templates | ✅ (synced #6.3.1) | ✅ Build #5.104.1 | `app_config.aiPromptTemplates` (shared `AIPromptTemplateLibrary`) | Web admin editor at `/admin/ai-prompt-templates` (#5.104.1 — row was stale until #6.3.1). Build #6.3.1: iOS pulls at launch, pushes template add/rename/edit/delete (debounced, 409 → refetch-retry). iOS element struct mirrors shared `AIPromptTemplate` field-for-field. |
-| AI rules templates | ✅ | 📋 Phase 4 | `AIRulesTemplate` | Local-only today; sync in Phase 4 |
-| Recommended-use chip | ✅ | 📋 Phase 4 | `AIPhotoAnalysis.recommendedUse` | |
-| Reviewer flag | ✅ | 📋 Phase 4 | `AIPhotoAnalysis.reviewerFlag` | |
+| AI rules templates | ✅ (synced #5.36.1) | ✅ (admin editor, PR #69) | `app_config.aiRulesTemplate` (shared `AIRulesTemplate`) | Row was doubly stale (#6.11.1 truth pass): iOS has synced this key since #5.36.1 and web's editor lives at `/admin/ai-rules`. |
+| Recommended-use chip | ✅ | ✅ (#6.11.1 truth pass) | `AIPhotoAnalysis.recommendedUse` | Shown in the web viewer + "Use" filter in `PhotoFilterBar.tsx`; value is AI-authored on both platforms |
+| Reviewer flag | ✅ | ✅ (#6.11.1 truth pass) | `AIPhotoAnalysis.reviewerFlag` | Shown in the web viewer + "Needs review" filter |
 | **Distress annotations** | | | | |
-| Place distress marker (point) | ✅ | 📋 Phase 3 | `FloorPlan.distress[]` with `DistressKind` | |
-| Draw floor-crack stroke | ✅ | 📋 Phase 3 | `DistressMark.points[]` (stroke kind) | |
-| Annotate distress with note | ✅ | 📋 Phase 3 | `DistressMark.note` | |
+| Place distress marker (point) | ✅ | ✅ (#6.11.1 truth pass) | `FloorPlan.distress[]` with `DistressKind` | Add point in `FloorPlanCanvas.tsx` |
+| Draw floor-crack stroke | ✅ | ✅ (#6.11.1 truth pass) | `DistressMark.points[]` (stroke kind) | Stroke drawing on the web canvas |
+| Annotate distress with note | ✅ | ✅ (#6.11.1 truth pass) | `DistressMark.note` | Edit kind/note + delete in `FloorPlanTab.tsx` |
 | **Markup (PencilKit)** | | | | |
 | Draw on photo with finger / Pencil | ✅ | ✅ Build #5.91.1 (Konva-based) | `Photo.markupOverlayFilename` | iOS uses PencilKit; web uses a Konva canvas in a modal — pen (color + width), eraser, undo / redo, clear. Rasterized to a transparent PNG at the photo's natural resolution on save. `markupDrawingFilename` (PencilKit stroke data) stays iOS-only — see Platform exclusions. |
 | Render existing markup overlay | ✅ | ✅ Build #5.91.1 | `Photo.markupOverlayFilename` | Round-trippable: web saves the same PNG iOS does and vice versa. |
 | **Export** | | | | |
-| PDF export (authoritative, multi-floor) | ✅ | 📋 Phase 4 | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer (preview-grade) |
+| PDF export (authoritative, multi-floor) | ✅ | ✅ (#6.11.1 truth pass; shipped #5.62.1+) | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer via `ExportPdfControl.tsx` with iOS-parity options (page size, density, section order, annotations, bucket grouping) |
 | Folder export (one dir per bucket) | ✅ | ✅ Build #5.98.1 | server-side ZIP via `project_exports` table | Web Folder-by-Bucket + AI Analysis CSV both land here (Round 3 PR #2). Streamed `archiver` ZIP, EXIF preserved bit-for-bit. Folder structure matches iOS (`01 Bucket/...`, `99 Unbucketed/...` + per-folder captions.txt). Persistent listing at `/projects/:id/exports` with Download + Delete. |
 | Report branding | ✅ (synced #6.2.1) | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. Build #6.2.1: iOS pulls the key at launch and pushes edits from Settings → Report Branding (text fields two-way; `logoStoragePath` round-trips opaquely — iOS logo binary sync is a follow-on). |
 | **Collaboration** | | | | |
-| Multi-user project access | 📋 Phase 1 | 📋 Phase 1 | `manifest.access[]` | Supabase RLS |
-| Checkout / edit lock | 📋 Phase 5 | 📋 Phase 5 | `manifest.lock` | Heartbeat-based, 10-min timeout |
-| Read-only viewer (no lock) | 📋 Phase 5 | 📋 Phase 5 | same | |
+| Multi-user project access | ❌ (by design) | ✅ (#5.121.1–#5.125.1) | `profiles.is_admin`, `project_members` (DB; not in the manifest) | Org Admins + per-project Editor/Viewer shipped server+web (admin UI at `/admin/users` + per-project members editor on the Info tab). iOS deliberately stays out — it reads its own projects from iCloud; membership is enforced server-side on sync. |
+| Checkout / edit lock | 📋 Phase 5 | ✅ (#5.60.1; self-lock fix #5.120.1) | `project_locks` (DB; not in the manifest) | Heartbeat-based, 10-min TTL; web `LockBanner` covers 7 states. Force-release gated to Owner/Admin in #6.11.1. iOS lock UI is still open (tracked in the iOS review's Wave 4). |
+| Read-only viewer (no lock) | 📋 Phase 5 | ✅ (#5.60.1) | same | Web shows read-only state with holder info + "Force release" (Owner/Admin) |
 | Audit log | 📋 Phase 1 | 📋 Phase 1 | `audit_log` (server-side) | |
 | **Settings** | | | | |
 | Settings page | ✅ | ✅ Build #5.85.1 | n/a (UI shell) | `/settings` route with Account (email, password change, sign-out), AI tagging (model + threshold + concurrency), Team-wide config (links to /admin/tag-library and /admin/ai-rules), Diagnostics (build SHA / branch / timestamp). Gear-icon links in both the project list header and the workspace header. |
