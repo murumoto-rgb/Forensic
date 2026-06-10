@@ -16,31 +16,35 @@ maximum of the filenames in `docs/builds/`. Lookup logic lives in:
 
 Format: **`MAJOR.BRANCH.PUSH`**
 
-- **MAJOR** — incremented on every merge to `main`. The build
-  immediately after a merge is `N.0.0`.
-- **BRANCH** — incremented when a new feature branch is opened from
-  `main`. Resets to `0` on each new MAJOR. The build immediately
-  after a branch is created is `N.M.0`.
-- **PUSH** — incremented on every commit pushed to the active
-  branch. Resets to `0` on each new BRANCH. The build after the
-  first commit on a branch is `N.M.1`.
+(Rewritten in Build #6.18.1 to match ~150 builds of actual practice —
+the original scheme described MAJOR bumping on every merge, which was
+never how the registry was used.)
 
-### Example timeline
+- **MAJOR** — a deliberate, rare milestone marker, bumped by hand
+  when the team decides to (it also doubles as the app's marketing
+  version — `CFBundleShortVersionString` was aligned to it at
+  Build #6.0.0 / PR #169). It does **not** bump on merges.
+- **BRANCH** — the de-facto **build counter**: +1 for each new
+  feature branch / PR cut from `main`. It does not reset until the
+  next MAJOR bump.
+- **PUSH** — `1` on the first push of a branch; +1 for each
+  subsequent push to the same branch (so a PR that needed a fix-up
+  push goes `N.M.1 → N.M.2`). Most PRs are single-push, which is
+  why the registry is dominated by `.1` entries.
+
+### Example timeline (matches real history)
 
 ```
-1.0.0   ← initial main
-1.1.0   ← open first feature branch
-1.1.1   ← first push on that branch
-1.1.2   ← second push
-2.0.0   ← merge to main (MAJOR bumps, BRANCH/PUSH reset)
-2.1.0   ← open next feature branch
-2.1.1   ← first push
-3.0.0   ← merge
+5.133.1  ← PR branch, first push
+5.134.1  ← next PR branch, first push
+6.0.0    ← deliberate MAJOR milestone (marketing-version alignment)
+6.1.1    ← next PR branch, first push
+6.1.2    ← second push to the same PR branch (fix-up)
+6.2.1    ← next PR branch
 ```
 
-Multiple branches under the same MAJOR are allowed in case parallel
-work happens (e.g. server + iOS PRs both open before either merges).
-The second concurrent branch would be `N.2.0`, third `N.3.0`, etc.
+Multiple PR branches may be open concurrently; each takes the next
+BRANCH number when its first build doc is created.
 
 ## How to add a build
 
@@ -62,6 +66,11 @@ Section template:
 
 ---
 ```
+
+The PR number and merge SHA are recoverable from the squash-commit
+subject on `main` (`Build #N.M.P: … (#PR)`), so placeholders can be
+backfilled mechanically — Build #6.18.1 did exactly that for the
+~157 entries that had accumulated `[#XX] (to be assigned)`.
 
 ## Conventions for chat
 

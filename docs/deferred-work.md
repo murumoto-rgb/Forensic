@@ -146,3 +146,33 @@ sending real data.
 `staging` branch of the repo, and let `main` deploy to prod only
 on tag. ~half day of ops work.
 
+---
+
+## Consolidated review backlog (Build #6.18.1)
+
+The two full review rounds (iOS Builds #6.1.1–#6.10.1, web Builds
+#6.11.1–#6.17.1, second pass at #6.18.1) left a deliberate backlog.
+This table is the **single source of truth** for it — it supersedes
+the "Wave 4" notes scattered through individual build docs. Update
+rows here when items ship.
+
+| Item | Platform | Size | Status / blocker |
+|---|---|---|---|
+| iOS edit-lock UI (lock banner + acquire/release/heartbeat) | iOS | 3–5 days | Open — server+web shipped (#5.59.1/#5.60.1/#5.120.1); advisory now that 3-way merge exists |
+| ProjectDetailView decomposition (~3,300 lines → per-tab files) | iOS | 2–4 PRs | Open — structural; reduces type-checker risk (Build-42 class) |
+| PhotoPreviewPanel split (1,614 lines → 4 files) | Web | ~1 day | Open |
+| Photo grid toggle (list ⇄ grid) | iOS | ~1 day | Open |
+| Photo-grid virtualization | Web | 1–2 days | Open — matters at 500+ photos |
+| Plan color modes (web pins hardcoded blue) | Web | ~1 day | Open — deferred from #5.103.1 |
+| Offline manifest retry queue | iOS | 3–5 days | Open — dirty tracking verified sound; queue is additive |
+| Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
+| Start / stop project UI | Both | ~1 day tandem | Open — schema fields exist on both; no UI anywhere (matrix corrected #6.18.1) |
+| Reshoot-comparison discoverability (lineage badge) | iOS | 2–3 hrs | Open |
+| Dark/light theme toggle + shared UI primitives (Button/Card/Modal) | Web | 1–2 days | Needs product decision first |
+| Modal focus traps (a11y) | Web | ~half day | Open — pairs with the primitives work |
+| Bucket library sync (shared type + server key + editors) | Both | ~1 week | Blocked on design choices |
+| Rate limiting on AI/export routes | Server | ~half day | Not needed until public exposure |
+| PDF browser-recycle tuning | Server | risky | Parked — deliberate stability workaround (#5.74.4) |
+| Background uploads (`URLSession.background`) | iOS | 3–5 days | Parked deliberately |
+| LRU cache eviction / cloud-first storage | iOS | 1–2 weeks | Parked deliberately (see section above) |
+

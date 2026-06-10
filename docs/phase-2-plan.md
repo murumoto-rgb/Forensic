@@ -1,5 +1,11 @@
 # Phase 2 plan: photos visible on web + server-authoritative manifest
 
+> **HISTORICAL (marked #6.18.1):** Phase 2 closed long ago — photos
+> shipped on web in #5.90.1 and the surrounding Path P series. This
+> document is kept as design history only; the live status is
+> `docs/parity-matrix.md` and the live backlog is
+> `docs/deferred-work.md`.
+
 Closes the photo-display gap in the iOS↔web parity model and lays
 the groundwork for web-side writes by flipping the source-of-truth
 model. After Phase 1, the web app shows project metadata but no
