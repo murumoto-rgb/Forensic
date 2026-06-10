@@ -9,6 +9,7 @@ import UIKit
 
 extension ProjectDetailView {
 
+    @ViewBuilder
     func aiTaggingSection(_ project: Project) -> some View {
         let untaggedCount = project.photos.filter { $0.tags.isEmpty }.count
         let taggedCount   = project.photos.count - untaggedCount
@@ -150,7 +151,6 @@ extension ProjectDetailView {
 
     // MARK: - Buckets section
 
-    @ViewBuilder
 
     /// Per-photo cost is ~$0.01 with the long forensic prompt + prompt
     /// caching enabled. The first photo in a 5-min window pays a write

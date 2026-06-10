@@ -198,6 +198,4 @@ extension ProjectDetailView {
                         placeholderSystemImage: "doc",
                         maxPixelSize: 240)
     }
-
-    @ViewBuilder
 }
