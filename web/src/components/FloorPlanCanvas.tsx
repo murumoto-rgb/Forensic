@@ -35,6 +35,9 @@ import { detectPrimaryClusters } from "../lib/clusterFanning";
  * pin-drag UX from Build #5.15.1.
  */
 interface Props {
+  /** Resolve a pin's fill color (Build #6.26.1 — plan color modes).
+   *  Omitted → PhotoPin's default blue. */
+  pinFillFor?: (photo: Photo) => string;
   projectId: string;
   plan: FloorPlan;
   photos: Photo[];
@@ -131,6 +134,7 @@ const WHEEL_ZOOM_FACTOR = 1.1;
 const STROKE_MIN_SAMPLE_DISTANCE = 4;
 
 export function FloorPlanCanvas({
+  pinFillFor,
   projectId,
   plan,
   photos,
@@ -683,6 +687,7 @@ export function FloorPlanCanvas({
                 <PhotoPin
                   key={photo.id}
                   photo={photo}
+                  fillColor={pinFillFor?.(photo)}
                   hasMore={groupSize > 1}
                   scale={bubbleScale}
                   highlighted={highlightedPhotoId === photo.id}
@@ -723,6 +728,7 @@ export function FloorPlanCanvas({
               <PhotoPin
                 key={`cluster-${lead.id}`}
                 photo={lead}
+                fillColor={pinFillFor?.(lead)}
                 hasMore={true}
                 suppressHeadingArrow={true}
                 scale={bubbleScale}

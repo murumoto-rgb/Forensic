@@ -163,7 +163,7 @@ rows here when items ship.
 | PhotoPreviewPanel split (1,614 lines → 4 files) | Web | ~1 day | Open |
 | Photo grid toggle (list ⇄ grid) | iOS | ~1 day | Open |
 | Photo-grid virtualization | Web | 1–2 days | Open — matters at 500+ photos |
-| Plan color modes (web pins hardcoded blue) | Web | ~1 day | Open — deferred from #5.103.1 |
+| ~~Plan color modes (web pins hardcoded blue)~~ | Web | — | **SHIPPED #6.26.1** — status/bucket/primaryTag picker on the plan toolbar, synced via user_prefs |
 | Offline manifest retry queue | iOS | 3–5 days | Open — dirty tracking verified sound; queue is additive |
 | Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
 | Start / stop project UI | Both | ~1 day tandem | Open — schema fields exist on both; no UI anywhere (matrix corrected #6.18.1) |

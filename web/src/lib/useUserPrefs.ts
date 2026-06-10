@@ -38,11 +38,18 @@ const THRESHOLD_KEY = "sitephoto.tagConfidenceThreshold";
 // surfaced through useUserPrefs so it follows the user across browsers
 // and devices alongside the existing AI prefs.
 const BUBBLE_SCALE_KEY = "sitephoto.planBubbleScale";
+// Build #6.26.1: same key + rawValues as iOS's PlanColorMode
+// (UserDefaults "sitephoto.plan.colorMode") so both stores describe
+// the same concept; synced cross-device via user_prefs like the rest.
+const COLOR_MODE_KEY = "sitephoto.plan.colorMode";
 
 const DEFAULT_MODEL: AITagPhotoModel = "claude-sonnet-4-6";
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_THRESHOLD = 0.5;
 const DEFAULT_BUBBLE_SCALE = 1.5;
+export type PlanColorMode = "status" | "bucket" | "primaryTag";
+const VALID_COLOR_MODES: PlanColorMode[] = ["status", "bucket", "primaryTag"];
+const DEFAULT_COLOR_MODE: PlanColorMode = "status";
 const BUBBLE_SCALE_MIN = 0.5;
 const BUBBLE_SCALE_MAX = 4;
 
@@ -80,6 +87,15 @@ function readThreshold(): number {
   return Math.max(0, Math.min(1, parsed));
 }
 
+function readColorMode(): PlanColorMode {
+  if (typeof window === "undefined") return DEFAULT_COLOR_MODE;
+  const raw = window.localStorage.getItem(COLOR_MODE_KEY);
+  if (raw && (VALID_COLOR_MODES as string[]).includes(raw)) {
+    return raw as PlanColorMode;
+  }
+  return DEFAULT_COLOR_MODE;
+}
+
 function readBubbleScale(): number {
   if (typeof window === "undefined") return DEFAULT_BUBBLE_SCALE;
   const raw = window.localStorage.getItem(BUBBLE_SCALE_KEY);
@@ -94,10 +110,12 @@ export interface UserPrefs {
   concurrency: number;
   threshold: number;
   bubbleScale: number;
+  planColorMode: PlanColorMode;
   setModel: (next: AITagPhotoModel) => void;
   setConcurrency: (next: number) => void;
   setThreshold: (next: number) => void;
   setBubbleScale: (next: number) => void;
+  setPlanColorMode: (next: PlanColorMode) => void;
 }
 
 // Module-scoped state so multiple useUserPrefs callers in the same
@@ -125,8 +143,13 @@ async function hydrateOnce(refresh: () => void): Promise<void> {
   try {
     const resp = await api.getUserPrefs();
     serverState.revision = resp.revision;
-    const { aiModel, tagConfidenceThreshold, aiConcurrency, planBubbleScale } =
-      resp.prefs;
+    const {
+      aiModel,
+      tagConfidenceThreshold,
+      aiConcurrency,
+      planBubbleScale,
+      planColorMode,
+    } = resp.prefs;
     if (
       aiModel != null &&
       typeof window !== "undefined" &&
@@ -154,6 +177,14 @@ async function hydrateOnce(refresh: () => void): Promise<void> {
       window.localStorage.getItem(BUBBLE_SCALE_KEY) == null
     ) {
       window.localStorage.setItem(BUBBLE_SCALE_KEY, String(planBubbleScale));
+    }
+    if (
+      planColorMode != null &&
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(COLOR_MODE_KEY) == null &&
+      (VALID_COLOR_MODES as string[]).includes(planColorMode)
+    ) {
+      window.localStorage.setItem(COLOR_MODE_KEY, planColorMode);
     }
     refresh();
   } catch (e: unknown) {
@@ -197,6 +228,9 @@ function scheduleSync(): void {
             const v = window.localStorage.getItem(BUBBLE_SCALE_KEY);
             return v == null ? null : Number.parseFloat(v);
           })(),
+      planColorMode: typeof window === "undefined"
+        ? null
+        : window.localStorage.getItem(COLOR_MODE_KEY),
     };
     api
       .putUserPrefs({
@@ -222,6 +256,9 @@ export function useUserPrefs(): UserPrefs {
   const [bubbleScale, setBubbleScaleState] = useState<number>(() =>
     readBubbleScale()
   );
+  const [planColorMode, setPlanColorModeState] = useState<PlanColorMode>(() =>
+    readColorMode()
+  );
   const refreshRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
@@ -230,6 +267,7 @@ export function useUserPrefs(): UserPrefs {
       setConcurrencyState(readConcurrency());
       setThresholdState(readThreshold());
       setBubbleScaleState(readBubbleScale());
+      setPlanColorModeState(readColorMode());
     }
     refreshRef.current = refresh;
     function onStorage(e: StorageEvent) {
@@ -237,7 +275,8 @@ export function useUserPrefs(): UserPrefs {
         e.key === MODEL_KEY ||
         e.key === CONCURRENCY_KEY ||
         e.key === THRESHOLD_KEY ||
-        e.key === BUBBLE_SCALE_KEY
+        e.key === BUBBLE_SCALE_KEY ||
+        e.key === COLOR_MODE_KEY
       ) {
         refresh();
       }
@@ -298,14 +337,24 @@ export function useUserPrefs(): UserPrefs {
     scheduleSync();
   }
 
+  function setPlanColorMode(next: PlanColorMode) {
+    if (!VALID_COLOR_MODES.includes(next)) return;
+    setPlanColorModeState(next);
+    window.localStorage.setItem(COLOR_MODE_KEY, next);
+    window.dispatchEvent(new Event(EVENT_NAME));
+    scheduleSync();
+  }
+
   return {
     model,
     concurrency,
     threshold,
     bubbleScale,
+    planColorMode,
     setModel,
     setConcurrency,
     setThreshold,
     setBubbleScale,
+    setPlanColorMode,
   };
 }
