@@ -212,6 +212,28 @@ struct ProjectDetailView: View {
             searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        /// Human-readable list of the active filters, for the
+        /// empty-result callout — e.g. "tags (Crack, Spalling) ·
+        /// favorites · date (Today)".
+        var summaryDescription: String {
+            var parts: [String] = []
+            if !activeTagFilters.isEmpty {
+                parts.append("tags (\(activeTagFilters.sorted().joined(separator: ", ")))")
+            }
+            if !recommendedUseFilter.isEmpty { parts.append("recommended use") }
+            if !activeBucketFilter.isEmpty { parts.append("bucket") }
+            if favoritesOnly { parts.append("favorites") }
+            if showOnlyNeedsReview { parts.append("needs review") }
+            if validationIssuesOnly { parts.append("validation issues") }
+            if measurementsOnly { parts.append("has measurement") }
+            if planFilter != .all { parts.append("level") }
+            if notInBucketOnly { parts.append("not in a bucket") }
+            if locationFilter != .all { parts.append("location") }
+            if dateFilter != .all { parts.append("date (\(dateFilter.chipLabel))") }
+            if !trimmedSearch.isEmpty { parts.append("search “\(trimmedSearch)”") }
+            return parts.joined(separator: " · ")
+        }
+
         /// True when anything is narrowing the photo list — drives
         /// the "· N shown" header annotation and the memo fast path.
         var isActive: Bool {
@@ -1429,9 +1451,20 @@ struct ProjectDetailView: View {
                     .foregroundStyle(.secondary)
                     .font(.callout)
             } else if visiblePhotos.isEmpty {
-                Text("No photos match the selected tag filter.")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
+                // Build #6.7.1: name the filters doing the excluding
+                // (the old copy blamed "the selected tag filter" no
+                // matter which filter was active) + one-tap escape.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No photos match: \(filters.summaryDescription).")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                    Button {
+                        filters = PhotoFilterState()
+                    } label: {
+                        Label("Clear all filters", systemImage: "xmark.circle")
+                            .font(.callout)
+                    }
+                }
             } else {
                 if selectionMode {
                     selectionActionRow(visiblePhotos: visiblePhotos)
@@ -1899,6 +1932,7 @@ struct ProjectDetailView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(filters.locationFilter == .all ? .secondary : .accentColor)
+        .accessibilityLabel("Filter by location")
     }
 
     /// Level filter pill — "level" being the engineer's term for a
@@ -1937,6 +1971,7 @@ struct ProjectDetailView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(filters.planFilter == .all ? .secondary : .accentColor)
+        .accessibilityLabel("Filter by level")
     }
 
     /// Check whether `photo` contains `lcSearch` (already lowercased) in
