@@ -67,6 +67,14 @@ interface Props {
    * different bearings and rendering the lead's would mislead.
    */
   suppressHeadingArrow?: boolean;
+  /**
+   * Pin fill color (Build #6.26.1 — plan color modes). The caller
+   * resolves the active mode (status / bucket / primaryTag) into a
+   * concrete color via `pinColorFor`; default is the legacy blue.
+   * `highlighted` still wins (amber) so the selected pin stays
+   * findable in any mode.
+   */
+  fillColor?: string;
 }
 
 const BASE_HEADING_LENGTH = 22;
@@ -83,6 +91,7 @@ export function PhotoPin({
   renderX,
   renderY,
   suppressHeadingArrow = false,
+  fillColor = "#3b82f6",
 }: Props) {
   const x = renderX ?? photo.planPixelX;
   const y = renderY ?? photo.planPixelY;
@@ -168,7 +177,7 @@ export function PhotoPin({
       {arrowEndX != null && arrowEndY != null && (
         <Line
           points={[0, 0, arrowEndX, arrowEndY]}
-          stroke={highlighted ? "#fbbf24" : "#3b82f6"}
+          stroke={highlighted ? "#fbbf24" : fillColor}
           strokeWidth={3 * scale}
           lineCap="round"
         />
@@ -179,7 +188,7 @@ export function PhotoPin({
           lead, matching iOS PlanViewerView.swift. */}
       <Circle
         radius={PIN_RADIUS}
-        fill={highlighted ? "#fbbf24" : "#3b82f6"}
+        fill={highlighted ? "#fbbf24" : fillColor}
         stroke="white"
         strokeWidth={2 * scale}
       />

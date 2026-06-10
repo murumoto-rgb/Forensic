@@ -98,6 +98,7 @@ export const meRoute: FastifyPluginAsync = async (app) => {
             tagConfidenceThreshold: null,
             aiConcurrency: null,
             planBubbleScale: null,
+            planColorMode: null,
           },
           revision: "",
         };
@@ -112,6 +113,7 @@ export const meRoute: FastifyPluginAsync = async (app) => {
           tagConfidenceThreshold: dbPrefs.tagConfidenceThreshold ?? null,
           aiConcurrency: dbPrefs.aiConcurrency ?? null,
           planBubbleScale: dbPrefs.planBubbleScale ?? null,
+          planColorMode: dbPrefs.planColorMode ?? null,
         },
         revision: data.revision as string,
       };

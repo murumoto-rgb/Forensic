@@ -287,6 +287,11 @@ export interface UserPrefs {
    *  Cross-device sync of the FloorPlanTab's `+ / −` zoom controls;
    *  null = device default (1.5×, matching the iOS PDF default). */
   planBubbleScale: number | null;
+  /** Floor-plan pin color mode (Build #6.26.1): "status" (default
+   *  single color) | "bucket" | "primaryTag". Same rawValues as
+   *  iOS's `PlanColorMode` so the two stores describe the same
+   *  concept; null = status. */
+  planColorMode: string | null;
 }
 
 export interface GetUserPrefsResponse {

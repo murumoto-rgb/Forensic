@@ -5,6 +5,7 @@ import { FloorPlanManager } from "../FloorPlanManager";
 import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 import { useUserPrefs } from "../../lib/useUserPrefs";
+import { pinColorFor } from "../../lib/planMarkerColors";
 
 /**
  * Floor Plan tab — the canvas viewer + pin drag + distress add/edit
@@ -409,6 +410,31 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
               +
             </button>
           </div>
+          {/* Build #6.26.1: pin color mode — Default / Bucket /
+              Primary tag. Cross-device synced via useUserPrefs,
+              same pattern as pin size. */}
+          <div className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300">
+            <span className="text-neutral-500">Color:</span>
+            {([
+              ["status", "Default"],
+              ["bucket", "Bucket"],
+              ["primaryTag", "Tag"],
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => userPrefs.setPlanColorMode(mode)}
+                className={
+                  userPrefs.planColorMode === mode
+                    ? "rounded bg-blue-900/60 px-1.5 text-blue-100"
+                    : "rounded px-1.5 text-neutral-300 hover:bg-neutral-800"
+                }
+                aria-pressed={userPrefs.planColorMode === mode}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {canEdit && (
             <>
               <button
@@ -506,6 +532,11 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
             distressUnlocked ? handleClickDistress : undefined
           }
           bubbleScale={bubbleScale}
+          pinFillFor={
+            project
+              ? (p) => pinColorFor(p, userPrefs.planColorMode, project)
+              : undefined
+          }
           onClickCluster={(photoIndices) => {
             openPreviewForCluster(photoIndices);
           }}

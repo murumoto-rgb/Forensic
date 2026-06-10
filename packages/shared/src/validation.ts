@@ -242,6 +242,8 @@ export const UserPrefsSchema = z.object({
   aiConcurrency: nullable(z.number().int().min(1).max(20)),
   /** Build #6.13.1: cross-device floor-plan bubble size. */
   planBubbleScale: nullable(z.number().min(0.5).max(4)),
+  /** Build #6.26.1: floor-plan pin color mode. */
+  planColorMode: nullable(z.enum(["status", "bucket", "primaryTag"])),
 });
 
 /** Folder-by-bucket export options. All fields optional on the wire;
