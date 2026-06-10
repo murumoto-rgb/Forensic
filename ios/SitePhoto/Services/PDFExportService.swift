@@ -17,6 +17,44 @@ struct PDFExportService {
     /// `drawMetadataTable`.
     private static let metadataRowsPerPage: Int = 28
 
+    // Build #6.4.1: per-export snapshots of two UserDefaults values
+    // that were previously re-read inside per-page render loops (once
+    // per contact-sheet page / per plan draw). The service is
+    // constructed fresh for every export, so a stored value can't go
+    // stale mid-run — and a value change mid-export would have been a
+    // bug anyway (pages disagreeing about the threshold). Both the
+    // countPages pre-pass and the render phase read the same snapshot.
+
+    /// Match the on-screen threshold so the PDF and the app agree on
+    /// which tags are "active" for a photo.
+    private let tagConfidenceThreshold = UserDefaults.standard.double(
+        forKey: "sitephoto.tagConfidenceThreshold"
+    )
+
+    /// Same bubble scale the plan viewer uses (@AppStorage key) so the
+    /// PDF matches whatever the user has dialed in on screen.
+    private let bubbleScale: CGFloat = {
+        let v = UserDefaults.standard.double(forKey: "sitephoto.bubbleScale")
+        return v > 0 ? CGFloat(v) : 1.5
+    }()
+
+    /// Shared formatter for contact-sheet cell timestamps — was built
+    /// fresh on every page.
+    private static let cellDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .medium
+        return f
+    }()
+
+    /// Shared formatter for metadata-table rows — was built fresh on
+    /// every table page.
+    private static let metadataTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+
     /// Build a PDF that matches the web-app export layout. Page 1 is
     /// always the cover; remaining sections render in
     /// `options.sectionOrder`, skipping sections whose data is absent
@@ -734,12 +772,10 @@ struct PDFExportService {
         let cellH = (pageRect.height - 2 * margin - headerH) / CGFloat(rows)
         let pad: CGFloat = 4
 
-        let dateFmt = DateFormatter(); dateFmt.dateStyle = .short; dateFmt.timeStyle = .medium
-        // Match the on-screen threshold so the PDF and the app agree on
-        // which tags are "active" for this photo.
-        let threshold = UserDefaults.standard.double(
-            forKey: "sitephoto.tagConfidenceThreshold"
-        )
+        // Build #6.4.1: both were previously rebuilt / re-read from
+        // UserDefaults on every contact-sheet page.
+        let dateFmt = Self.cellDateFormatter
+        let threshold = tagConfidenceThreshold
         let annotations = options.annotations
 
         // Pre-compute "Same location as #N" labels for each non-primary
@@ -1144,12 +1180,9 @@ struct PDFExportService {
 
     // MARK: - Bubble drawing (mirrors PlanViewerView logic)
 
-    /// Read the same bubble scale the plan viewer uses (@AppStorage key) so the
-    /// PDF matches whatever the user has dialed in on screen.
-    private var bubbleScale: CGFloat {
-        let v = UserDefaults.standard.double(forKey: "sitephoto.bubbleScale")
-        return v > 0 ? CGFloat(v) : 1.5
-    }
+    // (Build #6.4.1: `bubbleScale` moved to a per-export stored
+    // property at the top of the struct — it was re-read from
+    // UserDefaults on every `drawBubbles` call.)
 
     /// Draws bubbles (singletons + stack badges) on the floor plan and
     /// returns the list of multi-member stacks so the caller can render
@@ -1701,8 +1734,7 @@ struct PDFExportService {
             x += col.width
         }
 
-        let timeFmt = DateFormatter()
-        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        let timeFmt = Self.metadataTimeFormatter
 
         let bucketByID: [UUID: Bucket] = Dictionary(
             uniqueKeysWithValues: project.buckets.map { ($0.id, $0) }
