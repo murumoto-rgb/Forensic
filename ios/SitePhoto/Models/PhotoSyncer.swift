@@ -92,11 +92,40 @@ final class PhotoSyncer {
         // the pre-check we'd do 1000s of redundant getUploadUrl →
         // R2 PUT → commitUpload round-trips.
         await preCheckUploadedPhotos(in: project)
-        for photo in project.photos {
-            await uploadIfNeeded(photo: photo, in: project, kind: .photo)
-            if photo.thumbnailFilename != nil {
-                await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
+        // Build #6.6.1: bounded-concurrency upload window. The old
+        // loop uploaded strictly one object at a time — and each
+        // photo is 3 sequential round-trips (getUploadUrl → R2 PUT →
+        // commitUpload), so a large backfill spent nearly all its
+        // wall-clock waiting on network latency. Four photos in
+        // flight overlap those waits; state stays MainActor-
+        // serialized and the `inFlight` set still dedupes against
+        // overlapping sweeps. Width 4 is enough to hide latency
+        // without saturating a field uplink or hammering the server.
+        let photos = project.photos
+        let maxConcurrent = 4
+        await withTaskGroup(of: Void.self) { group in
+            var nextIndex = 0
+            while nextIndex < photos.count && nextIndex < maxConcurrent {
+                let photo = photos[nextIndex]
+                group.addTask { await self.uploadPhotoAndThumb(photo, in: project) }
+                nextIndex += 1
             }
+            while await group.next() != nil {
+                if nextIndex < photos.count {
+                    let photo = photos[nextIndex]
+                    group.addTask { await self.uploadPhotoAndThumb(photo, in: project) }
+                    nextIndex += 1
+                }
+            }
+        }
+    }
+
+    /// One photo's upload unit — full-res then thumb, sequential
+    /// within the unit so a thumb never lands before its photo.
+    private func uploadPhotoAndThumb(_ photo: Photo, in project: Project) async {
+        await uploadIfNeeded(photo: photo, in: project, kind: .photo)
+        if photo.thumbnailFilename != nil {
+            await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
         }
     }
 
@@ -180,9 +209,18 @@ final class PhotoSyncer {
             return
         }
 
+        // Build #6.6.1: read + hash off the MainActor. With the
+        // 4-wide upload window these used to interleave on the main
+        // thread between network awaits — a multi-MB read + SHA-256
+        // per photo is enough to drop frames during a backfill.
         let data: Data
+        let sha256: String
         do {
-            data = try Data(contentsOf: fileURL)
+            let url = fileURL
+            (data, sha256) = try await Task.detached(priority: .utility) {
+                let d = try Data(contentsOf: url)
+                return (d, Self.sha256Hex(data: d))
+            }.value
         } catch {
             // Local read failure is unusual but recoverable; skip
             // this object and let the next sync pass retry.
@@ -192,7 +230,6 @@ final class PhotoSyncer {
         // Skip if it's somehow oversized — server would 400 anyway.
         guard data.count <= FILE_MAX_BYTES else { return }
 
-        let sha256 = Self.sha256Hex(data: data)
         let contentType = Self.contentType(forExtension: fileURL.pathExtension)
 
         do {
@@ -352,7 +389,10 @@ final class PhotoSyncer {
         "\(projectId.uuidString.lowercased())/\(photoId.uuidString.lowercased())/\(kind.rawValue)"
     }
 
-    private static func sha256Hex(data: Data) -> String {
+    // `nonisolated` (Build #6.6.1): statics on a @MainActor class are
+    // MainActor-isolated by default, and this is called from the
+    // detached read+hash task. Pure function — no state touched.
+    private nonisolated static func sha256Hex(data: Data) -> String {
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
