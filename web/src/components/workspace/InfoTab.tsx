@@ -29,12 +29,20 @@ interface Props {
 
 export function InfoTab({ projectId, manifest, canEdit }: Props) {
   // The Lock/Unlock toggle is exempt from `canEdit` (otherwise you
-  // couldn't unfreeze a frozen project) and exempt from the edit-lock
-  // gate. UX surface limited to admin/editor; the server's
-  // `assertProjectAccess(..., "editor")` on the PUT path filters
-  // viewers via 403 if they ever try.
-  const canToggleFreeze =
-    manifest.role === "admin" || manifest.role === "editor";
+  // couldn't unfreeze a frozen project) and exempt from the edit-
+  // lock gate.
+  //
+  // Build #6.34.1: admin-only. The server gate on this PUT path
+  // (server/src/routes/projects.ts) returns 403 unless the caller
+  // is an org admin OR the project owner — the editor role is NOT
+  // allowed. Before this build the UI showed the control to
+  // editors too, so they could tap it and get a 403. Editors now
+  // see no control. Owners-who-aren't-admins also see no control
+  // from here (documented gap — they can lock/unlock from the iOS
+  // More tab, #6.1.1, and the change syncs back); surfacing
+  // per-project ownership to `/v1/me` is a separate follow-on
+  // tracked in `docs/deferred-work.md`.
+  const canToggleFreeze = manifest.role === "admin";
   const project = manifest.project;
   const navigate = useNavigate();
   const [name, setName] = useState(project?.name ?? "");
