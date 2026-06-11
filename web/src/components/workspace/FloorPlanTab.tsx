@@ -6,6 +6,7 @@ import { PhotoPreviewPanel } from "../PhotoPreviewPanel";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 import { useUserPrefs } from "../../lib/useUserPrefs";
 import { pinColorFor } from "../../lib/planMarkerColors";
+import { pixelsToLocalFeet } from "../../lib/planCoords";
 
 /**
  * Floor Plan tab — the canvas viewer + pin drag + distress add/edit
@@ -193,6 +194,14 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
   // manifest's project state in place (without queuing a PUT) so
   // the canvas renders the new position immediately; the confirm
   // dialog then calls `manifest.save` to actually persist.
+  //
+  // Build #6.32.1: mirror iOS's `ProjectStore.setPhotoLocation` —
+  // a placed pin now sets `floorPlanID` + pixels AND the derived
+  // `localXFeet/Y`. Pixels are a per-plan projection; the feet
+  // coords are what survive a move-to-level (see PhotosTab's
+  // `moveToLevel` for the inverse). Before this fix, web-placed
+  // pins had no feet coords, so the PDF exporter and any move
+  // between plans lost their real-world position.
   function handlePinDrag(
     photoIndex: number,
     newPlanPixelX: number,
@@ -203,11 +212,23 @@ export function FloorPlanTab({ projectId, manifest, canEdit }: Props) {
     if (!existing) return;
     const oldX = existing.planPixelX ?? newPlanPixelX;
     const oldY = existing.planPixelY ?? newPlanPixelY;
+    const plan = activePlanId
+      ? project.floorPlans.find((p) => p.id === activePlanId) ?? null
+      : null;
+    const feet = plan
+      ? pixelsToLocalFeet(plan, newPlanPixelX, newPlanPixelY)
+      : null;
     const updatedPhotos = [...project.photos];
     updatedPhotos[photoIndex] = {
       ...existing,
+      floorPlanID: plan?.id ?? existing.floorPlanID,
       planPixelX: newPlanPixelX,
       planPixelY: newPlanPixelY,
+      // Preserve existing feet coords when the plan is uncalibrated
+      // (pixelsPerFoot <= 0); otherwise the helper returns the
+      // derived pair.
+      localXFeet: feet?.lx ?? existing.localXFeet,
+      localYFeet: feet?.ly ?? existing.localYFeet,
     };
     const updated: Project = { ...project, photos: updatedPhotos };
     manifest.setProject(updated); // optimistic preview, no PUT
