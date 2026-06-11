@@ -125,14 +125,21 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
       };
     });
   }
-  function applyTag(label: string) {
+  // Build #6.36.1: now accepts an optional `parentTag` so the
+  // BulkTagPickerModal can apply primary+secondary picks (iOS
+  // `store.addTag(..., parentTag:)` parity). Dedup remains case-
+  // insensitive and now also keyed by parent so a primary and its
+  // secondary with the same `label` (unlikely but allowed by the
+  // wire shape) can coexist.
+  function applyTag(label: string, parentTag: string | null) {
     batchUpdate((p) => {
       const exists = p.tags.some(
         (t) =>
-          t.label.toLowerCase() === label.toLowerCase() && t.parentTag == null
+          t.label.toLowerCase() === label.toLowerCase() &&
+          (t.parentTag ?? null) === (parentTag ?? null)
       );
       if (exists) return p;
-      const tag: Tag = { label, confidence: 1, parentTag: null };
+      const tag: Tag = { label, confidence: 1, parentTag };
       return { ...p, tags: [...p.tags, tag] };
     });
   }
