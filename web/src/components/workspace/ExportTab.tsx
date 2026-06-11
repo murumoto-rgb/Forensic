@@ -13,14 +13,18 @@ import { CsvExportControl } from "../CsvExportControl";
  *
  * Layout: three cards (PDF / Folder by Bucket / AI Analysis CSV
  * link) plus a sticky link to the Exports page.
+ *
+ * Build #6.33.1: the gate is `canExport` (any non-viewer), not
+ * `canEdit`. iOS keeps export available on finalized projects and
+ * does not gate it on the edit lock; web now matches.
  */
 interface Props {
   projectId: string;
   manifest: ProjectManifestHook;
-  canEdit: boolean;
+  canExport: boolean;
 }
 
-export function ExportTab({ projectId, manifest, canEdit }: Props) {
+export function ExportTab({ projectId, manifest, canExport }: Props) {
   const project = manifest.project;
   if (!project) return null;
   const photoCount = project.photos.length;
@@ -50,7 +54,7 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
           </p>
           <ExportPdfControl
             projectId={projectId}
-            canExport={canEdit}
+            canExport={canExport}
             floorPlans={project.floorPlans.map((p) => ({
               id: p.id,
               label: p.label,
@@ -68,7 +72,7 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
           </p>
           <FolderExportClient
             projectId={projectId}
-            canExport={canEdit}
+            canExport={canExport}
             photoCount={photoCount}
           />
           <details className="mt-3 text-[11px] text-neutral-600">
@@ -83,7 +87,7 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
               <div className="mt-2">
                 <FolderExportControl
                   projectId={projectId}
-                  canExport={canEdit}
+                  canExport={canExport}
                   photoCount={photoCount}
                 />
               </div>
@@ -99,7 +103,7 @@ export function ExportTab({ projectId, manifest, canEdit }: Props) {
           </p>
           <CsvExportControl
             projectId={projectId}
-            canExport={canEdit}
+            canExport={canExport}
             photoCount={photoCount}
           />
         </Card>
@@ -127,4 +131,3 @@ function Card({
     </section>
   );
 }
-
