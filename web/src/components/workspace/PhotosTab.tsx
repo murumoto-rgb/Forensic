@@ -3,6 +3,7 @@ import type { Photo, Project, Tag } from "@forensic/shared";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 import { useTagConfidenceThreshold } from "../../lib/useTagConfidenceThreshold";
 import { usePhotoFilters } from "../../lib/usePhotoFilters";
+import { localFeetToPixels } from "../../lib/planCoords";
 import { PhotoList } from "../PhotoList";
 import { PhotoLightbox } from "../PhotoLightbox";
 import { PhotoFilterBar } from "../PhotoFilterBar";
@@ -94,16 +95,35 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
   function moveToBucket(bucketId: string | null) {
     batchUpdate((p) => ({ ...p, bucketID: bucketId }));
   }
+  // Build #6.32.1: mirror iOS's `ProjectStore.setPhotoFloorPlan`.
+  // The previous implementation kept the source plan's pixel coords
+  // on the destination plan (the comment said "set them to null"
+  // but the conditional preserved them when `floorPlanId != null`),
+  // so a pin at (1500, 2000) on Plan A landed at (1500, 2000) on
+  // Plan B regardless of where that is in real-world feet. iOS
+  // clears pixels first, then re-derives them from the photo's
+  // saved `localXFeet/Y` against the target plan's calibration so
+  // the pin lands at the same real-world position on the new plan.
+  // Photos without saved feet (web-placed before #6.32.1, or
+  // never placed) land "unplaced" on the new plan — the engineer
+  // drops a fresh pin.
   function moveToLevel(floorPlanId: string | null) {
-    // Moving to a new plan invalidates the per-pin pixel coords. Set
-    // them to null so the photo shows up as "not placed" on the new
-    // plan until the engineer drops a pin.
-    batchUpdate((p) => ({
-      ...p,
-      floorPlanID: floorPlanId,
-      planPixelX: floorPlanId == null ? null : p.planPixelX,
-      planPixelY: floorPlanId == null ? null : p.planPixelY,
-    }));
+    if (!project) return;
+    const targetPlan = floorPlanId
+      ? project.floorPlans.find((p) => p.id === floorPlanId) ?? null
+      : null;
+    batchUpdate((p) => {
+      const derived =
+        targetPlan && p.localXFeet != null && p.localYFeet != null
+          ? localFeetToPixels(targetPlan, p.localXFeet, p.localYFeet)
+          : null;
+      return {
+        ...p,
+        floorPlanID: floorPlanId,
+        planPixelX: derived?.pxX ?? null,
+        planPixelY: derived?.pxY ?? null,
+      };
+    });
   }
   function applyTag(label: string) {
     batchUpdate((p) => {
