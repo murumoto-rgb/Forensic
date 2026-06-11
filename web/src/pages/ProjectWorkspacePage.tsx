@@ -59,9 +59,18 @@ export function ProjectWorkspacePage({ session }: Props) {
   // gate from #5.125.1 + project not frozen. Frozen projects are
   // read-only for everyone (Owner/Admin uses a separate "Unlock"
   // toggle on the Info tab that's exempt from this gate).
+  //
+  // Build #6.33.1: split `canExport` out from `canEdit`. iOS keeps
+  // export available on finalized projects deliberately (frozen
+  // means "don't edit the report any more", not "can't read it out")
+  // and doesn't gate it on the edit lock either. Web now matches:
+  // any account with write access can export, regardless of who's
+  // holding the lock or whether the project is frozen. Viewers
+  // still can't export — that's `hasWriteAccess` doing its job.
   const isFrozen = manifest.project?.isFrozen === true;
+  const canExport = manifest.hasWriteAccess;
   const canEdit =
-    lock.status.kind === "holding" && manifest.hasWriteAccess && !isFrozen;
+    canExport && lock.status.kind === "holding" && !isFrozen;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -153,7 +162,7 @@ export function ProjectWorkspacePage({ session }: Props) {
                 <ExportTab
                   projectId={id}
                   manifest={manifest}
-                  canEdit={canEdit}
+                  canExport={canExport}
                 />
               }
             />
