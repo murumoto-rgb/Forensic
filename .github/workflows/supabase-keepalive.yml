@@ -1,0 +1,83 @@
+name: Keepalive — ping Supabase
+
+# Supabase free-tier projects are PAUSED after ~7 days with no
+# activity (no database queries / API requests). A paused project
+# can only be resumed manually from the Supabase dashboard, so the
+# goal is to never let it pause in the first place.
+#
+# Why this is separate from keepalive.yml: that workflow pings the
+# Render server's /healthz every 14 min to keep the *web process*
+# warm — but /healthz returns a static object and never touches
+# Postgres (see server/src/routes/healthz.ts), so it does NOT count
+# as Supabase activity. This workflow closes that gap by running a
+# real (tiny) SELECT against the database once a day, which resets
+# Supabase's inactivity timer with a comfortable margin under the
+# 7-day pause threshold. Two workflows, two cadences, two failure
+# signals — same split-for-clarity rationale as ci.yml vs parity.yml.
+#
+# One-time setup: add two repository secrets under
+# Settings → Secrets and variables → Actions → New repository secret:
+#   - SUPABASE_URL         e.g. https://<project-ref>.supabase.co
+#   - SUPABASE_SECRET_KEY  Supabase Dashboard → Settings → API → secret key
+# These are the same two values already configured on Render (see
+# render.yaml / server/.env.local.example), so you can copy them
+# verbatim. Until both are set, the job logs a notice and no-ops
+# (so a fork / not-yet-configured repo doesn't fail loudly).
+#
+# Security note: SUPABASE_SECRET_KEY is the service-role key — it
+# bypasses Row Level Security. GitHub encrypts Actions secrets at
+# rest and masks them in logs, and this repo is private, so the
+# exposure is the same class as storing it on Render. If you prefer
+# least privilege, swap in the publishable (anon) key and point the
+# curl at a table that has an anon SELECT policy — but the service
+# key is guaranteed to execute the query regardless of RLS, which is
+# why it's the default here.
+#
+# If the project has ALREADY paused, this ping fails (the REST
+# endpoint is unreachable while paused) and the job goes red — the
+# intended signal to go resume it from the dashboard. A ping cannot
+# un-pause a project.
+#
+# Cost: one ~5-second job per day ≈ 2.5 minutes/month of Actions
+# time — negligible against the free allowance.
+
+on:
+  schedule:
+    # Daily at 07:00 UTC. GitHub cron: minute hour dom month dow.
+    # Daily gives ~7× margin under the 7-day pause window, so even
+    # if GitHub skips a scheduled run (they're best-effort under
+    # load) the project stays awake.
+    - cron: "0 7 * * *"
+  # Manual trigger from the Actions tab — useful right after adding
+  # the secrets to confirm the ping works without waiting for 07:00.
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query Supabase to reset the inactivity timer
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SECRET_KEY" ]; then
+            echo "SUPABASE_URL / SUPABASE_SECRET_KEY secrets not set — skipping."
+            echo "To enable: Settings → Secrets and variables → Actions, add both:"
+            echo "  SUPABASE_URL         = https://<project-ref>.supabase.co"
+            echo "  SUPABASE_SECRET_KEY  = Supabase → Settings → API → secret key"
+            exit 0
+          fi
+          # Minimal real query: SELECT key FROM app_config LIMIT 1.
+          # A 200 (even an empty []) means PostgREST executed a query
+          # against Postgres — which is what resets the pause timer.
+          # -f makes a 4xx/5xx (paused project, bad key/URL) fail the
+          # job loudly; --retry rides out transient network blips.
+          echo "Pinging Supabase REST API ($SUPABASE_URL) …"
+          curl -fsS --max-time 30 --retry 3 --retry-delay 5 \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            "$SUPABASE_URL/rest/v1/app_config?select=key&limit=1" \
+            -o /dev/null -w "HTTP %{http_code}\n"
+          echo "Supabase is awake."
