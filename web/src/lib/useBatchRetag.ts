@@ -241,23 +241,45 @@ export function useBatchRetag(args: {
         failedCount: 0,
       });
 
-      // Working photo map keyed by id — updated as each task lands
-      // so a checkpoint save can rebuild the project's photos array
-      // by walking the original order against this map.
-      const workingPhotos = new Map<string, Photo>();
-      for (const p of project.photos) workingPhotos.set(p.id, p);
+      // Keep only unapplied AI deltas. Copying every starting photo here
+      // would restore stale analysis/suggestions on skipped photos, or
+      // reintroduce suggestions the user reviewed after an earlier checkpoint.
+      const workingPhotos = new Map<string, {
+        imageFilename: string;
+        aiAnalysis: Photo["aiAnalysis"];
+        suggestions: Photo["pendingSuggestions"];
+      }>();
 
       let processedSinceCheckpoint = 0;
+      let checkpointFailed = false;
       const CHECKPOINT_INTERVAL = 25;
 
       async function checkpointSave() {
+        if (checkpointFailed) return;
         const live = projectRef.current;
         const rev = revisionRef.current;
-        if (!live || !rev) return;
+        if (!live || !rev) {
+          checkpointFailed = true;
+          cancelledRef.current = true;
+          setState(s => ({ ...s, kind: "error", errorMessage: "Project is no longer loaded; AI results were not saved." }));
+          return;
+        }
+        const updates = new Map(workingPhotos);
+        // Claim these deltas synchronously, before another worker can start
+        // a checkpoint. The manifest coordinator retains a failed save.
+        workingPhotos.clear();
+        for (const [id, update] of updates) {
+          if (live.photos.find(p => p.id === id)?.imageFilename !== update.imageFilename) {
+            updates.delete(id);
+            setState(s => ({ ...s, doneCount: s.doneCount - 1, failedCount: s.failedCount + 1,
+              outcomes: { ...s.outcomes, [id]: { kind: "failed", photoId: id, message: "Photo changed during AI tagging; no result was applied. Re-run tagging for this photo." } } }));
+          }
+        }
+        if (updates.size === 0) return;
         const nextPhotos = live.photos.map((p) => {
-          const aiPhoto = workingPhotos.get(p.id);
+          const aiPhoto = updates.get(p.id);
           return aiPhoto
-            ? { ...p, aiAnalysis: aiPhoto.aiAnalysis, pendingSuggestions: aiPhoto.pendingSuggestions }
+            ? { ...p, aiAnalysis: aiPhoto.aiAnalysis, pendingSuggestions: dedupSuggestions(p.pendingSuggestions, aiPhoto.suggestions) }
             : p;
         });
         const next: Project = { ...live, photos: nextPhotos };
@@ -274,7 +296,7 @@ export function useBatchRetag(args: {
             setRevision(resp.revision);
             setProject(next);
           }
-          setState((s) => ({ ...s, kind: "running" }));
+          if (!checkpointFailed) setState((s) => ({ ...s, kind: "running" }));
         } catch (e: unknown) {
           // Server rejected our write. Bail with the message; the
           // user can re-run once the conflict is sorted.
@@ -290,6 +312,7 @@ export function useBatchRetag(args: {
             errorMessage: message,
           }));
           // Stop the batch.
+          checkpointFailed = true;
           cancelledRef.current = true;
           throw e;
         }
@@ -316,13 +339,11 @@ export function useBatchRetag(args: {
           const newSuggestions = aiAnalysisToSuggestions(analysis);
           // Merge with whatever pending suggestions the photo already
           // had — same discipline as the single-photo Re-tag.
-          const latest = projectRef.current?.photos.find((p) => p.id === photo.id) ?? photo;
-          const next: Photo = {
-            ...latest,
-            aiAnalysis: analysis,
-            pendingSuggestions: dedupSuggestions(latest.pendingSuggestions, newSuggestions),
-          };
-          workingPhotos.set(photo.id, next);
+          const latest = projectRef.current?.photos.find((p) => p.id === photo.id);
+          if (!latest || latest.imageFilename !== photo.imageFilename) {
+            throw new Error("Photo changed during AI tagging; no result was applied. Re-run tagging for this photo.");
+          }
+          workingPhotos.set(photo.id, { imageFilename: photo.imageFilename, aiAnalysis: analysis, suggestions: newSuggestions });
           processedSinceCheckpoint += 1;
           setState((s) => ({
             ...s,
@@ -386,15 +407,17 @@ export function useBatchRetag(args: {
       const n = Math.max(1, Math.min(10, opts.concurrency));
       for (let i = 0; i < n; i++) workers.push(worker());
       await Promise.all(workers);
+      if (checkpointFailed) return;
 
       // Final save — flush any tail since the last checkpoint.
-      if (processedSinceCheckpoint > 0) {
+      if (workingPhotos.size > 0) {
         try {
           await checkpointSave();
         } catch {
           return;
         }
       }
+      if (checkpointFailed) return;
 
       setState((s) => ({
         ...s,

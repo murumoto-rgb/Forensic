@@ -11,9 +11,20 @@ struct InspectionPresetsView: View {
     @State private var errorMessage: String?
     @State private var name = ""
     @State private var requiredViews = ""
-    @State private var preview: InspectionPreset?
-    @State private var previewProject: Project?
+    @State private var selection: PresetSheet?
     private var project: Project? { store.project(withID: projectID) }
+    private var writable: Bool { loaded && !busy && project.map(store.isReadOnly) == false }
+
+    private enum PresetSheet: Identifiable {
+        case preview(InspectionPreset, Project?)
+        case edit(InspectionPreset)
+        var id: String {
+            switch self {
+            case .preview(let preset, _): return "preview-" + preset.id.uuidString
+            case .edit(let preset): return "edit-" + preset.id.uuidString
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -23,18 +34,22 @@ struct InspectionPresetsView: View {
                     TextField("Required views (one per line)", text: $requiredViews, axis: .vertical).lineLimit(3...8)
                     Text("Saves the current address, AI notes, vocabulary, buckets and report layout. Photos and completed checklist states are never copied.").font(.caption)
                     Button("Save reusable preset") { Task { await saveCurrent() } }
-                        .disabled(!loaded || busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(!writable || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 Section("Your presets · synced across devices") {
                     ForEach(library.inspectionPresets) { preset in
-                        Button {
-                            previewProject = project
-                            preview = preset
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(preset.name)
-                                Text("\(preset.checklist.count) steps · \(preset.buckets.count) buckets").font(.caption)
-                            }
+                        HStack {
+                            Button { selection = .preview(preset, project) } label: {
+                                VStack(alignment: .leading) {
+                                    Text(preset.name)
+                                    Text("\(preset.checklist.count) steps · \(preset.buckets.count) buckets").font(.caption)
+                                }
+                            }.buttonStyle(.plain).disabled(busy)
+                            Spacer()
+                            Button("Edit") { selection = .edit(preset) }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Edit \(preset.name)")
+                                .disabled(!writable)
                         }
                         .swipeActions { Button("Delete", role: .destructive) {
                             Task {
@@ -42,7 +57,7 @@ struct InspectionPresetsView: View {
                                 next.inspectionPresets.removeAll { $0.id == preset.id }
                                 await save(next)
                             }
-                        }.disabled(busy) }
+                        }.disabled(!writable) }
                     }
                     if loaded && library.inspectionPresets.isEmpty { Text("No saved presets yet.").foregroundStyle(.secondary) }
                 }
@@ -61,11 +76,19 @@ struct InspectionPresetsView: View {
                 requiredViews = project?.inspectionChecklist.map(\.label).joined(separator: "\n") ?? ""
                 await load()
             }
-            .sheet(item: $preview) { preset in previewSheet(preset) }
+            .sheet(item: $selection) { sheet in
+                switch sheet {
+                case .preview(let preset, let capturedProject):
+                    previewSheet(preset, capturedProject: capturedProject)
+                case .edit(let preset):
+                    InspectionPresetEditor(projectID: projectID, preset: preset,
+                        library: $library, revision: $revision)
+                }
+            }
         }
     }
 
-    private func previewSheet(_ preset: InspectionPreset) -> some View {
+    private func previewSheet(_ preset: InspectionPreset, capturedProject: Project?) -> some View {
         NavigationStack {
             List {
                 Section("Review before applying") {
@@ -81,17 +104,17 @@ struct InspectionPresetsView: View {
                 }
                 Section {
                     Button("Apply reviewed preset") {
-                        guard let current = project, current == previewProject, !store.isReadOnly(current) else {
+                        guard let current = project, current == capturedProject, !store.isReadOnly(current) else {
                             errorMessage = "Project changed or is read-only. Close this preview and review again."; return
                         }
                         store.save(preset.preview(on: current))
-                        preview = nil
+                        selection = nil
                     }.disabled(project.map(store.isReadOnly) != false)
                     if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
             .navigationTitle("Preset Preview")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { preview = nil } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { selection = nil } } }
         }
     }
     private func load() async {
@@ -104,12 +127,16 @@ struct InspectionPresetsView: View {
         } catch { errorMessage = error.localizedDescription }
     }
     private func saveCurrent() async {
-        guard let project else { return }
+        guard let project, writable else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName.utf16.count <= 100 else {
+            errorMessage = "Use a preset name from 1 to 100 characters."; return
+        }
         let labels = requiredViews.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        guard labels.count <= 200, labels.allSatisfy({ $0.count <= 500 }) else {
+        guard labels.count <= 200, labels.allSatisfy({ $0.utf16.count <= 500 }) else {
             errorMessage = "Use at most 200 checklist steps, each under 500 characters."; return
         }
-        let preset = InspectionPreset(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+        let preset = InspectionPreset(name: trimmedName,
             projectNamePrefix: project.name, projectAddress: project.projectAddress,
             aiInstructions: project.aiInstructions, tagSelection: project.tagSelection,
             aiExtraVocabulary: project.aiExtraVocabulary, buckets: project.buckets, checklist: labels,
@@ -119,7 +146,7 @@ struct InspectionPresetsView: View {
         await save(next)
     }
     private func save(_ next: WorkflowLibrary) async {
-        guard let api = store.apiClient, loaded, !busy else { return }
+        guard let api = store.apiClient, writable else { return }
         busy = true; errorMessage = nil
         defer { busy = false }
         do {

@@ -304,7 +304,7 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
     // tagging.
     const { data: fileRow, error: fileErr } = await supabaseAdmin
       .from("current_project_files")
-      .select("object_key")
+      .select("object_key, source_filename")
       .eq("project_id", projectId)
       .eq("photo_id", photoId)
       .eq("kind", "photo")
@@ -322,6 +322,12 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
         error: "not_found",
         message: `Photo ${photoId} has no full-resolution file in storage`,
       });
+      return;
+    }
+    // The view follows the live manifest; prompt compilation used the earlier
+    // snapshot. Never analyze replacement bytes under that snapshot's filename.
+    if (fileRow.source_filename !== photo.imageFilename) {
+      reply.code(409).send({ error: "revision_mismatch", message: "Photo changed before analysis. Refresh the project and retry." });
       return;
     }
 

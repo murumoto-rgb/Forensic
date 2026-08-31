@@ -1,6 +1,6 @@
 # Forensic / SitePhoto audit implementation
 
-**Candidate build:** 6.38.1, branch codex/audit-reliability-improvements
+**Candidate build:** 6.38.2, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
 **Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
@@ -13,7 +13,7 @@ The original audit remains the baseline record. Its earlier backlog reconciled t
 
 | Finding | Candidate correction | Evidence and qualification |
 |---|---|---|
-| F01 — profile privilege escalation / incomplete RLS history | Explicit RLS; authenticated profile updates restricted to display name. Shared configuration requires the intended role and atomic revision checks. | Local PostgreSQL permission tests; read-only operational verification kept private. The live permission correction is a separate release action. |
+| F01 — profile privilege escalation / incomplete RLS history | Explicit RLS; authenticated profile updates restricted to display name. Shared configuration requires the intended role and atomic revision checks. | Local PostgreSQL permission tests and the separately applied/read-back profile-column hotfix; environment-specific receipts kept private. |
 | F02 — finalized records still editable | Transactional access, revision, session-lock and freeze checks for manifests, uploads, commits, restores and deletion. Explicit owner/admin unlock; viewer reads/exports remain available. | Real SQL functions and Fastify negative cases, including receipt revocation and exact retry behavior. |
 | F03 — queued saves erase remote edits | Each queued mutation keeps its own base; pending edits are rebased after acknowledgment and on retry. | DOM tests run the real hook and shared merge implementation. |
 | F04 — AI checkpoint overwrites manual edits | Apply only AI-owned fields to the latest photo; use the same save coordinator and await server acknowledgment. | Delayed AI result preserves manual caption, favorite and bucket; completion waits for acknowledgment. No paid AI call. |
@@ -51,15 +51,15 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Check | Result |
 |---|---|
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
-| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **124 passed / 10 files** |
-| Web DOM behavior tests | **28 passed / 4 files** |
-| iOS simulator tests | **14 passed**, including save/plan failure injection and complete/incomplete folder export |
-| Total regression tests | **247 passed** |
+| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **135 passed / 11 files** |
+| Web DOM behavior tests | **36 passed / 4 files** |
+| iOS simulator tests | **15 passed**, including save/plan failure injection, object-store verification and complete/incomplete folder export |
+| Total regression tests | **267 passed** |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
 | iOS Debug simulator build/test | Passed with Xcode 26.6 and iOS 26.5; unsigned |
 | Narrow permission hotfix rehearsal | Passed against 15 historical migrations in local PGlite; repeated application and subsequent migration 0016 both passed |
-| Final independent review | Last logo-preview race and missing-size export findings corrected and regression-tested |
+| Final independent review | Logo-preview races, exact AI snapshot binding, checkpoint errors, archive filename collisions and registry-only iOS upload acknowledgments corrected and regression-tested |
 | Working-copy preservation | Canonical checkout and its pre-existing edited verification document preserved |
 
 JavaScript validation used Node 22.23.2 and pnpm 9.12.0. Database tests execute the actual migration SQL in PGlite with fake external identity/storage boundaries. They do not prove simultaneous multi-connection PostgreSQL behavior. The real headless-Chrome PDF test verified decoded/aligned markup and exactly two pages; hosts without Chrome explicitly skip that optional integration test.
@@ -73,8 +73,8 @@ Browser verification used the candidate UI and a synthetic local API: login/logo
 | Measurement | Baseline | Candidate | Interpretation |
 |---|---:|---:|---|
 | Main JavaScript | 795.27 kB / 238.21 kB gzip | 535.96 kB / 151.99 kB gzip | About **36% less compressed main JavaScript**. Optional and tab-specific chunks still download when used. |
-| Workspace JavaScript | 632.88 kB / 183.00 kB gzip | 452.11 kB / 132.84 kB gzip | About **27% less compressed workspace JavaScript**. |
-| CSS | 46.42 kB / 8.34 kB gzip | 47.15 kB / 8.47 kB gzip | Small increase from added workflow UI. |
+| Workspace JavaScript | 632.88 kB / 183.00 kB gzip | 452.85 kB / 133.11 kB gzip | About **27% less compressed workspace JavaScript**. |
+| CSS | 46.42 kB / 8.34 kB gzip | 47.19 kB / 8.48 kB gzip | Small increase from added workflow UI. |
 | 100-marker geometry median | 0.335 ms | 0.196 ms | Same geometry in the synthetic benchmark. |
 | 500-marker geometry median | 7.242 ms | 1.269 ms | Same geometry. |
 | 1,000-marker geometry median | 28.698 ms | 2.763 ms | About **10.4× faster for this calculation**, not for the whole app. |
@@ -90,11 +90,13 @@ The production scan fell from **20 advisories (11 high, 6 moderate, 3 low)** to 
 
 AI request budgets reduce accidental cost, but are not exact dollar caps. This work did not evaluate model accuracy with paid calls or certify AI measurements. An owner-reviewed reference set remains appropriate.
 
-Other unverified release checks: physical iPhone offline/camera/PencilKit behavior; large-project end-to-end latency and peak memory; live R2 conditional PUT/CORS; multi-connection transaction stress; database/object-store backup restoration; App Store/TestFlight packaging and deployed source readback. No background-upload service, local-copy eviction, storage garbage collection or broad visual redesign was introduced.
+The live storage probe passed with the actual server signer: the approved production-origin preflight succeeded, an initial conditional upload succeeded, an overwrite returned 412, omitting the signed condition returned 403, and readback preserved the initial bytes. Its disposable fixture was removed and absence verified. The independent local object copy passed a full checksum readback. The real public-data snapshot also passed 49 local migration/recovery assertions with existing rows unchanged. These are recorded in separate private/sanitized operational receipts.
+
+Other unverified release checks: physical iPhone offline/camera/PencilKit behavior; large-project end-to-end latency and peak memory; multi-connection transaction stress; full provider/Auth and independent-cloud backup restoration; App Store/TestFlight packaging and deployed source readback. No background-upload service, local-copy eviction, storage garbage collection or broad visual redesign was introduced.
 
 ## Release handoff
 
-Keep this candidate private until the narrowly scoped permission correction is resolved. The minimal profile-grant hotfix is compatible with the existing clients and does not require the v4 feature release.
+The narrowly scoped profile-column permission hotfix was applied and read back before PR publication on 2026-08-30. Authenticated users can update their display name but cannot update `is_admin`; service-role administration remains available. Registration settings were not changed. The private deployment receipt records the environment-specific evidence.
 
 The full update requires migrations **0016 → 0017 → 0018 → 0019**, the R2 conditional PUT CORS header and matching server/web/iOS versions. Pause writes and drain legacy upload URLs before cutover. Do not blindly replay old migrations against a manually initialized database. Preserve local originals and a recoverable database/object baseline. Follow server/RECOVERY.md for the ordered release and smoke checks.
 

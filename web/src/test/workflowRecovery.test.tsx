@@ -75,6 +75,43 @@ describe("atomic project restore", () => {
 });
 
 describe("visible workflow and recovery failures", () => {
+  it("edits an existing preset without mutating the manifest", async () => {
+    const preset = { id: "preset", name: "Original", projectNamePrefix: "Prefix", projectAddress: "Address", aiInstructions: "Rules", tagSelection: null, aiExtraVocabulary: null, buckets: [], checklist: ["Roof"], reportLayout: { perPage: 6, groupByBucket: false, includeMetadataTable: false } };
+    apiMock.getWorkflowLibrary.mockResolvedValue({ revision: "w7", library: { savedSearches: [], inspectionPresets: [preset] } });
+    apiMock.putWorkflowLibrary.mockResolvedValue({ revision: "w8" });
+    const view = renderDetails();
+    fireEvent.click(await view.findByRole("button", { name: "Edit" }));
+    const names = view.getAllByLabelText("Preset name") as HTMLInputElement[];
+    fireEvent.change(names[names.length - 1]!, { target: { value: "Renamed" } });
+    fireEvent.change(view.getByLabelText("Required views"), { target: { value: "Roof\nAttic" } });
+    fireEvent.click(view.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMock.putWorkflowLibrary).toHaveBeenCalled());
+    const request = apiMock.putWorkflowLibrary.mock.calls[0]![0];
+    expect(request.expectedRevision).toBe("w7"); expect(request.library.inspectionPresets[0]).toEqual({ ...preset, name: "Renamed", checklist: ["Roof", "Attic"] }); expect(apiMock.putProject).not.toHaveBeenCalled();
+  });
+  it("keeps the preset editor draft and shows a visible CAS failure", async () => {
+    const preset = { id: "preset", name: "Original", projectNamePrefix: "", projectAddress: null, aiInstructions: null, tagSelection: null, aiExtraVocabulary: null, buckets: [], checklist: ["Roof"], reportLayout: { perPage: 6, groupByBucket: false, includeMetadataTable: false } };
+    apiMock.getWorkflowLibrary.mockResolvedValue({ revision: "w7", library: { savedSearches: [], inspectionPresets: [preset] } });
+    apiMock.putWorkflowLibrary.mockRejectedValue(new Error("CAS conflict"));
+    const view = renderDetails(); fireEvent.click(await view.findByRole("button", { name: "Edit" }));
+    const name = view.getAllByLabelText("Preset name").at(-1)! as HTMLInputElement; fireEvent.change(name, { target: { value: "Draft rename" } }); fireEvent.click(view.getByRole("button", { name: "Save changes" }));
+    expect(await view.findByText(/Preset was not saved/)).not.toBeNull(); expect(view.getByRole("dialog", { name: /Edit preset/ })).not.toBeNull(); expect((view.getAllByLabelText("Preset name").at(-1)! as HTMLInputElement).value).toBe("Draft rename");
+    apiMock.getWorkflowLibrary.mockResolvedValue({ revision: "w8", library: { savedSearches: [], inspectionPresets: [{ ...preset, name: "Remote name", aiInstructions: "New remote instructions" }] } });
+    fireEvent.click(view.getByRole("button", { name: "Reload saved library, keep draft" }));
+    expect(await view.findByText(/Saved version after reload: Remote name/)).not.toBeNull();
+    expect((view.getAllByLabelText("Preset name").at(-1)! as HTMLInputElement).value).toBe("Draft rename");
+    expect(apiMock.putWorkflowLibrary).toHaveBeenCalledTimes(1);
+    apiMock.putWorkflowLibrary.mockResolvedValue({ revision: "w9" });
+    fireEvent.click(view.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMock.putWorkflowLibrary).toHaveBeenCalledTimes(2));
+    expect(apiMock.putWorkflowLibrary.mock.calls[1]![0]).toMatchObject({ expectedRevision: "w8", library: { inspectionPresets: [{ ...preset, name: "Draft rename", aiInstructions: "New remote instructions" }] } });
+  });
+  it.each([{ role: "viewer", isFrozen: false, isOwner: false }, { role: "editor", isFrozen: true, isOwner: true }])("disables preset editing for $role with isFrozen=$isFrozen", async ({ role, isFrozen, isOwner }) => {
+    apiMock.getProject.mockResolvedValue({ project: project({ isFrozen }), revision: "r0", role, isOwner });
+    apiMock.getWorkflowLibrary.mockResolvedValue({ revision: "w7", library: { savedSearches: [], inspectionPresets: [{ id: "preset", name: "Original", projectNamePrefix: "", projectAddress: null, aiInstructions: null, tagSelection: null, aiExtraVocabulary: null, buckets: [], checklist: [], reportLayout: { perPage: 6, groupByBucket: false, includeMetadataTable: false } }] } });
+    const view = renderDetails(); await view.findByRole("button", { name: "Edit" });
+    expect((view.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
+  });
   it("renders Details from loading state and surfaces both health and history failures", async () => {
     apiMock.getProjectHealth.mockRejectedValue(new Error("storage offline"));
     apiMock.listProjectVersions.mockRejectedValue(new Error("history offline"));

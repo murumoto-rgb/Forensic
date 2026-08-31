@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   reads: [] as string[], completed: [] as string[], consumed: new Map<string, number>(),
   updates: [] as Array<Record<string, unknown>>, aborts: 0, dones: 0, active: 0, maxActive: 0,
   zipSize: 123 as number | null, uploaded: [] as Buffer[],
+  bodyOverrides: new Map<string, Buffer>(),
 }));
 vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) => {
   const filters: Array<[string, unknown]> = [];
@@ -33,7 +34,7 @@ vi.mock("../src/r2.js", () => ({ r2: {}, r2Bucket: "test", getObjectSize: async 
   async function* body() {
     try {
       // Allow queued sidecar/archive events to fire between individual chunks.
-      const bytes = Buffer.from(mode === "short" ? "ab" : mode === "long" ? "abcd" : "abc");
+      const bytes = state.bodyOverrides.get(key) ?? Buffer.from(mode === "short" ? "ab" : mode === "long" ? "abcd" : "abc");
       yield bytes.subarray(0, 1); state.consumed.set(key, 1);
       await new Promise(resolve => setTimeout(resolve, 1));
       yield bytes.subarray(1); state.consumed.set(key, bytes.length);
@@ -86,6 +87,7 @@ beforeEach(() => {
   state.project = ProjectSchema.parse({ id: pid, name: "Case", createdAt: "2026-08-30T00:00:00Z", stopped: false, photos: [PhotoSchema.parse({ id: photoId, sequenceNumber: 1, timestamp: "2026-08-30T00:00:00Z", imageFilename: "photo.jpg", positionSource: "none", isPrimary: false, cameraZoom: 1, flashMode: "auto", tags: [], pendingSuggestions: [], isFavorite: false, previewRotation: 0 })], trashedPhotos: [], floorPlans: [], buckets: [], manifestSchemaVersion: 4 });
   state.files = [{ ...original }]; state.failures.clear(); state.reads = []; state.completed = []; state.consumed.clear();
   state.updates = []; state.aborts = 0; state.dones = 0; state.active = 0; state.maxActive = 0; state.zipSize = 123; state.uploaded = [];
+  state.bodyOverrides.clear();
 });
 
 describe("folder export worker snapshot and streaming boundaries", () => {
@@ -154,5 +156,28 @@ describe("folder export worker snapshot and streaming boundaries", () => {
     state.zipSize = size;
     await expect(runFolderExportJob(job, log)).rejects.toThrow(/Uploaded ZIP is unavailable/);
     expect(state.completed).toEqual(["photo-key"]); expectAborted();
+  });
+  it.each(kinds)("rejects a zero-byte %s registration even if its body is also empty", async kind => {
+    allAssets();
+    const target = state.files.find(row => row.kind === kind)!;
+    target.size_bytes = 0; state.bodyOverrides.set(target.object_key, Buffer.alloc(0));
+    await expect(runFolderExportJob(job, log)).rejects.toThrow(/invalid registered size/);
+    expectAborted(); expect(state.reads).not.toContain(target.object_key);
+  });
+  it.each(["identical markup", "truncated markup", "identical photo"])("rejects %s archive-path collisions before starting any upload or append", async collision => {
+    const secondId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const second = { ...state.project.photos[0]!, id: secondId, sequenceNumber: collision === "identical photo" ? 1 : 2, imageFilename: "second.jpg" };
+    state.project.photos.push(second);
+    state.files.push({ ...original, photo_id: secondId, object_key: "second-key", source_filename: "second.jpg" });
+    if (collision !== "identical photo") {
+      const firstName = collision === "truncated markup" ? `${"a".repeat(80)}-first.png` : "overlay.png";
+      const secondName = collision === "truncated markup" ? `${"a".repeat(80)}-second.png` : "overlay.png";
+      state.project.photos[0]!.markupOverlayFilename = firstName; second.markupOverlayFilename = secondName;
+      state.files.push({ ...original, kind: "markup_png", object_key: "first-overlay", source_filename: firstName },
+        { ...original, photo_id: secondId, kind: "markup_png", object_key: "second-overlay", source_filename: secondName });
+    }
+    await expect(runFolderExportJob(job, log)).rejects.toThrow(/Duplicate export path/);
+    expect(state.dones).toBe(0); expect(state.reads).toEqual([]); expect(state.uploaded).toEqual([]);
+    expect(state.updates.some(update => update.status === "done")).toBe(false);
   });
 });

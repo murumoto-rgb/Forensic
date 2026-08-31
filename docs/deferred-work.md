@@ -181,9 +181,10 @@ rows here when items ship.
 
 The independent audit and its remediation are separate from deployment. See
 `docs/audit-implementation-2026-08-30.md` for evidence and outstanding release checks.
-Verify deployed profile-column grants and registration settings before treating
-the owner boundary as closed. Keep environment-specific security evidence
-private and coordinate any permission hotfix before publishing this candidate.
+The profile-column permission hotfix was applied and read back before publication
+on 2026-08-30; private receipts retain the environment-specific evidence. Public
+registration settings were not changed by that narrow correction. Recheck grants
+and access controls during the coordinated feature cutover.
 
 Physical iPhone/offline performance, large-report peak memory, an owner-reviewed
 AI-quality reference set, and an operational backup/restore drill remain unverified.

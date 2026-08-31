@@ -45,6 +45,28 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(restored.name, "Latest local edit")
     }
 
+    func testPhotoSyncPrecheckMarksOnlyObjectStoreVerifiedAssets() {
+        let projectID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let photoID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assets = [
+            ProjectHealthAsset(entityId: photoID.uuidString, kind: .photo,
+                filename: "verified.jpg", objectKey: "\(projectID)/\(photoID)/photo/verified.jpg", state: "available"),
+            ProjectHealthAsset(entityId: photoID.uuidString, kind: .thumb,
+                filename: "registered.jpg", objectKey: "\(projectID)/\(photoID)/thumb/registered.jpg", state: "registered"),
+            ProjectHealthAsset(entityId: photoID.uuidString, kind: .markupPng,
+                filename: "missing.png", objectKey: "\(projectID)/\(photoID)/markup_png/missing.png", state: "missing"),
+            ProjectHealthAsset(entityId: photoID.uuidString, kind: .markupDrawing,
+                filename: "unverified", objectKey: "\(projectID)/\(photoID)/markup_drawing/unverified", state: "unverified")
+        ]
+        let health = ProjectHealthResponse(projectId: projectID.uuidString,
+            revision: "r1", checkedAt: Date(), verification: "object-store",
+            assets: assets, expected: assets.count, registered: 4, available: 1, missing: 1)
+
+        let keys = PhotoSyncer.verifiedUploadedKeys(projectId: projectID, health: health)
+
+        XCTAssertEqual(keys, [PhotoSyncer.objectKey(projectId: projectID, photoId: photoID, kind: .photo) + "/verified.jpg"])
+    }
+
     func testPlanReplacementFailurePreservesOldImageAndCalibration() throws {
         var fail = false
         let store = ProjectStore(storageRoot: try temporaryRoot()) { bytes, url in

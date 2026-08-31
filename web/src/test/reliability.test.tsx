@@ -7,12 +7,14 @@ import { useBatchRetag } from "../lib/useBatchRetag";
 import { PhotoList } from "../components/PhotoList";
 import { Modal } from "../components/Modal";
 import { FolderExportClient } from "../components/FolderExportClient";
+import { PhotosTab } from "../components/workspace/PhotosTab";
 import JSZip from "jszip";
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: { getProject: vi.fn(), putProject: vi.fn(), getPhotoUrlsBatch: vi.fn(), getTagLibraryConfig: vi.fn(), getAIRulesTemplateConfig: vi.fn(), getFolderExportManifest: vi.fn() } }));
 const { tagMock } = vi.hoisted(() => ({ tagMock: vi.fn() }));
 vi.mock("../lib/api", () => ({ api: apiMock, ApiError: class ApiError extends Error { status = 500; errorCode = "test"; } }));
 vi.mock("../lib/tagPhotoFlow", () => ({ tagPhotoWithValidation: tagMock }));
+vi.mock("../lib/useUserPrefs", async (importOriginal) => ({ ...(await importOriginal<typeof import("../lib/useUserPrefs")>()), useUserPrefs: () => ({ model: "claude-sonnet-4-6", concurrency: 1 }) }));
 vi.mock("@forensic/shared", async (importOriginal) => ({ ...(await importOriginal<typeof import("@forensic/shared")>()), compilePrompt: () => ({ joinedSystemPrompt: "test" }), resolveValidationVocabulary: () => null, aiAnalysisToSuggestions: () => [] }));
 
 const makePhoto = (id: string, caption: string | null = null): any => ({
@@ -128,6 +130,85 @@ describe("web reliability regressions", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => expect(document.activeElement).toBe(trigger));
     trigger.remove();
+  });
+
+  it("does not restore stale AI fields on skipped photos", async () => {
+    const tagged = { ...makePhoto("B"), tags: [{ label: "Reviewed" }] };
+    const projectRef = { current: makeProject([makePhoto("A"), tagged]) };
+    let releaseAI!: (value: unknown) => void;
+    tagMock.mockImplementation(() => new Promise(resolve => { releaseAI = resolve; }));
+    apiMock.getTagLibraryConfig.mockResolvedValue({ value: { contexts: [] } });
+    apiMock.getAIRulesTemplateConfig.mockResolvedValue({ value: { text: "" } });
+    const saveAndWait = vi.fn(async (next: any) => { projectRef.current = next; });
+    const { result } = renderHook(() => useBatchRetag({ projectId: "p", projectRef, revisionRef: { current: "r0" }, setProject: vi.fn(), setRevision: vi.fn(), saveAndWait }));
+    let run!: Promise<void>;
+    act(() => { run = result.current.start({ model: "claude-sonnet-4-6", skipAlreadyTagged: true, concurrency: 1 }); });
+    await waitFor(() => expect(tagMock).toHaveBeenCalledTimes(1));
+    const reviewed = { ...tagged, aiAnalysis: { reviewerFlag: "Reviewed manually" }, pendingSuggestions: [{ label: "Keep this review", parentTag: null }] };
+    projectRef.current = makeProject([makePhoto("A"), reviewed]);
+    await act(async () => { releaseAI({ analysis: { photoID: "A", parseFailed: false } }); await run; });
+    expect(projectRef.current.photos[1]).toEqual(reviewed);
+  });
+
+  it("discards an AI result when the source image changed while it was running", async () => {
+    const projectRef = { current: makeProject([makePhoto("A")]) };
+    let releaseAI!: (value: unknown) => void;
+    tagMock.mockImplementation(() => new Promise(resolve => { releaseAI = resolve; }));
+    apiMock.getTagLibraryConfig.mockResolvedValue({ value: { contexts: [] } });
+    apiMock.getAIRulesTemplateConfig.mockResolvedValue({ value: { text: "" } });
+    const saveAndWait = vi.fn(async () => {});
+    const { result } = renderHook(() => useBatchRetag({ projectId: "p", projectRef, revisionRef: { current: "r0" }, setProject: vi.fn(), setRevision: vi.fn(), saveAndWait }));
+    let run!: Promise<void>;
+    act(() => { run = result.current.start({ model: "claude-sonnet-4-6", skipAlreadyTagged: false, concurrency: 1 }); });
+    await waitFor(() => expect(tagMock).toHaveBeenCalledTimes(1));
+    projectRef.current = makeProject([{ ...makePhoto("A"), imageFilename: "replacement.jpg" }]);
+    await act(async () => { releaseAI({ analysis: { photoID: "A", parseFailed: false } }); await run; });
+    expect(saveAndWait).not.toHaveBeenCalled();
+    expect(result.current.state.failedCount).toBe(1);
+    expect(projectRef.current.photos[0].aiAnalysis).toBeNull();
+  });
+
+  it("selection tagging uses the shared save coordinator and waits before showing complete", async () => {
+    const project = makeProject([makePhoto("A"), { ...makePhoto("B"), sequenceNumber: 2 }]);
+    const projectRef = { current: project };
+    let releaseSave!: () => void;
+    const saveAndWait = vi.fn(() => new Promise<void>(resolve => { releaseSave = resolve; }));
+    const manifest: any = { project, projectRef, revisionRef: { current: "r0" }, setProject: vi.fn(), setRevision: vi.fn(), save: vi.fn(), saveAndWait };
+    apiMock.getPhotoUrlsBatch.mockResolvedValue({ urls: {} });
+    apiMock.getTagLibraryConfig.mockResolvedValue({ value: { contexts: [] } });
+    apiMock.getAIRulesTemplateConfig.mockResolvedValue({ value: { text: "" } });
+    tagMock.mockResolvedValue({ analysis: { photoID: "A", parseFailed: false } });
+    const view = render(<PhotosTab projectId="p" manifest={manifest} canEdit />);
+    act(() => view.getByRole("button", { name: "Select" }).click());
+    act(() => view.getByRole("checkbox", { name: "Select photo 1" }).click());
+    act(() => view.getByRole("button", { name: "Re-tag with AI" }).click());
+    act(() => view.getByRole("button", { name: "Start" }).click());
+    await waitFor(() => expect(saveAndWait).toHaveBeenCalledTimes(1));
+    expect(tagMock).toHaveBeenCalledTimes(1);
+    expect(tagMock.mock.calls[0]![0].photoId).toBe("A");
+    expect(apiMock.putProject).not.toHaveBeenCalled();
+    expect(view.queryByText(/Batch complete/)).toBeNull();
+    await act(async () => { releaseSave(); });
+    await waitFor(() => expect(view.getByText(/Batch complete/)).not.toBeNull());
+  });
+
+  it("keeps a visible save error if the project revision disappears before the final checkpoint", async () => {
+    const projectRef = { current: makeProject([makePhoto("A")]) };
+    const revisionRef = { current: "r0" } as MutableRefObject<string | null>;
+    let releaseAI!: (value: unknown) => void;
+    tagMock.mockImplementation(() => new Promise(resolve => { releaseAI = resolve; }));
+    apiMock.getTagLibraryConfig.mockResolvedValue({ value: { contexts: [] } });
+    apiMock.getAIRulesTemplateConfig.mockResolvedValue({ value: { text: "" } });
+    const saveAndWait = vi.fn(async () => {});
+    const { result } = renderHook(() => useBatchRetag({ projectId: "p", projectRef, revisionRef, setProject: vi.fn(), setRevision: vi.fn(), saveAndWait }));
+    let run!: Promise<void>;
+    act(() => { run = result.current.start({ model: "claude-sonnet-4-6", skipAlreadyTagged: false, concurrency: 1 }); });
+    await waitFor(() => expect(tagMock).toHaveBeenCalledTimes(1));
+    revisionRef.current = null;
+    await act(async () => { releaseAI({ analysis: { photoID: "A", parseFailed: false } }); await run; });
+    expect(saveAndWait).not.toHaveBeenCalled();
+    expect(result.current.state.kind).toBe("error");
+    expect(result.current.state.errorMessage).toContain("AI results were not saved");
   });
 
   it("keeps an incomplete folder export visibly incomplete until partial download is chosen", async () => {

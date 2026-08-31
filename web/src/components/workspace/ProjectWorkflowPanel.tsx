@@ -12,25 +12,32 @@ export function ProjectWorkflowPanel({ manifest, canEdit }: { manifest: ProjectM
   const [library, setLibrary] = useState<WorkflowLibrary | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
-  const [editError, setEditError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [checklistDraft, setChecklistDraft] = useState("");
   const [preview, setPreview] = useState<{ preset: InspectionPreset; review: RestoreReview; next: Project } | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [editPreset, setEditPreset] = useState<InspectionPreset | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editChecklist, setEditChecklist] = useState("");
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const [editorReloaded, setEditorReloaded] = useState(false);
+  const editRevision = useRef<string | null>(null);
+  const editSnapshot = useRef<InspectionPreset | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const loadRequest = useRef(0);
   const loadLibrary = useCallback(async () => {
     const request = ++loadRequest.current;
     setLibraryBusy(true); setLibraryError(null);
-    try { const response = await api.getWorkflowLibrary(); if (request === loadRequest.current) { setLibrary(response.library); setRevision(response.revision); } }
+    try { const response = await api.getWorkflowLibrary(); if (request === loadRequest.current) { setLibrary(response.library); setRevision(response.revision); return response; } }
     catch (error) { if (request === loadRequest.current) setLibraryError(`Could not load preset library: ${message(error)}`); }
     finally { if (request === loadRequest.current) setLibraryBusy(false); }
   }, []);
   useEffect(() => { void loadLibrary(); return () => { loadRequest.current++; }; }, [loadLibrary]);
   const project = manifest.project;
   if (!project) return null;
-  const writable = canEdit && !project.isFrozen && !manifest.restoring && !busy;
+  const writable = canEdit && manifest.hasWriteAccess && !project.isFrozen && !manifest.restoring && !busy;
   async function persist(next: Project): Promise<boolean> {
     setBusy(true); setEditError(null);
     try { await manifest.saveAndWait(next); return true; }
@@ -44,6 +51,42 @@ export function ProjectWorkflowPanel({ manifest, canEdit }: { manifest: ProjectM
     try { const response = await api.putWorkflowLibrary({ library: next, expectedRevision: revision }); setLibrary(next); setRevision(response.revision); return true; }
     catch (error) { setLibraryError(`Preset library was not saved: ${message(error)}. Refresh the library before retrying; your name was kept.`); return false; }
     finally { setLibraryBusy(false); }
+  }
+  function openPresetEditor(preset: InspectionPreset) {
+    setEditPreset(preset);
+    setEditName(preset.name);
+    setEditChecklist(preset.checklist.join("\n"));
+    setEditorError(null);
+    setEditorReloaded(false);
+    editRevision.current = revision;
+    editSnapshot.current = preset;
+  }
+  async function reloadEditorLibrary() {
+    if (libraryBusy || !editPreset) return;
+    const response = await loadLibrary();
+    if (!response) { setEditorError("Library reload failed. Your draft is kept."); return; }
+    const current = response.library.inspectionPresets.find(preset => preset.id === editPreset.id);
+    editRevision.current = response.revision;
+    editSnapshot.current = current ?? null;
+    if (!current) { setEditorError("This preset was deleted on another device. Your draft is kept, but it cannot overwrite the deletion."); return; }
+    setEditPreset(current); setEditorReloaded(true); setEditorError(null);
+  }
+  async function savePresetEdit() {
+    if (!writable || libraryBusy || !editPreset || !library || !editName.trim()) return;
+    if (revision !== editRevision.current || library.inspectionPresets.find((preset) => preset.id === editPreset.id) !== editSnapshot.current) {
+      setEditorError("This preset changed elsewhere. Refresh the library before saving.");
+      return;
+    }
+    const lines = editChecklist.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (editName.trim().length > 100 || lines.length > 200 || lines.some((line) => line.length > 500)) {
+      setEditorError("Preset name must be 100 characters or fewer; required views must be at most 200 lines of 500 characters each.");
+      return;
+    }
+    const current = library.inspectionPresets.find((preset) => preset.id === editPreset.id);
+    if (!current) { setEditorError("This preset was removed or changed elsewhere. Refresh the library before saving."); return; }
+    const updated: InspectionPreset = { ...current, name: editName.trim(), checklist: lines };
+    if (await savePresets(library.inspectionPresets.map((preset) => preset.id === updated.id ? updated : preset))) setEditPreset(null);
+    else setEditorError("Preset was not saved. Refresh the library and try again; your draft was kept.");
   }
   async function createPreset() {
     const current = manifest.projectRef.current;
@@ -88,7 +131,15 @@ export function ProjectWorkflowPanel({ manifest, canEdit }: { manifest: ProjectM
       {libraryError && <p role="alert" className="mb-2 text-xs text-red-300">{libraryError}</p>}
       <button type="button" className={button} onClick={() => void loadLibrary()} disabled={libraryBusy}>{libraryBusy ? "Loading library…" : "Refresh preset library"}</button>
       <div className="mt-2 flex gap-2"><input aria-label="Preset name" value={presetName} onChange={event => setPresetName(event.target.value)} placeholder="Preset name" className={`${input} flex-1`} /><button type="button" className={button} disabled={!writable || !library || libraryBusy || !presetName.trim()} onClick={() => void createPreset()}>Save current setup</button></div>
-      <div className="mt-3 space-y-2">{library?.inspectionPresets.map(preset => <div key={preset.id} className="flex justify-between gap-2 rounded border border-neutral-800 p-2 text-xs"><button type="button" onClick={() => previewPreset(preset)}>{preset.name}</button><span>{preset.checklist.length} required views · {preset.buckets.length} buckets</span><button type="button" disabled={!writable || libraryBusy} onClick={() => void savePresets(library.inspectionPresets.filter(current => current.id !== preset.id))}>Delete</button></div>)}</div>
+      <div className="mt-3 space-y-2">{library?.inspectionPresets.map(preset => <div key={preset.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-neutral-800 p-2 text-xs"><button className="min-w-0 break-words text-left" type="button" onClick={() => previewPreset(preset)}>{preset.name}</button><span>{preset.checklist.length} required views · {preset.buckets.length} buckets</span><button type="button" disabled={!writable || libraryBusy} onClick={() => openPresetEditor(preset)}>Edit</button><button type="button" disabled={!writable || libraryBusy} onClick={() => void savePresets(library.inspectionPresets.filter(current => current.id !== preset.id))}>Delete</button></div>)}</div>
+      {editPreset && <Modal title={`Edit preset: ${editPreset.name}`} onClose={() => { if (!libraryBusy) setEditPreset(null); }}>
+        <p className="text-xs">Changes only this saved preset. Applying it to a project remains a separate reviewed action.</p>
+        <label className="flex flex-col gap-1 text-xs">Name<input aria-label="Preset name" value={editName} disabled={libraryBusy} onChange={(event) => setEditName(event.target.value)} className={input} /></label>
+        <label className="flex flex-col gap-1 text-xs">Required views, one per line<textarea aria-label="Required views" value={editChecklist} disabled={libraryBusy} onChange={(event) => setEditChecklist(event.target.value)} rows={8} className={input} /></label>
+        {editorError && <><p role="alert" className="text-xs text-red-300">{editorError}</p><button type="button" className={button} disabled={libraryBusy} onClick={() => void reloadEditorLibrary()}>Reload saved library, keep draft</button></>}
+        {editorReloaded && <div className="text-xs"><p>Saved version after reload: {editPreset.name}</p><ul>{editPreset.checklist.map((line, index) => <li key={index}>{line}</li>)}</ul><p>Your draft above was kept. Review before saving; saving replaces these fields in the saved version.</p></div>}
+        <div className="flex justify-end gap-2"><button type="button" disabled={libraryBusy} onClick={() => setEditPreset(null)}>Cancel</button><button type="button" className={button} disabled={!writable || libraryBusy || !editName.trim() || !library?.inspectionPresets.some(preset => preset.id === editPreset.id)} onClick={() => void savePresetEdit()}>{libraryBusy ? "Saving…" : "Save changes"}</button></div>
+      </Modal>}
       {preview && <Modal title={`Preview preset: ${preview.preset.name}`} onClose={() => { if (!busy) setPreview(null); }} className="max-w-2xl"><h3>Preview preset: {preview.preset.name}</h3><p className="text-xs">Append {preview.preset.buckets.length} buckets and {preview.preset.checklist.length} checklist items, and update the settings below.</p><ManifestComparison current={preview.review.project} target={preview.next} />{previewError && <p role="alert" className="text-xs text-red-300">{previewError}</p>}<div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setPreview(null)}>Cancel</button><button className={button} disabled={!writable || manifest.hasPendingChanges} onClick={() => void applyPreset()}>{busy ? "Saving…" : "Apply preset"}</button></div></Modal>}
     </section>
   </>;

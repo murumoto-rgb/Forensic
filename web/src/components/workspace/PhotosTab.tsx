@@ -249,6 +249,8 @@ export function PhotosTab({ projectId, manifest, canEdit }: Props) {
           revisionRef={manifest.revisionRef}
           setProject={manifest.setProject}
           setRevision={manifest.setRevision}
+          save={manifest.save}
+          saveAndWait={manifest.saveAndWait}
           photoCount={retagSelection.length}
           photoIds={retagSelection}
           hideTriggerButton

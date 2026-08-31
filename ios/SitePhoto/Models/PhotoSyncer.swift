@@ -146,14 +146,24 @@ final class PhotoSyncer {
     private func preCheckUploadedPhotos(in project: Project) async {
         // Logical tracker keys include the manifest filename. Replacing a plan
         // or markup must never inherit the previous image's upload receipt.
-        guard let health = try? await api.projectHealth(id: project.id) else { return }
-        let keys = health.assets.compactMap { asset -> String? in
-            guard (asset.state == "registered" || asset.state == "available"),
+        // Verification must query object storage. A registry row can survive
+        // an R2 deletion, so marking it here would permanently suppress the
+        // recovery upload on a fresh tracker.
+        guard let health = try? await api.projectHealth(id: project.id, verify: true) else { return }
+        let keys = Self.verifiedUploadedKeys(projectId: project.id, health: health)
+        tracker.markUploaded(keys)
+    }
+
+    /// Returns only assets confirmed present in object storage. Registry-only
+    /// and unverified results deliberately remain eligible for re-upload.
+    static func verifiedUploadedKeys(projectId: UUID,
+                                     health: ProjectHealthResponse) -> [String] {
+        health.assets.compactMap { asset -> String? in
+            guard asset.state == "available",
                   asset.objectKey?.split(separator: "/").count == 4,
                   let entityID = UUID(uuidString: asset.entityId) else { return nil }
-            return Self.objectKey(projectId: project.id, photoId: entityID, kind: asset.kind) + "/" + asset.filename
+            return Self.objectKey(projectId: projectId, photoId: entityID, kind: asset.kind) + "/" + asset.filename
         }
-        tracker.markUploaded(keys)
     }
 
     private func uploadIfNeeded(photo: Photo, in project: Project, kind: FileKind) async {

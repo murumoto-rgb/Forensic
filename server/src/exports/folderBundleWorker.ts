@@ -209,7 +209,7 @@ function validateAssetStream(
 
 function registeredSize(value: unknown, objectKey: string): number {
   const size = typeof value === "number" ? value : Number(value);
-  if (!Number.isSafeInteger(size) || size < 0) {
+  if (!Number.isSafeInteger(size) || size <= 0) {
     throw new Error(`Asset ${objectKey} has invalid registered size`);
   }
   return size;
@@ -259,6 +259,11 @@ function photoFilename(
   const dateStr = `${yy}${mm}${dd}`;
   const ext = photo.imageFilename.split(".").pop() ?? "jpg";
   return `${safeName(project.name)} - ${photo.sequenceNumber} - ${dateStr}.${ext}`;
+}
+
+function planArchivePath(plan: Project["floorPlans"][number], index: number): string {
+  const ext = plan.imageFilename.split(".").pop() ?? "png";
+  return `00 Floor Plans/${String(index + 1).padStart(2, "0")} ${safeName(plan.label)}.${ext}`;
 }
 
 /** Build the captions.txt body for a bucket folder. */
@@ -328,6 +333,35 @@ export async function runFolderExportJob(job: ExportRow, log: FastifyBaseLogger)
     byBucket.get(key)!.push(p);
   }
 
+  const groups: Array<{ folderName: string; photos: Photo[] }> = [];
+  for (const bucket of buckets) {
+    const members = byBucket.get(bucket.id.toLowerCase());
+    if (members?.length) groups.push({ folderName: bucketFolderName(groups.length, bucket.name), photos: members });
+  }
+  const unbucketed = byBucket.get(null);
+  if (unbucketed?.length) groups.push({ folderName: bucketFolderName(null, null), photos: unbucketed });
+
+  // Check final paths before starting multipart upload. Different source names
+  // can collapse after sanitizing/truncating; duplicate sequence numbers also
+  // collide. Case folding protects common case-insensitive extraction volumes.
+  const paths = new Set<string>();
+  const reservePath = (path: string) => {
+    const normalized = path.normalize("NFC").toLowerCase();
+    if (paths.has(normalized)) throw new Error(`Duplicate export path: ${path}. Choose a smaller selection or resolve conflicting filenames.`);
+    paths.add(normalized);
+  };
+  for (const group of groups) {
+    for (const photo of group.photos) {
+      reservePath(`${group.folderName}/${photoFilename(project, photo)}`);
+      for (const source of [photo.markupOverlayFilename, photo.markupDrawingFilename]) {
+        if (source) reservePath(`01 Markups/${safeName(source)}`);
+      }
+    }
+    reservePath(`${group.folderName}/captions.txt`);
+  }
+  project.floorPlans.forEach((plan, index) => reservePath(planArchivePath(plan, index)));
+  if (project.floorPlans.length) reservePath("00 Floor Plans/plans.txt");
+
   // Step 4: set up the archive + the R2 multipart upload sink.
   //
   // `store: true` skips deflate compression. JPEGs + HEICs barely
@@ -369,29 +403,12 @@ export async function runFolderExportJob(job: ExportRow, log: FastifyBaseLogger)
   await progress.setTotal();
 
   // Step 5: walk each bucket folder.
-  let bucketIdx = 0;
-  for (const bucket of buckets) {
-    const photosInBucket = byBucket.get(bucket.id.toLowerCase());
-    if (!photosInBucket || photosInBucket.length === 0) continue;
-    const folderName = bucketFolderName(bucketIdx++, bucket.name);
+  for (const group of groups) {
     await addBucketToArchive(
       archive,
-      folderName,
+      group.folderName,
       project,
-      photosInBucket.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
-      log,
-      progress
-    );
-  }
-  // Unbucketed.
-  const unbucketed = byBucket.get(null);
-  if (unbucketed && unbucketed.length > 0) {
-    const folderName = bucketFolderName(null, null);
-    await addBucketToArchive(
-      archive,
-      folderName,
-      project,
-      unbucketed.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
+      group.photos.sort((a, b) => a.sequenceNumber - b.sequenceNumber),
       log,
       progress
     );
@@ -486,9 +503,7 @@ async function addFloorPlansToArchive(
     const file = fileByPlanIdLower.get(plan.id.toLowerCase());
     if (!file) throw new Error(`Missing required plan file: ${plan.imageFilename}`);
     const stream = validateAssetStream(await getObjectStream(file.objectKey), file.sizeBytes, file.objectKey);
-    const ext = plan.imageFilename.split(".").pop() ?? "png";
-    const safeLabel = safeName(plan.label);
-    const entryName = `${folder}/${String(i + 1).padStart(2, "0")} ${safeLabel}.${ext}`;
+    const entryName = planArchivePath(plan, i);
     const entryDone = waitForEntry(archive, entryName);
     appendStream(archive, stream, entryName);
     await entryDone;
