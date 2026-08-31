@@ -450,8 +450,12 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       totalSizeBytes += lookup.sizeBytes;
       const entry = photoManifestEntry(project, p, url);
       let filename = entry.filename;
+      const extension = entry.filename.match(/\.[^.]*$/)?.[0] ?? "";
+      const stem = entry.filename.slice(0, entry.filename.length - extension.length);
       let n = 2;
-      while (usedNames.has(filename)) filename = `${entry.filename.replace(/(\.[^.]+)$/, `-${n++}$1`)}`;
+      // Always change the alias, including for an empty/trailing-dot extension.
+      // The exact source filename and object key stay unchanged.
+      while (usedNames.has(filename)) filename = `${stem}-${n++}${extension}`;
       usedNames.add(filename);
       photos.push({ ...entry, filename, sizeBytes: lookup.sizeBytes,
         bucketId: entry.bucketId ? bucketIdByLower.get(entry.bucketId.toLowerCase()) ?? null : null,

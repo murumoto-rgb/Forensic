@@ -1,6 +1,6 @@
 # Forensic / SitePhoto audit implementation
 
-**Candidate build:** 6.38.5, branch codex/audit-reliability-improvements
+**Candidate build:** 6.38.6, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
 **Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
@@ -51,10 +51,10 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Check | Result |
 |---|---|
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
-| Server SQL, authorization, recovery, upload, stream, PDF, branding and Free-plan operation tests | **161 passed / 13 files** |
+| Server SQL, authorization, recovery, upload, stream, PDF, branding and Free-plan operation tests | **164 passed / 13 files** |
 | Web DOM behavior tests | **36 passed / 4 files** |
 | iOS simulator tests | **22 passed**, including save/plan failure injection, object-store verification, account/context isolation, lock access and complete/incomplete folder export |
-| Total regression tests | **300 passed** |
+| Total regression tests | **303 passed** |
 | Separate PostgreSQL transaction overlap checks | **3 passed**, using three connections with observed blocking |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
@@ -90,6 +90,8 @@ PDF generation now consumes bounded HTML/image chunks instead of retaining all p
 Each PDF image's 30-second deadline includes SDK retries, response headers and the complete body. Folder exports query registrations in groups of at most 100 IDs. A synthetic 205-photo/205-plan case verified 820 required assets and 822 actual ZIP entries, including final-chunk assets; a failed later query aborts instead of publishing a partial archive. This is a correctness check, not production throughput measurement.
 
 Build 6.38.5 keeps the existing Render Free plan. Each export worker now waits for its current job to settle before polling again, backs off from 5 to 60 seconds while idle, and resets to 5 seconds after claimed work. Across three idle workers the settled scan rate falls from 2,160 to 180 per hour, about 92% fewer scans by arithmetic, not a measured cost saving. New work can wait up to 60 seconds for discovery. PDF jobs release their browser at completion; page and browser cleanup each have a five-second deadline, with forced termination limited to the owned Chromium child. No global export-memory or interrupted-job recovery guarantee is implied. Scheduled Render wake pings are removed; the separate Supabase workflow is unchanged apart from its comment. Fifteen new server regressions cover these boundaries and the maintenance entrypoint.
+
+The post-push review of 6.38.5 found an export-alias collision loop that could stall the API when source names ended with a dot. Build 6.38.6 guarantees that every collision attempt changes the alias, without changing source filenames, object references or bytes. Three real-route regressions cover trailing-dot, ordinary-extension and extensionless source names with repeated sequence/date collisions.
 
 ## Dependency and operational limits
 

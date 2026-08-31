@@ -64,6 +64,35 @@ afterEach(async () => { await app.close(); });
 const request = () => app.inject({ method: "GET", url: `/v1/projects/${ids.project}/folder-export-manifest` });
 
 describe("folder export manifest completeness and snapshot binding", () => {
+  it.each([
+    { source: "photo.", extension: "." },
+    { source: "photo.jpg", extension: ".jpg" },
+    { source: "photo", extension: ".photo" },
+  ])("gives colliding $source photos distinct aliases without changing their originals", async ({ source, extension }) => {
+    state.manifest.photos = Array.from({ length: 3 }, (_, i) => photo({
+      id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`,
+      imageFilename: source,
+    }));
+    state.files = state.manifest.photos.map((p: { id: string }, i: number) => ({
+      project_id: ids.project, photo_id: p.id, kind: "photo", object_key: `original-${i}`,
+      size_bytes: 10 + i, source_filename: source,
+    }));
+    const original = structuredClone(state.manifest);
+    const response = await request();
+    expect(response.statusCode, response.body).toBe(200);
+    const manifest = response.json().manifest;
+    expect(manifest.photos.map((p: { filename: string }) => p.filename)).toEqual([
+      `Case - 1 - 260830${extension}`,
+      `Case - 1 - 260830-2${extension}`,
+      `Case - 1 - 260830-3${extension}`,
+    ]);
+    expect(manifest.photos.map((p: { presignedUrl: string }) => p.presignedUrl)).toEqual([
+      "https://storage.invalid/original-0", "https://storage.invalid/original-1", "https://storage.invalid/original-2",
+    ]);
+    expect(manifest.totalSizeBytes).toBe(33);
+    expect(state.manifest).toEqual(original);
+    expect(state.files.map(row => row.source_filename)).toEqual([source, source, source]);
+  });
   it("chunks all four asset kinds and retains final-chunk IDs in manifest order", async () => {
     largeFixture();
     const response = await request(); expect(response.statusCode, response.body).toBe(200);
