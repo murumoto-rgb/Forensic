@@ -77,7 +77,9 @@ final class PhotoSyncer {
 
     // MARK: - Internals
 
-    private func syncProject(_ project: Project) async {
+    func syncProject(_ project: Project) async {
+        guard auth.session != nil, !store.isReadOnly(project), !store.hasUnsavedChanges(projectID: project.id) else { return }
+        await preCheckUploadedPhotos(in: project)
         // Plans first — small N (1-5 per project), so they complete
         // in seconds even on a fresh install where the per-device
         // UploadedFileTracker is empty. The web canvas backgrounds
@@ -91,7 +93,6 @@ final class PhotoSyncer {
         // photos already uploaded from a previous install — without
         // the pre-check we'd do 1000s of redundant getUploadUrl →
         // R2 PUT → commitUpload round-trips.
-        await preCheckUploadedPhotos(in: project)
         // Build #6.6.1: bounded-concurrency upload window. The old
         // loop uploaded strictly one object at a time — and each
         // photo is 3 sequential round-trips (getUploadUrl → R2 PUT →
@@ -101,7 +102,7 @@ final class PhotoSyncer {
         // serialized and the `inFlight` set still dedupes against
         // overlapping sweeps. Width 4 is enough to hide latency
         // without saturating a field uplink or hammering the server.
-        let photos = project.photos
+        let photos = project.photos + project.trashedPhotos
         let maxConcurrent = 4
         await withTaskGroup(of: Void.self) { group in
             var nextIndex = 0
@@ -127,6 +128,8 @@ final class PhotoSyncer {
         if photo.thumbnailFilename != nil {
             await uploadIfNeeded(photo: photo, in: project, kind: .thumb)
         }
+        if photo.markupOverlayFilename != nil { await uploadIfNeeded(photo: photo, in: project, kind: .markupPng) }
+        if photo.markupDrawingFilename != nil { await uploadIfNeeded(photo: photo, in: project, kind: .markupDrawing) }
     }
 
     /// Ask the server which of this project's photo + thumb object
@@ -141,55 +144,19 @@ final class PhotoSyncer {
     /// photo loop will run normally, which is the old (correct but
     /// slow) behaviour.
     private func preCheckUploadedPhotos(in project: Project) async {
-        var unknownKeys: [String] = []
-        for photo in project.photos {
-            let photoKey = Self.objectKey(
-                projectId: project.id, photoId: photo.id, kind: .photo)
-            if !tracker.isUploaded(photoKey) {
-                unknownKeys.append(photoKey)
-            }
-            if photo.thumbnailFilename != nil {
-                let thumbKey = Self.objectKey(
-                    projectId: project.id, photoId: photo.id, kind: .thumb)
-                if !tracker.isUploaded(thumbKey) {
-                    unknownKeys.append(thumbKey)
-                }
-            }
+        // Logical tracker keys include the manifest filename. Replacing a plan
+        // or markup must never inherit the previous image's upload receipt.
+        guard let health = try? await api.projectHealth(id: project.id) else { return }
+        let keys = health.assets.compactMap { asset -> String? in
+            guard (asset.state == "registered" || asset.state == "available"),
+                  asset.objectKey?.split(separator: "/").count == 4,
+                  let entityID = UUID(uuidString: asset.entityId) else { return nil }
+            return Self.objectKey(projectId: project.id, photoId: entityID, kind: asset.kind) + "/" + asset.filename
         }
-        if unknownKeys.isEmpty { return }
-
-        print("[PhotoSyncer] pre-checking \(unknownKeys.count) photo keys against R2 for project \(project.name)")
-
-        let chunkSize = 500
-        var existingCount = 0
-        for chunkStart in stride(from: 0, to: unknownKeys.count, by: chunkSize) {
-            let chunkEnd = min(chunkStart + chunkSize, unknownKeys.count)
-            let chunk = Array(unknownKeys[chunkStart..<chunkEnd])
-            do {
-                let resp = try await api.syncFilesCheck(objectKeys: chunk)
-                tracker.markUploaded(resp.existing)
-                existingCount += resp.existing.count
-            } catch {
-                // Per-photo loop is the fallback; idempotent on the
-                // server. This is purely an optimisation; correctness
-                // unaffected.
-                print("[PhotoSyncer] sync-files-check chunk failed at offset \(chunkStart): \(error)")
-                return
-            }
-        }
-        print("[PhotoSyncer] pre-check done — \(existingCount)/\(unknownKeys.count) already in R2; per-photo loop will skip those")
+        tracker.markUploaded(keys)
     }
 
     private func uploadIfNeeded(photo: Photo, in project: Project, kind: FileKind) async {
-        let objectKey = Self.objectKey(projectId: project.id,
-                                        photoId: photo.id,
-                                        kind: kind)
-
-        if tracker.isUploaded(objectKey) { return }
-        if inFlight.contains(objectKey) { return }
-        inFlight.insert(objectKey)
-        defer { inFlight.remove(objectKey) }
-
         // Resolve the on-disk URL for the bytes we need to upload.
         let fileURL: URL?
         switch kind {
@@ -197,9 +164,11 @@ final class PhotoSyncer {
             fileURL = store.imageURL(for: photo, in: project)
         case .thumb:
             fileURL = store.thumbnailURL(for: photo, in: project)
-        case .markupPng, .markupDrawing, .plan:
-            // Not implemented in this PR; phase 3.
-            return
+        case .markupPng:
+            fileURL = photo.markupOverlayFilename.map { store.markupsFolder(for: project).appending(path: $0) }
+        case .markupDrawing:
+            fileURL = photo.markupDrawingFilename.map { store.markupsFolder(for: project).appending(path: $0) }
+        case .plan: return
         }
         guard let fileURL,
               fileManager.fileExists(atPath: fileURL.path) else {
@@ -208,6 +177,11 @@ final class PhotoSyncer {
             // re-capture if it matters.
             return
         }
+
+        let objectKey = Self.objectKey(projectId: project.id, photoId: photo.id, kind: kind) + "/" + fileURL.lastPathComponent
+        guard !tracker.isUploaded(objectKey), !inFlight.contains(objectKey) else { return }
+        inFlight.insert(objectKey)
+        defer { inFlight.remove(objectKey) }
 
         // Build #6.6.1: read + hash off the MainActor. With the
         // 4-wide upload window these used to interleave on the main
@@ -239,22 +213,22 @@ final class PhotoSyncer {
                 kind: kind,
                 sizeBytes: data.count,
                 sha256: sha256,
-                contentType: contentType
+                contentType: contentType, sourceFilename: fileURL.lastPathComponent
             )
             guard let uploadURL = URL(string: urlResp.uploadUrl) else {
                 return
             }
             try await api.uploadBytesToPresignedURL(
-                uploadURL, data: data, contentType: contentType)
+                uploadURL, data: data, contentType: contentType, requiredHeaders: urlResp.requiredHeaders ?? [:])
             try await api.commitUpload(
                 projectId: project.id,
                 objectKey: urlResp.objectKey,
                 photoId: photo.id,
                 kind: kind,
                 sizeBytes: data.count,
-                sha256: sha256
+                sha256: sha256, sourceFilename: fileURL.lastPathComponent
             )
-            tracker.markUploaded(urlResp.objectKey)
+            tracker.markUploaded(objectKey)
         } catch APIClient.APIError.notAuthenticated {
             // Sign-in sheet is (or about to be) showing; just stop.
             return
@@ -289,7 +263,7 @@ final class PhotoSyncer {
     private func uploadPlanIfNeeded(plan: FloorPlan, in project: Project) async {
         let objectKey = Self.objectKey(projectId: project.id,
                                         photoId: plan.id,
-                                        kind: .plan)
+                                        kind: .plan) + "/" + plan.imageFilename
 
         if tracker.isUploaded(objectKey) {
             print("[PhotoSyncer] plan skip — tracker says already uploaded: \(objectKey)")
@@ -320,8 +294,12 @@ final class PhotoSyncer {
         }
 
         let data: Data
+        let sha256: String
         do {
-            data = try Data(contentsOf: fileURL)
+            (data, sha256) = try await Task.detached(priority: .utility) {
+                let bytes = try Data(contentsOf: fileURL)
+                return (bytes, Self.sha256Hex(data: bytes))
+            }.value
         } catch {
             toast.post("Plan \"\(plan.label)\": failed to read bytes: \(error.localizedDescription)", kind: .warning)
             print("[PhotoSyncer] plan read failed: \(error)")
@@ -333,7 +311,6 @@ final class PhotoSyncer {
             return
         }
 
-        let sha256 = Self.sha256Hex(data: data)
         let contentType = Self.contentType(forExtension: fileURL.pathExtension)
         print("[PhotoSyncer] plan upload starting: \(objectKey) — \(data.count) bytes, \(contentType)")
 
@@ -344,23 +321,23 @@ final class PhotoSyncer {
                 kind: .plan,
                 sizeBytes: data.count,
                 sha256: sha256,
-                contentType: contentType
+                contentType: contentType, sourceFilename: fileURL.lastPathComponent
             )
             guard let uploadURL = URL(string: urlResp.uploadUrl) else {
                 toast.post("Plan \"\(plan.label)\": server returned invalid upload URL.", kind: .warning)
                 return
             }
             try await api.uploadBytesToPresignedURL(
-                uploadURL, data: data, contentType: contentType)
+                uploadURL, data: data, contentType: contentType, requiredHeaders: urlResp.requiredHeaders ?? [:])
             try await api.commitUpload(
                 projectId: project.id,
                 objectKey: urlResp.objectKey,
                 photoId: plan.id,
                 kind: .plan,
                 sizeBytes: data.count,
-                sha256: sha256
+                sha256: sha256, sourceFilename: fileURL.lastPathComponent
             )
-            tracker.markUploaded(urlResp.objectKey)
+            tracker.markUploaded(objectKey)
             print("[PhotoSyncer] plan upload OK: \(urlResp.objectKey)")
         } catch APIClient.APIError.notAuthenticated {
             return

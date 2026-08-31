@@ -95,8 +95,11 @@ export function useBatchRetag(args: {
   setProject: (next: Project) => void;
   /** Update the page-level revision after each successful PUT. */
   setRevision: (next: string) => void;
+  /** Shared manifest coordinator used by the workspace shell. */
+  save?: (next: Project) => void;
+  saveAndWait?: (next: Project) => Promise<void>;
 }) {
-  const { projectId, projectRef, revisionRef, setProject, setRevision } = args;
+  const { projectId, projectRef, revisionRef, setProject, setRevision, save, saveAndWait } = args;
   const [state, setState] = useState<BatchRunState>(INITIAL);
   const cancelledRef = useRef(false);
 
@@ -251,15 +254,26 @@ export function useBatchRetag(args: {
         const live = projectRef.current;
         const rev = revisionRef.current;
         if (!live || !rev) return;
-        const nextPhotos = live.photos.map(
-          (p) => workingPhotos.get(p.id) ?? p
-        );
+        const nextPhotos = live.photos.map((p) => {
+          const aiPhoto = workingPhotos.get(p.id);
+          return aiPhoto
+            ? { ...p, aiAnalysis: aiPhoto.aiAnalysis, pendingSuggestions: aiPhoto.pendingSuggestions }
+            : p;
+        });
         const next: Project = { ...live, photos: nextPhotos };
         try {
           setState((s) => ({ ...s, kind: "saving" }));
-          const resp = await api.putProject(projectId, next, rev);
-          setRevision(resp.revision);
-          setProject(next);
+          if (saveAndWait) {
+            await saveAndWait(next);
+          } else if (save) {
+            // The workspace save coordinator owns revision/base handling and
+            // rebases this checkpoint with unrelated edits from other tabs.
+            save(next);
+          } else {
+            const resp = await api.putProject(projectId, next, rev);
+            setRevision(resp.revision);
+            setProject(next);
+          }
           setState((s) => ({ ...s, kind: "running" }));
         } catch (e: unknown) {
           // Server rejected our write. Bail with the message; the
@@ -302,14 +316,11 @@ export function useBatchRetag(args: {
           const newSuggestions = aiAnalysisToSuggestions(analysis);
           // Merge with whatever pending suggestions the photo already
           // had — same discipline as the single-photo Re-tag.
-          const merged = dedupSuggestions(
-            photo.pendingSuggestions,
-            newSuggestions
-          );
+          const latest = projectRef.current?.photos.find((p) => p.id === photo.id) ?? photo;
           const next: Photo = {
-            ...photo,
+            ...latest,
             aiAnalysis: analysis,
-            pendingSuggestions: merged,
+            pendingSuggestions: dedupSuggestions(latest.pendingSuggestions, newSuggestions),
           };
           workingPhotos.set(photo.id, next);
           processedSinceCheckpoint += 1;
@@ -390,7 +401,7 @@ export function useBatchRetag(args: {
         kind: cancelledRef.current ? "cancelled" : "done",
       }));
     },
-    [projectId, projectRef, revisionRef, setProject, setRevision]
+    [projectId, projectRef, revisionRef, setProject, setRevision, save, saveAndWait]
   );
 
   return { state, start, cancel, reset };

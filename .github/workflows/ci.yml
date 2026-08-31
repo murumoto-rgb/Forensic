@@ -18,7 +18,7 @@ on:
 
 jobs:
   web:
-    name: Web — typecheck + build
+    name: Web — typecheck + regressions + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,14 +30,16 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm --filter @forensic/web typecheck
+      - name: Web regression tests
+        run: pnpm --filter @forensic/web test
       - name: Build
         run: pnpm --filter @forensic/web build
 
   server:
-    name: Server — typecheck
+    name: Server — typecheck + safety regressions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +51,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm --filter @forensic/server typecheck
+      - name: Server safety and recovery tests
+        run: pnpm --filter @forensic/server test

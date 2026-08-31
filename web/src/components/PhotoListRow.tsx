@@ -34,6 +34,7 @@ interface Props {
   onOpenEditor: () => void;
   onToggleFavorite: () => void;
   onToggleSelected: () => void;
+  onThumbnailError: () => void;
 }
 
 const ROTATIONS_LABEL: Record<number, string> = {
@@ -72,6 +73,7 @@ export function PhotoListRow({
   onOpenEditor,
   onToggleFavorite,
   onToggleSelected,
+  onThumbnailError,
 }: Props) {
   // Resolve floor-plan label for the "location" line. iOS treats
   // a photo as "located" when it has a plan AND pixel coordinates;
@@ -136,9 +138,16 @@ export function PhotoListRow({
           />
         </label>
       )}
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={thumbClickHandler}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            thumbClickHandler();
+          }
+        }}
         className="relative block shrink-0 overflow-hidden rounded border border-neutral-800 bg-neutral-950"
         style={{ width: 144, height: 108 }}
         aria-label={
@@ -153,14 +162,15 @@ export function PhotoListRow({
           url={url}
           batchLoading={batchLoading}
           alt={photo.userCaption ?? `Photo ${photo.sequenceNumber}`}
-          onClick={onOpen}
+          onClick={undefined}
+          onError={onThumbnailError}
         />
         {photo.previewRotation !== 0 && (
           <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-200">
             {ROTATIONS_LABEL[photo.previewRotation] ?? `↻ ${photo.previewRotation}°`}
           </span>
         )}
-      </button>
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <header className="flex flex-wrap items-baseline gap-2">

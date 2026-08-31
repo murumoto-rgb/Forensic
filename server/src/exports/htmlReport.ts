@@ -2,7 +2,7 @@
  * HTML report renderer for the server-side PDF export
  * (Build #5.63.1, PR #2 of 3 for plan item #3).
  *
- * Pulls photo thumbnails + plan images out of R2, base64-encodes
+ * Pulls original photos + plan images out of R2, base64-encodes
  * them inline, and assembles a multi-page report:
  *
  *   * Cover page — project name, address, GPS, photo + plan counts,
@@ -19,18 +19,15 @@
  *
  * Image sizing: a floor plan's overlay needs to know the plan
  * image's intrinsic pixel dimensions so the SVG `viewBox` can match
- * (then `planPixelX/Y` coordinates land on the right pixel). The
- * `image-size` lib reads the dimensions off the raw bytes — cheap,
- * no decode required.
+ * (then `planPixelX/Y` coordinates land on the right pixel). A bounded
+ * JPEG/PNG header probe reads dimensions; Chromium verifies the full decode.
  *
- * Photo cap: at 200+ photos the base64'd HTML hits double-digit MBs
- * and Chromium starts to struggle on Render's 512 MB tier. The
- * worker surfaces a clear "too large" error rather than OOM. Future
- * options-sheet PR (#3) can let the user pick a subset.
+ * Image and page budgets are enforced per streamed chunk; the PDF worker
+ * separately caps the final document. Required evidence never becomes a
+ * successful placeholder-only export.
  */
 
 import type { FastifyBaseLogger } from "fastify";
-import { imageSize } from "image-size";
 import type {
   Bucket,
   DistressKind,
@@ -39,26 +36,24 @@ import type {
   PdfAnnotationOptions,
   PdfExportOptions,
   PdfPlanMode,
-  PdfSection,
   Photo,
   Project,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
-import { getObjectBytes } from "../r2.js";
+import { getObjectStream } from "../r2.js";
+import { probeImageDimensions } from "./imageProbe.js";
+import type { ReportBrandingForExport } from "../reportBranding.js";
 
-/**
- * Maximum HTML pages per rendered chunk (Build #5.72.1 — chunked
- * rendering). The renderer now produces an array of HTML chunks;
- * each chunk goes through its own Puppeteer setContent → page.pdf
- * cycle, and the worker merges the per-chunk PDF buffers with
- * `pdf-lib`. This caps Chromium's working set to one chunk's
- * worth of HTML, dropping the previous `MAX_PHOTOS_PER_PDF = 1000`
- * limit entirely. Picked conservatively for Render's free-tier
- * 512 MB: at perPage=6 a chunk carries ~150 photos worth of
- * inline-base64 thumbs ≈ 4-5 MB HTML, well within memory budget.
- */
+/** Upper bounds apply to both materialized HTML and source image buffers. */
 export const PAGES_PER_CHUNK = 10;
+export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+export const MAX_CHUNK_IMAGE_BYTES = 32 * 1024 * 1024;
+const MAX_CHUNK_HTML_BYTES = 48 * 1024 * 1024;
+const MAX_CHUNK_PIXELS = 80_000_000;
+const METADATA_ROWS_PER_CHUNK = 100;
 
+interface AssetReference { key: string; sizeBytes: number; requirePng?: boolean }
+interface ContactItem { photo: Photo; marked: boolean }
 /** Color palette for distress marks. Mirrors the web canvas + iOS
  *  PDF for consistency across the three render surfaces. */
 const DISTRESS_COLORS: Record<DistressKind, string> = {
@@ -75,28 +70,16 @@ const DISTRESS_LABELS: Record<DistressKind, string> = {
   crackFloor: "Crack in floor",
 };
 
-/**
- * R2 object-key resolution (Build #5.74.2).
- *
- * The renderer used to compute object keys deterministically as
- * `${projectId}/${photoId}/thumb` (etc.), but iOS doesn't always
- * upload a separate `thumb` row — historically only `kind=photo`
- * was uploaded, and the existing `routes/photos.ts` falls back from
- * thumb → photo via a `files`-table lookup. Mimicking that lookup
- * here makes the PDF worker pull whichever object actually exists
- * in R2 instead of guessing.
- *
- * `kindPreference` lists kinds in priority order. For photos that's
- * `['thumb', 'photo']` — prefer the smaller binary, fall back to
- * the full image. For plans it's `['plan']` — there's no alternate.
- */
+/** Resolve registered keys instead of constructing deterministic paths.
+ * Reports require full originals (kind=photo), never tiny navigation thumbs. */
 async function resolveFileObjectKeysByPhotoId(
   projectId: string,
   ids: string[],
   kindPreference: string[],
-  log: FastifyBaseLogger
-): Promise<Map<string, string>> {
-  const result = new Map<string, string>();
+  log: FastifyBaseLogger,
+  filenames: Map<string, string>
+): Promise<Map<string, AssetReference>> {
+  const result = new Map<string, AssetReference>();
   if (ids.length === 0) return result;
 
   // UUID case-preservation map (Build #5.74.3 — same bug
@@ -121,8 +104,8 @@ async function resolveFileObjectKeysByPhotoId(
   for (let i = 0; i < ids.length; i += SUB_BATCH) {
     const chunk = ids.slice(i, i + SUB_BATCH);
     const { data, error } = await supabaseAdmin
-      .from("files")
-      .select("photo_id, kind, object_key")
+      .from("current_project_files")
+      .select("photo_id, kind, object_key, size_bytes, source_filename")
       .eq("project_id", projectId)
       .in("photo_id", chunk)
       .in("kind", kindPreference);
@@ -131,12 +114,14 @@ async function resolveFileObjectKeysByPhotoId(
         { err: error, projectId, chunkSize: chunk.length },
         "pdf renderer — files lookup failed"
       );
-      continue;
+      throw new Error("Required PDF asset registry could not be read");
     }
     for (const row of (data ?? []) as Array<{
       photo_id: string;
       kind: string;
       object_key: string;
+      size_bytes: number;
+      source_filename: string;
     }>) {
       const rowPriority = kindPriority.get(row.kind);
       if (rowPriority == null) continue;
@@ -145,9 +130,12 @@ async function resolveFileObjectKeysByPhotoId(
       // happen since we only queried ids the caller passed).
       const photoId =
         requestedByLower.get(row.photo_id.toLowerCase()) ?? row.photo_id;
+      if (row.source_filename !== filenames.get(photoId)) throw new Error("PDF asset filename changed after the project snapshot. Retry the export.");
       const existing = chosenPriority.get(photoId);
       if (existing == null || rowPriority < existing) {
-        result.set(photoId, row.object_key);
+        const sizeBytes = Number(row.size_bytes);
+        if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 1) throw new Error("PDF asset byte length is unverified");
+        result.set(photoId, { key: row.object_key, sizeBytes, requirePng: row.kind === "markup_png" });
         chosenPriority.set(photoId, rowPriority);
       }
     }
@@ -164,70 +152,59 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** Chromium prints this inside the page margin, including table overflow pages. */
+export function reportFooterTemplate(text: string): string {
+  return `<div style="font-size:8px;width:100%;text-align:center;color:#64748b;padding:0 36px">${escapeHtml(text)}</div>`;
+}
+
 interface ImageBlob {
   dataUrl: string;
   width: number;
   height: number;
 }
 
-/** Read bytes from R2 and produce a base64 `data:` URL plus the
- *  decoded intrinsic dimensions. Returns null if the object is
- *  missing — the caller renders a "(image pending)" placeholder. */
-async function fetchImage(
-  objectKey: string,
-  log: FastifyBaseLogger
-): Promise<ImageBlob | null> {
+/** Stream with an enforced byte limit; never buffer an arbitrary R2 object. */
+async function fetchImage(asset: AssetReference, log: FastifyBaseLogger): Promise<ImageBlob> {
+  if (asset.sizeBytes > MAX_IMAGE_BYTES) throw new Error("PDF image exceeds 12 MiB. Use a smaller original image before exporting.");
+  const stream = await getObjectStream(asset.key);
+  const timeout = setTimeout(() => stream.destroy(new Error("PDF image download timed out")), 30_000);
   try {
-    const bytes = await getObjectBytes(objectKey);
-    let dims: { width?: number; height?: number; type?: string };
-    try {
-      dims = imageSize(bytes);
-    } catch {
-      // image-size returns a typed shape on success; on unknown
-      // format it throws. Be permissive — we still want to show
-      // the image even if we can't probe it.
-      dims = {};
+    const parts: Buffer[] = [];
+    let size = 0;
+    for await (const part of stream) {
+      const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
+      size += bytes.length;
+      if (size > MAX_IMAGE_BYTES || size > asset.sizeBytes) throw new Error("PDF image byte length exceeds its verified registration");
+      parts.push(bytes);
     }
-    const mime =
-      dims.type === "png"
-        ? "image/png"
-        : dims.type === "heic"
-          ? "image/heic"
-          : "image/jpeg";
-    const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
-    return {
-      dataUrl,
-      width: dims.width ?? 0,
-      height: dims.height ?? 0,
-    };
-  } catch (err) {
-    log.warn({ err, objectKey }, "pdf renderer — image fetch failed");
-    return null;
+    if (size !== asset.sizeBytes) throw new Error("PDF image byte length does not match its registration");
+    const bytes = Buffer.concat(parts, size);
+    const dims = probeImageDimensions(bytes);
+    if (asset.requirePng && dims.type !== "png") throw new Error("Required PDF markup must be a PNG image. Export aborted.");
+    if (dims.width * dims.height > MAX_CHUNK_PIXELS) throw new Error("PDF image dimensions exceed the safe rendering limit");
+    return { dataUrl: `data:image/${dims.type};base64,${bytes.toString("base64")}`, width: dims.width, height: dims.height };
+  } catch (error) {
+    log.warn({ err: error, objectKey: asset.key }, "Required PDF image unavailable; export aborted");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    stream.destroy();
   }
 }
 
-/** Parallel fetch with a small concurrency cap so we don't open a
- *  hundred sockets to R2 at once. Returns a map from object key to
- *  result so callers can look up by id. */
-async function fetchImagesParallel(
-  keys: string[],
-  log: FastifyBaseLogger,
-  concurrency = 6
-): Promise<Map<string, ImageBlob | null>> {
-  const results = new Map<string, ImageBlob | null>();
-  let cursor = 0;
-  async function worker() {
-    while (cursor < keys.length) {
-      const idx = cursor++;
-      const key = keys[idx];
-      if (!key) continue;
-      const blob = await fetchImage(key, log);
-      results.set(key, blob);
+async function fetchImagesParallel(assets: AssetReference[], log: FastifyBaseLogger): Promise<Map<string, ImageBlob>> {
+  const results = new Map<string, ImageBlob>();
+  let next = 0;
+  let failure: unknown;
+  await Promise.all(Array.from({ length: Math.min(6, assets.length) }, async () => {
+    while (next < assets.length && failure === undefined) {
+      const asset = assets[next++]!;
+      try { results.set(asset.key, await fetchImage(asset, log)); }
+      catch (error) { failure = error; }
     }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, keys.length) }, worker)
-  );
+  }));
+  // Wait for all already-running downloads before propagating a failure.
+  if (failure !== undefined) throw failure;
   return results;
 }
 
@@ -235,16 +212,17 @@ async function fetchImagesParallel(
 // Page renderers
 // ---------------------------------------------------------------------------
 
-function coverPage(project: Project): string {
+function coverPage(project: Project, planCount: number, branding?: ReportBrandingForExport): string {
   const photoCount = project.photos.filter((p) => p.trashedAt == null).length;
-  const planCount = project.floorPlans.length;
   const generatedAt = new Date().toLocaleString("en-US", {
     dateStyle: "long",
     timeStyle: "short",
   });
   const gps = project.projectGPS;
   return `<section class="page cover">
-    <h1>${escapeHtml(project.name)}</h1>
+    ${branding?.logoDataUrl ? `<img class="report-logo" src="${escapeHtml(branding.logoDataUrl)}" alt="Report logo">` : ""}
+    <h1>${escapeHtml(branding?.titleOverride ?? project.name)}</h1>
+    ${branding?.subtitleOverride ? `<div class="subtitle">${escapeHtml(branding.subtitleOverride)}</div>` : ""}
     ${
       project.projectAddress
         ? `<div class="addr">${escapeHtml(project.projectAddress)}</div>`
@@ -370,22 +348,20 @@ function annotationsHtml(
 /** Single tile in the contact sheet: header → image → annotations. */
 function contactSheetTile(
   photo: Photo,
-  thumb: ImageBlob | null,
+  thumb: ImageBlob,
   planLabel: string | null,
-  annotations: PdfAnnotationOptions
+  annotations: PdfAnnotationOptions,
+  overlay?: ImageBlob
 ): string {
   const seq = `#${photo.sequenceNumber}`;
   return `<div class="tile">
     <div class="tile-header">
-      <span class="seq">${escapeHtml(seq)}</span>
+      <span class="seq">${escapeHtml(seq)}</span>${overlay ? `<span class="marked-label">Marked copy</span>` : ""}
       ${planLabel ? `<span class="plan">${escapeHtml(planLabel)}</span>` : ""}
     </div>
     <div class="tile-image">
-      ${
-        thumb
-          ? `<img src="${thumb.dataUrl}" alt="${escapeHtml(seq)}">`
-          : `<div class="missing">pending sync</div>`
-      }
+      <img class="original-image" src="${thumb.dataUrl}" alt="${escapeHtml(seq)}">
+      ${overlay ? `<img class="markup-overlay" src="${overlay.dataUrl}" alt="Markup for ${escapeHtml(seq)}">` : ""}
     </div>
     ${annotationsHtml(photo, annotations)}
   </div>`;
@@ -393,19 +369,23 @@ function contactSheetTile(
 
 /** One printed page containing up to `perPage` photo tiles. */
 function contactSheetPage(
-  photos: Photo[],
-  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
+  items: ContactItem[],
+  photoBlobsByPhotoId: Map<string, ImageBlob>,
+  markupBlobsByPhotoId: Map<string, ImageBlob>,
   planLabelById: Map<string, string>,
   options: PdfExportOptions
 ): string {
   const { cols, rows } = gridDimensions(options.perPage);
-  const tilesHtml = photos
-    .map((p) => {
-      const blob = photoBlobsByPhotoId.get(p.id) ?? null;
+  const tilesHtml = items
+    .map(({ photo: p, marked }) => {
+      const blob = photoBlobsByPhotoId.get(p.id);
+      if (!blob) throw new Error(`Required PDF photo ${p.id} was not loaded`);
       const planLabel = p.floorPlanID
-        ? planLabelById.get(p.floorPlanID) ?? null
-        : null;
-      return contactSheetTile(p, blob, planLabel, options.annotations);
+        ? planLabelById.get(p.floorPlanID.toLowerCase()) ?? "Unlocated"
+        : "Unlocated";
+      const overlay = marked ? markupBlobsByPhotoId.get(p.id) : undefined;
+      if (marked && !overlay) throw new Error(`Required PDF markup for ${p.id} was not loaded`);
+      return contactSheetTile(p, blob, planLabel, options.annotations, overlay);
     })
     .join("\n");
   // Inline grid template so the same CSS handles any cols/rows
@@ -503,21 +483,16 @@ interface PlanSectionOptions {
 
 function planSection(
   plan: FloorPlan,
-  planImage: ImageBlob | null,
+  planImage: ImageBlob,
   planPhotos: Photo[],
   sectionOptions: PlanSectionOptions
 ): string {
   const title = sectionOptions.subtitle
     ? `${escapeHtml(plan.label)} <span class="subtitle">— ${escapeHtml(sectionOptions.subtitle)}</span>`
     : escapeHtml(plan.label);
-  if (!planImage) {
-    return `<section class="page plan">
-      <h2>${title}</h2>
-      <div class="missing">(plan image pending sync)</div>
-    </section>`;
-  }
-  const W = planImage.width || 1000;
-  const H = planImage.height || 1000;
+  if (!planImage) throw new Error(`Required PDF plan ${plan.id} was not loaded`);
+  const W = planImage.width;
+  const H = planImage.height;
   // Build #6.20.1: pins scale with the user's pin-size preference —
   // the web exporter previously hardcoded r=14 while iOS's exporter
   // honored its bubbleScale, so the same project printed differently
@@ -576,7 +551,7 @@ function planSection(
  *  HTML. */
 function planPages(
   plan: FloorPlan,
-  planImage: ImageBlob | null,
+  planImage: ImageBlob,
   planPhotos: Photo[],
   mode: PdfPlanMode,
   pinScale: number
@@ -588,6 +563,7 @@ function planPages(
       subtitle: "Photos",
       pinScale,
     });
+    if (plan.distress.length === 0) return photoPage;
     const distressPage = planSection(plan, planImage, planPhotos, {
       includePhotos: false,
       includeDistress: true,
@@ -596,6 +572,7 @@ function planPages(
     });
     return `${photoPage}\n${distressPage}`;
   }
+  if (mode === "distressOnly" && plan.distress.length === 0) return "";
   return planSection(plan, planImage, planPhotos, {
     includePhotos: modeRendersPhotos(mode),
     includeDistress: modeRendersDistress(mode),
@@ -617,57 +594,6 @@ function planPages(
  * trailing group with the bucket name "Unbucketed" — same way iOS
  * handles the unlocated case for plans. Nothing gets dropped.
  */
-function renderUngroupedContactSheets(
-  selectedPhotos: Photo[],
-  perPage: number,
-  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
-  planLabelById: Map<string, string>,
-  options: PdfExportOptions
-): string[] {
-  return chunk(selectedPhotos, perPage).map((group) =>
-    contactSheetPage(group, photoBlobsByPhotoId, planLabelById, options)
-  );
-}
-
-function renderBucketedContactSheets(
-  selectedPhotos: Photo[],
-  buckets: Bucket[],
-  perPage: number,
-  photoBlobsByPhotoId: Map<string, ImageBlob | null>,
-  planLabelById: Map<string, string>,
-  options: PdfExportOptions
-): string[] {
-  // Build a stable order: buckets by `sortOrder`, then a trailing
-  // sentinel for "Unbucketed". Photos missing or pointing at a
-  // deleted bucket land in the sentinel group.
-  const bucketById = new Map(buckets.map((b) => [b.id, b]));
-  const orderedBuckets = [...buckets].sort(
-    (a, b) => a.sortOrder - b.sortOrder
-  );
-
-  const groups: Array<{ bucket: Bucket | null; photos: Photo[] }> = [];
-  for (const b of orderedBuckets) {
-    const photos = selectedPhotos.filter((p) => p.bucketID === b.id);
-    if (photos.length > 0) groups.push({ bucket: b, photos });
-  }
-  const unbucketed = selectedPhotos.filter(
-    (p) => !p.bucketID || !bucketById.has(p.bucketID)
-  );
-  if (unbucketed.length > 0) groups.push({ bucket: null, photos: unbucketed });
-
-  // Each bucket group contributes: [dividerPage, ...sheetPages].
-  const pages: string[] = [];
-  for (const { bucket, photos } of groups) {
-    pages.push(bucketDividerHtml(bucket, photos.length));
-    for (const sheet of chunk(photos, perPage)) {
-      pages.push(
-        contactSheetPage(sheet, photoBlobsByPhotoId, planLabelById, options)
-      );
-    }
-  }
-  return pages;
-}
-
 /** One full page introducing a bucket group — big colour bar + name
  *  + photo count. Same shape for the synthetic "Unbucketed" group
  *  (no colour bar, neutral name). */
@@ -686,34 +612,6 @@ function bucketDividerHtml(
       </div>
     </div>
   </section>`;
-}
-
-/** Plan-pages section renderer extracted in #5.71.1 so the
- *  body-section iteration over `sectionOrder` can compose it from
- *  one call. Returns "" when there are no plans OR the
- *  caller-configured legacy `includeFloorPlanPages` flag is false. */
-function renderPlanPages(
-  floorPlans: FloorPlan[],
-  allPhotos: Photo[],
-  planBlobsByPlanId: Map<string, ImageBlob | null>,
-  options: PdfExportOptions
-): string[] {
-  if (floorPlans.length === 0) return [];
-  // Honour the legacy includeFloorPlanPages flag when present (jobs
-  // persisted before #5.67.1 wrote it). Once the modal in #5.73.1
-  // drops it, sectionOrder is the only switch — but for the rollout
-  // we keep both working.
-  if (options.includeFloorPlanPages === false) return [];
-  return floorPlans.map((plan) => {
-    const blob = planBlobsByPlanId.get(plan.id) ?? null;
-    // The plan still shows ALL its pins (not just the filtered
-    // selection) — engineers want the unfiltered spatial picture
-    // even when they exported a subset.
-    const planPhotos = allPhotos.filter(
-      (p) => p.floorPlanID === plan.id && p.trashedAt == null
-    );
-    return planPages(plan, blob, planPhotos, options.planMode, options.pinScale);
-  });
 }
 
 /**
@@ -755,7 +653,7 @@ function metadataTableHtml(
         timeStyle: "short",
       });
       const planLabel = p.floorPlanID
-        ? planLabelById.get(p.floorPlanID) ?? "—"
+        ? planLabelById.get(p.floorPlanID.toLowerCase()) ?? "Unlocated"
         : "—";
       const tagLabels = p.tags
         .filter((t) => t.parentTag == null)
@@ -805,7 +703,7 @@ function metadataTableHtml(
 /** Apply the user's photo filter on top of the always-applied
  *  "exclude trashed unless `includeTrashed`" rule. */
 function selectPhotos(project: Project, options: PdfExportOptions): Photo[] {
-  let pool = project.photos;
+  let pool = options.includeTrashed ? [...project.photos, ...project.trashedPhotos] : project.photos;
   if (!options.includeTrashed) {
     pool = pool.filter((p) => p.trashedAt == null);
   }
@@ -834,12 +732,13 @@ function chunk<T>(arr: T[], size: number): T[][] {
 function wrapHtml(
   bodyHtml: string,
   styles: string,
-  project: Project
+  project: Project,
+  branding?: ReportBrandingForExport
 ): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title>
 <style>${styles}</style></head>
-<body>${bodyHtml}</body></html>`;
+<body${branding?.footerOverride ? ' class="has-footer"' : ""}>${branding?.footerOverride ? `<footer class="report-footer">${escapeHtml(branding.footerOverride)}</footer>` : ""}${bodyHtml}</body></html>`;
 }
 
 /** The full inline `<style>` block. Pulled out of `renderReportChunks`
@@ -856,6 +755,10 @@ function sharedStyles(options: PdfExportOptions): string {
 
   /* Cover */
   .cover { display: flex; flex-direction: column; min-height: 10in; }
+  .report-logo { max-width: 2.5in; max-height: 1in; object-fit: contain; align-self: flex-start; margin-bottom: 0.25in; }
+  @media screen { .has-footer .page { padding-bottom: 0.25in; } }
+  @media print { .report-footer { display: none; } }
+  .report-footer { position: fixed; bottom: 0; left: 0; right: 0; font-size: 8pt; color: #64748b; text-align: center; }
   .cover h1 { font-size: 32pt; margin: 0 0 0.25in; }
   .cover .addr { font-size: 12pt; color: #475569; margin-bottom: 0.1in; }
   .cover .gps { font-size: 10pt; color: #64748b; font-family: ui-monospace, monospace; }
@@ -876,10 +779,12 @@ function sharedStyles(options: PdfExportOptions): string {
                  border-bottom: 1px solid #e2e8f0; margin-bottom: 0.05in; }
   .tile-header .seq { font-weight: 700; color: #0f172a; }
   .tile-header .plan { margin-left: auto; color: #2563eb; font-size: 9pt; }
-  .tile-image { flex: 1 1 auto; display: flex; justify-content: center;
+  .tile-image { position: relative; flex: 1 1 auto; display: flex; justify-content: center;
                 align-items: center; background: #f1f5f9;
                 border: 1px solid #e2e8f0; min-height: 0; }
-  .tile-image img { max-height: 100%; max-width: 100%; object-fit: contain; }
+  .tile-image img { position: absolute; inset: 0; height: 100%; width: 100%; object-fit: contain; }
+  .tile-image .markup-overlay { z-index: 1; }
+  .marked-label { font-size: 8pt; color: #64748b; }
   .tile-image .missing { color: #94a3b8; font-size: 9pt; }
   .annotations { display: flex; flex-direction: column; gap: 2px;
                  margin-top: 0.05in; font-size: 9pt; color: #334155; }
@@ -949,152 +854,150 @@ function sharedStyles(options: PdfExportOptions): string {
   `;
 }
 
-/**
- * Build the report as an array of HTML chunks (Build #5.72.1 —
- * chunked rendering). Each chunk is a complete `<html>` document
- * that the worker pipes through one Puppeteer setContent →
- * page.pdf cycle; the per-chunk PDFs are then merged with
- * `pdf-lib`. This caps Chromium's working set per chunk, which
- * lets us drop the previous 1000-photo hard cap entirely.
- *
- * Chunk strategy:
- *   - Cover page is its own chunk when `options.includeCoverPage`.
- *   - Plan-pages section is one chunk (rarely >10 plans).
- *   - Metadata-table section is one chunk.
- *   - Contact-sheets section is split into sub-chunks of
- *     `PAGES_PER_CHUNK` pages each (~150 photos at perPage=6).
- *     The body's overall `options.sectionOrder` is honoured —
- *     sections appear in the merged PDF in that order.
- *
- * Empty sections are dropped before chunking so an over-filtered
- * export doesn't produce orphan empty chunks.
- */
-export async function renderReportChunks(
-  project: Project,
-  projectId: string,
-  log: FastifyBaseLogger,
-  options: PdfExportOptions
-): Promise<string[]> {
-  const selectedPhotos = selectPhotos(project, options);
+type PageDescription =
+  | { kind: "cover" }
+  | { kind: "divider"; bucket: Bucket | null; photoCount: number }
+  | { kind: "photos"; items: ContactItem[] }
+  | { kind: "section"; label: string }
+  | { kind: "plan"; plan: FloorPlan }
+  | { kind: "metadata"; photos: Photo[] };
 
-  // Resolve the actual R2 object key per photo/plan via the `files`
-  // table — iOS only uploads `kind=photo` rows (no separate thumb),
-  // so the renderer can't assume thumbs exist (Build #5.74.2). Same
-  // fallback logic the existing `routes/photos.ts` endpoint uses:
-  // prefer thumb, fall back to photo. Plans use `kind=plan`.
-  const photoIds = selectedPhotos.map((p) => p.id);
-  const planIds = project.floorPlans.map((p) => p.id);
-  const [photoKeyByPhotoId, planKeyByPlanId] = await Promise.all([
-    resolveFileObjectKeysByPhotoId(
-      projectId,
-      photoIds,
-      ["thumb", "photo"],
-      log
-    ),
-    resolveFileObjectKeysByPhotoId(projectId, planIds, ["plan"], log),
-  ]);
+/** Descriptions contain metadata references only; grouping happens globally once. */
+function selectedPlans(project: Project, options: PdfExportOptions): FloorPlan[] {
+  const selected = options.selectedFloorIds && new Set(options.selectedFloorIds.map(id => id.toLowerCase()));
+  return project.floorPlans.filter(plan => selected === null || selected.has(plan.id.toLowerCase()));
+}
 
-  // Fetch all binaries in one parallel pass so chunks share a single
-  // read of R2 — moving fetch inside the per-chunk loop would
-  // multiply round trips by chunk count.
-  const allKeys = Array.from(
-    new Set([
-      ...Array.from(photoKeyByPhotoId.values()),
-      ...Array.from(planKeyByPlanId.values()),
-    ])
-  );
-  const blobsByKey = await fetchImagesParallel(allKeys, log);
-  log.info(
-    {
-      projectId,
-      photoCount: selectedPhotos.length,
-      photosResolved: photoKeyByPhotoId.size,
-      planCount: project.floorPlans.length,
-      plansResolved: planKeyByPlanId.size,
-      blobsFetched: Array.from(blobsByKey.values()).filter((b) => b != null)
-        .length,
-    },
-    "pdf renderer — image resolution complete"
-  );
-
-  // Convert "by R2 key" → "by photo/plan id" maps the page renderers
-  // expect. A photo missing from `photoKeyByPhotoId` (no file row) or
-  // whose blob fetch failed lands as a null in the map → tile shows
-  // the "(pending sync)" placeholder.
-  const photoBlobsByPhotoId = new Map<string, ImageBlob | null>();
-  for (const photo of selectedPhotos) {
-    const key = photoKeyByPhotoId.get(photo.id);
-    photoBlobsByPhotoId.set(photo.id, key ? blobsByKey.get(key) ?? null : null);
+function* describePages(project: Project, options: PdfExportOptions): Generator<PageDescription> {
+  const photos = selectPhotos(project, options);
+  if (options.includeCoverPage) yield { kind: "cover" };
+  for (const section of options.sectionOrder) {
+    if (section === "plan" && options.includeFloorPlanPages !== false) {
+      for (const plan of selectedPlans(project, options)) {
+        if (options.planMode !== "distressOnly" || plan.distress.length > 0) yield { kind: "plan", plan };
+      }
+    } else if (section === "metadataTable" && options.includeMetadataTable) {
+      for (const batch of chunk(photos, METADATA_ROWS_PER_CHUNK)) yield { kind: "metadata", photos: batch };
+    } else if (section === "contactSheets") {
+      // Floor partitions match iOS: selected floors first, excluded/unplaced
+      // photos retained in a trailing Unlocated section. Bucket ordering is
+      // computed for each complete partition before any transport chunking.
+      const plans = selectedPlans(project, options);
+      const planIds = new Set(plans.map(plan => plan.id.toLowerCase()));
+      const partitions = project.floorPlans.length ? [
+        ...plans.map(plan => ({ label: plan.label, photos: photos.filter(photo => photo.floorPlanID?.toLowerCase() === plan.id.toLowerCase()) })),
+        { label: "Unlocated photos", photos: photos.filter(photo => !photo.floorPlanID || !planIds.has(photo.floorPlanID.toLowerCase())) },
+      ] : [{ label: null, photos }];
+      for (const partition of partitions) {
+        if (!partition.photos.length) continue;
+        if (partition.label) yield { kind: "section", label: partition.label };
+        const groups: Array<{ bucket: Bucket | null; photos: Photo[] }> = [];
+        if (options.groupByBucket) {
+          const known = new Set(project.buckets.map(b => b.id));
+          for (const bucket of [...project.buckets].sort((a, b) => a.sortOrder - b.sortOrder)) {
+            const members = partition.photos.filter(photo => photo.bucketID === bucket.id);
+            if (members.length) groups.push({ bucket, photos: members });
+          }
+          const unbucketed = partition.photos.filter(photo => !photo.bucketID || !known.has(photo.bucketID));
+          if (unbucketed.length) groups.push({ bucket: null, photos: unbucketed });
+        } else groups.push({ bucket: null, photos: partition.photos });
+        for (const group of groups) {
+          if (options.groupByBucket) yield { kind: "divider", bucket: group.bucket, photoCount: group.photos.length };
+          const items = group.photos.flatMap(photo => photo.markupOverlayFilename
+            ? [{ photo, marked: false }, { photo, marked: true }] : [{ photo, marked: false }]);
+          for (const page of chunk(items, options.perPage)) yield { kind: "photos", items: page };
+        }
+      }
+    }
   }
-  const planBlobsByPlanId = new Map<string, ImageBlob | null>();
-  for (const plan of project.floorPlans) {
-    const key = planKeyByPlanId.get(plan.id);
-    planBlobsByPlanId.set(plan.id, key ? blobsByKey.get(key) ?? null : null);
-  }
+}
 
-  const planLabelById = new Map(
-    project.floorPlans.map((p) => [p.id, p.label] as const)
-  );
-
-  const perPageResolved = options.perPage ?? options.photosPerPage ?? 6;
-
-  const contactSheetPages = options.groupByBucket
-    ? renderBucketedContactSheets(
-        selectedPhotos,
-        project.buckets,
-        perPageResolved,
-        photoBlobsByPhotoId,
-        planLabelById,
-        options
-      )
-    : renderUngroupedContactSheets(
-        selectedPhotos,
-        perPageResolved,
-        photoBlobsByPhotoId,
-        planLabelById,
-        options
-      );
-
-  const planPages = renderPlanPages(
-    project.floorPlans,
-    project.photos,
-    planBlobsByPlanId,
-    options
-  );
-
-  const metadataPage = options.includeMetadataTable
-    ? metadataTableHtml(selectedPhotos, planLabelById)
-    : "";
-
-  const styles = sharedStyles(options);
-  const chunks: string[] = [];
-
-  if (options.includeCoverPage) {
-    chunks.push(wrapHtml(coverPage(project), styles, project));
-  }
-
-  // Each `PdfSection` slot maps to an array of HTML chunks (could be
-  // empty when its underlying data is absent). The outer order
-  // honours `options.sectionOrder`; inside `contactSheets`, sub-
-  // chunks of `PAGES_PER_CHUNK` pages each cap per-chunk memory.
-  const sectionChunksByKey: Record<PdfSection, string[]> = {
-    plan:
-      planPages.length === 0
-        ? []
-        : [wrapHtml(planPages.join("\n"), styles, project)],
-    contactSheets: chunk(contactSheetPages, PAGES_PER_CHUNK).map((pages) =>
-      wrapHtml(pages.join("\n"), styles, project)
-    ),
-    metadataTable:
-      metadataPage.length === 0
-        ? []
-        : [wrapHtml(metadataPage, styles, project)],
+function requiredAssets(page: PageDescription, photos: Map<string, AssetReference>, plans: Map<string, AssetReference>, markup: Map<string, AssetReference>): AssetReference[] {
+  const require = (registry: Map<string, AssetReference>, id: string, kind: string) => {
+    const asset = registry.get(id);
+    if (!asset) throw new Error(`Required PDF ${kind} ${id} is not uploaded. Export aborted.`);
+    return asset;
   };
+  if (page.kind === "plan") return [require(plans, page.plan.id, "plan")];
+  if (page.kind !== "photos") return [];
+  return page.items.flatMap(({ photo, marked }) => marked
+    ? [require(photos, photo.id, "photo"), require(markup, photo.id, "markup")]
+    : [require(photos, photo.id, "photo")]);
+}
 
-  for (const sectionKey of options.sectionOrder) {
-    const sectionChunks = sectionChunksByKey[sectionKey];
-    if (sectionChunks) chunks.push(...sectionChunks);
+/** Backpressure reaches R2: advancing the iterator is the only way to fetch
+ * another bounded batch. Neither HTML nor base64 is retained for earlier chunks.
+ * Plans are processed one at a time; there is no project-wide plan image cache. */
+export async function* renderReportChunks(
+  project: Project, projectId: string, log: FastifyBaseLogger, options: PdfExportOptions, branding?: ReportBrandingForExport
+): AsyncGenerator<string> {
+  const selected = selectPhotos(project, options);
+  const plans = selectedPlans(project, options);
+  const renderedPlans = options.includeFloorPlanPages === false || !options.sectionOrder.includes("plan") ? []
+    : plans.filter(plan => options.planMode !== "distressOnly" || plan.distress.length > 0);
+  const contactPhotos = options.sectionOrder.includes("contactSheets") ? selected : [];
+  const marked = contactPhotos.filter(photo => photo.markupOverlayFilename);
+  const [photoAssets, planAssets, markupAssets] = await Promise.all([
+    resolveFileObjectKeysByPhotoId(projectId, contactPhotos.map(p => p.id), ["photo"], log, new Map(contactPhotos.map(p => [p.id, p.imageFilename]))),
+    resolveFileObjectKeysByPhotoId(projectId, renderedPlans.map(p => p.id), ["plan"], log, new Map(renderedPlans.map(p => [p.id, p.imageFilename]))),
+    resolveFileObjectKeysByPhotoId(projectId, marked.map(p => p.id), ["markup_png"], log, new Map(marked.map(p => [p.id, p.markupOverlayFilename!]))),
+  ]);
+  const styles = sharedStyles(options);
+  const labels = new Map(plans.map(p => [p.id.toLowerCase(), p.label]));
+  let pending: PageDescription[] = [];
+  let pendingBytes = 0;
+
+  async function* renderBatch(pages: PageDescription[]): AsyncGenerator<string> {
+    const assets = new Map<string, AssetReference>();
+    for (const page of pages) for (const asset of requiredAssets(page, photoAssets, planAssets, markupAssets)) assets.set(asset.key, asset);
+    const blobs = await fetchImagesParallel([...assets.values()], log);
+    let html: string[] = [];
+    let pixels = 0;
+    for (const page of pages) {
+      // Repeated clean/marked cells share the same original data URL and
+      // decoded bitmap; count each distinct image once per printed page.
+      const pageImages = new Map(requiredAssets(page, photoAssets, planAssets, markupAssets).map(asset => [asset.key, asset]));
+      const pagePixels = [...pageImages.values()].reduce((sum, a) => {
+        const blob = blobs.get(a.key)!;
+        return sum + blob.width * blob.height;
+      }, 0);
+      if (pagePixels > MAX_CHUNK_PIXELS) throw new Error("A PDF page contains too many image pixels. Choose fewer photos per page.");
+      if (pixels + pagePixels > MAX_CHUNK_PIXELS && html.length) {
+        yield wrapHtml(html.join("\n"), styles, project, branding);
+        html = []; pixels = 0;
+      }
+      pixels += pagePixels;
+      if (page.kind === "cover") html.push(coverPage(project, plans.length, branding));
+      else if (page.kind === "section") html.push(`<section class="page floor-divider"><h2>${escapeHtml(page.label)}</h2></section>`);
+      else if (page.kind === "divider") html.push(bucketDividerHtml(page.bucket, page.photoCount));
+      else if (page.kind === "metadata") html.push(metadataTableHtml(page.photos, labels));
+      else if (page.kind === "plan") {
+        const asset = planAssets.get(page.plan.id)!;
+        const pins = project.photos.filter(p => p.floorPlanID?.toLowerCase() === page.plan.id.toLowerCase() && p.trashedAt == null);
+        html.push(planPages(page.plan, blobs.get(asset.key)!, pins, options.planMode, options.pinScale));
+      } else {
+        const byId = new Map(page.items.map(({ photo }) => [photo.id, blobs.get(photoAssets.get(photo.id)!.key)!]));
+        const overlays = new Map(page.items.filter(item => item.marked).map(({ photo }) => [photo.id, blobs.get(markupAssets.get(photo.id)!.key)!]));
+        html.push(contactSheetPage(page.items, byId, overlays, labels, options));
+      }
+      if (html.reduce((sum, part) => sum + Buffer.byteLength(part), 0) > MAX_CHUNK_HTML_BYTES) throw new Error("PDF chunk exceeds the safe HTML size limit. Reduce page content before exporting.");
+    }
+    if (html.length) yield wrapHtml(html.join("\n"), styles, project, branding);
   }
 
-  return chunks;
+  for (const page of describePages(project, options)) {
+    const assets = requiredAssets(page, photoAssets, planAssets, markupAssets);
+    const bytes = assets.reduce((sum, asset) => sum + asset.sizeBytes, 0);
+    if (bytes > MAX_CHUNK_IMAGE_BYTES) throw new Error("One PDF page exceeds 32 MiB of images. Choose fewer photos per page.");
+    // Plans/metadata/cover own their chunk; contact pages preserve their global
+    // pagination even when byte limits cause an earlier transport boundary.
+    const standalone = page.kind === "plan" || page.kind === "metadata" || page.kind === "cover";
+    if (pending.length && (standalone || pending.length >= PAGES_PER_CHUNK || pendingBytes + bytes > MAX_CHUNK_IMAGE_BYTES)) {
+      yield* renderBatch(pending);
+      pending = []; pendingBytes = 0;
+    }
+    pending.push(page); pendingBytes += bytes;
+    if (standalone) { yield* renderBatch(pending); pending = []; pendingBytes = 0; }
+  }
+  if (pending.length) yield* renderBatch(pending);
 }

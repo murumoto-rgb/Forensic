@@ -84,6 +84,7 @@ function project(over: Partial<Project> = {}): Project {
     buckets: [],
     tagSelection: null,
     aiExtraVocabulary: null,
+    inspectionChecklist: [], inspectionSessions: [], reportLayout: null,
     manifestSchemaVersion: 2,
     ...over,
   };

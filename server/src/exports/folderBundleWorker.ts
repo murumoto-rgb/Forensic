@@ -9,7 +9,7 @@
  *
  * The zip is built **streaming** via `archiver` — we don't
  * materialize the whole zip in memory before uploading. Photo
- * bytes are pulled from R2 via `getObjectBytes`, fed into the
+ * bytes are pulled serially from R2 via `getObjectStream`, fed into the
  * archive entry, and the archive's stream is piped into R2 via
  * the s3 client's multipart upload.
  *
@@ -26,7 +26,7 @@
 
 import type { FastifyBaseLogger } from "fastify";
 import archiver from "archiver";
-import { PassThrough } from "node:stream";
+import { PassThrough, Transform } from "node:stream";
 import { Upload } from "@aws-sdk/lib-storage";
 import {
   type ExportStatus,
@@ -146,93 +146,83 @@ class ProgressWriter {
 }
 
 /**
- * Bounded-concurrency fetcher. Returns an array of promises in the
- * same order as the input. At most `concurrency` fetches in flight
- * at once. Each promise resolves with the fetched value or null on
- * error so the caller can skip-and-continue without rejecting the
- * whole batch.
- *
- * Critical pattern: parallel FETCH (network-bound), serial CONSUME
- * (archive.append on the result stream). With Build #5.108.1 the
- * fetcher returns a Node Readable rather than a Buffer, so memory
- * cost is per-socket overhead instead of the full body in RAM.
- */
-function parallelFetch<T, U>(
-  items: readonly T[],
-  fetcher: (item: T) => Promise<U>,
-  concurrency: number
-): Promise<U | null>[] {
-  const out: Promise<U | null>[] = new Array(items.length);
-  let nextToStart = 0;
-  let inFlight = 0;
-  const resolvers: Array<(b: U | null) => void> = new Array(items.length);
-
-  for (let i = 0; i < items.length; i++) {
-    out[i] = new Promise<U | null>((resolve) => {
-      resolvers[i] = resolve;
-    });
-  }
-
-  function kick(): void {
-    while (inFlight < concurrency && nextToStart < items.length) {
-      const i = nextToStart++;
-      inFlight++;
-      const item = items[i];
-      if (item === undefined) {
-        resolvers[i]!(null);
-        inFlight--;
-        continue;
-      }
-      fetcher(item)
-        .then((val) => {
-          resolvers[i]!(val);
-        })
-        .catch(() => {
-          resolvers[i]!(null);
-        })
-        .finally(() => {
-          inFlight--;
-          kick();
-        });
-    }
-  }
-  kick();
-  return out;
-}
-
-/**
  * Wait for the archive entry to finish streaming. archiver emits
  * 'entry' once the previous entry's stream has been drained into
  * the zip. We wrap that in a Promise so the serial-append loop can
  * actually wait for backpressure rather than racing ahead and
  * piling up streams in memory.
  */
-function waitForEntry(archive: archiver.Archiver): Promise<void> {
-  return new Promise((resolve) => {
-    archive.once("entry", () => resolve());
+function waitForEntry(archive: archiver.Archiver, name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { archive.off("entry", onEntry); archive.off("error", onError); };
+    const onEntry = (entry: { name: string }) => {
+      if (entry.name !== name) return;
+      cleanup(); resolve();
+    };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    archive.on("entry", onEntry);
+    archive.once("error", onError);
   });
 }
 
+function appendStream(archive: archiver.Archiver, stream: import("node:stream").Readable, name: string): void {
+  stream.once("error", (err) => archive.emit("error", err));
+  archive.append(stream, { name });
+}
+
 /**
- * R2 GET concurrency. With streaming bodies (Build #5.108.1) each
- * in-flight request only holds a small socket buffer (~64KB) in
- * memory — not the full photo body. Even at 8 in-flight that's
- * ~512KB of socket bookkeeping vs the previous ~96MB of buffered
- * Buffers at concurrency 12 which OOM'd Render free tier (#5.107.1).
- *
- * Bumped DOWN to 3 in #5.109.1 after seeing SIGTERMs (not OOM)
- * mid-export on free tier. With concurrency 3 + streaming, at most
- * 3 R2 connections open at once and one body streams through the
- * archive. Memory footprint should sit well under Render's
- * eviction threshold.
- *
- * For projects > 200 photos on Render free tier, even this may not
- * finish reliably — the export runtime exceeds free tier's CPU
- * budget. Render Starter ($7/mo) gives dedicated CPU + no
- * auto-spin-down, which is the right fit for production export
- * workloads.
+ * Validate an R2 body while it is consumed by archiver. The registry size is
+ * part of the export contract: a short body must not silently become a valid
+ * (but truncated) archive entry, and an overlong body must not be accepted
+ * either. This stays streaming and never buffers the asset.
  */
-const PHOTO_FETCH_CONCURRENCY = 3;
+function validateAssetStream(
+  source: import("node:stream").Readable,
+  expectedBytes: number,
+  objectKey: string,
+): import("node:stream").Readable {
+  let consumed = 0;
+  const checked = new Transform({
+    transform(chunk, _encoding, callback) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      consumed += bytes;
+      if (consumed > expectedBytes) {
+        callback(new Error(`Asset ${objectKey} exceeds registered size ${expectedBytes} bytes`));
+        return;
+      }
+      callback(null, chunk);
+    },
+    flush(callback) {
+      if (consumed !== expectedBytes) {
+        callback(new Error(`Asset ${objectKey} consumed ${consumed} bytes; registered size is ${expectedBytes}`));
+        return;
+      }
+      callback();
+    },
+  });
+  source.once("error", (error) => checked.destroy(error));
+  // Also close the upstream socket when validation/archiving stops early.
+  checked.once("close", () => source.destroy());
+  source.pipe(checked);
+  return checked;
+}
+
+function registeredSize(value: unknown, objectKey: string): number {
+  const size = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error(`Asset ${objectKey} has invalid registered size`);
+  }
+  return size;
+}
+
+/** The current view matches the live manifest, which may have changed since
+ * this job read its snapshot. Supported legacy rows were backfilled by 0017;
+ * null/unmatched filenames are not usable evidence and must not be guessed. */
+function assertSnapshotFilename(actual: string | null, expected: string | undefined, objectKey: string): void {
+  if (expected === undefined || actual !== expected) {
+    throw new Error(`Asset ${objectKey} filename changed or is unverified for the export snapshot. Retry the export.`);
+  }
+}
 
 /** Log heap + RSS every N photos so we can correlate memory growth
  *  with progress in Render logs. */
@@ -301,7 +291,7 @@ function captionsTextForBucket(
  * Run a single folder export. Streams entries into an archiver
  * which pipes into an R2 multipart upload.
  */
-async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
+export async function runFolderExportJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   // Step 1: read the manifest.
   const { data: projectRow, error: projErr } = await supabaseAdmin
     .from("projects")
@@ -321,8 +311,8 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   };
   let photos = project.photos;
   if (opts.scope === "selected" && opts.selectedPhotoIds) {
-    const set = new Set(opts.selectedPhotoIds);
-    photos = photos.filter((p) => set.has(p.id));
+    const set = new Set(opts.selectedPhotoIds.map(id => id.toLowerCase()));
+    photos = photos.filter((p) => set.has(p.id.toLowerCase()));
   }
 
   // Step 3: group by bucket. Buckets in their saved sortOrder; null
@@ -331,8 +321,9 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
     (a, b) => a.sortOrder - b.sortOrder
   );
   const byBucket = new Map<string | null, Photo[]>();
+  const knownBucketIds = new Set(buckets.map((b) => b.id.toLowerCase()));
   for (const p of photos) {
-    const key = p.bucketID ?? null;
+    const key = p.bucketID && knownBucketIds.has(p.bucketID.toLowerCase()) ? p.bucketID.toLowerCase() : null;
     if (!byBucket.has(key)) byBucket.set(key, []);
     byBucket.get(key)!.push(p);
   }
@@ -346,9 +337,13 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   const objectKey = `${FOLDER_PREFIX}/${job.id}.zip`;
   const archive = archiver("zip", { store: true });
   const passthrough = new PassThrough();
+  // Any entry or upload failure must tear down the pipeline. Attach the
+  // rejection handler immediately so a failed multipart upload cannot
+  // become an unhandled rejection while the worker is marking the job.
+  archive.on("error", (err) => passthrough.destroy(err));
   archive.pipe(passthrough);
 
-  const uploadPromise = new Upload({
+  const upload = new Upload({
     client: r2,
     params: {
       Bucket: r2Bucket,
@@ -356,24 +351,27 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
       Body: passthrough,
       ContentType: "application/zip",
     },
-  }).done();
+  });
+  const uploadPromise = upload.done();
+  void uploadPromise.catch((err) => {
+    passthrough.destroy(err instanceof Error ? err : new Error(String(err)));
+  });
 
+  try {
   // Initialize progress tracking — the user sees X / Y in the
   // Exports page as photos are pulled.
-  const totalItems = photos.length + project.floorPlans.length;
+  const markupCount = photos.reduce(
+    (count, photo) => count + (photo.markupOverlayFilename ? 1 : 0) + (photo.markupDrawingFilename ? 1 : 0),
+    0,
+  );
+  const totalItems = photos.length + project.floorPlans.length + markupCount;
   const progress = new ProgressWriter(job.id, totalItems);
   await progress.setTotal();
-
-  // Step 4a: floor plans — `00 Floor Plans/` folder at the top.
-  // iOS export today skips plans; the user asked for them on web.
-  if (project.floorPlans.length > 0) {
-    await addFloorPlansToArchive(archive, project, log, progress);
-  }
 
   // Step 5: walk each bucket folder.
   let bucketIdx = 0;
   for (const bucket of buckets) {
-    const photosInBucket = byBucket.get(bucket.id);
+    const photosInBucket = byBucket.get(bucket.id.toLowerCase());
     if (!photosInBucket || photosInBucket.length === 0) continue;
     const folderName = bucketFolderName(bucketIdx++, bucket.name);
     await addBucketToArchive(
@@ -399,6 +397,12 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
     );
   }
 
+  // Floor-plan binaries follow photo/markup bodies in the stream; their
+  // "00 Floor Plans" path still sorts first in the extracted folder.
+  if (project.floorPlans.length > 0) {
+    await addFloorPlansToArchive(archive, project, progress);
+  }
+
   // Properly chain finalize → upload close. archive.finalize()
   // returns a Promise that resolves once every entry has been
   // flushed into the stream; PassThrough then emits 'end' which
@@ -409,39 +413,54 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   // HEAD the uploaded zip to get the final size for the row. We
   // stream bodies through the archive (#5.108.1) instead of
   // buffering, so we don't accumulate byte counts during the run.
-  const finalSize = (await getObjectSize(objectKey)) ?? 0;
+  const finalSize = await getObjectSize(objectKey);
+  if (typeof finalSize !== "number" || !Number.isSafeInteger(finalSize) || finalSize <= 0) {
+    throw new Error("Uploaded ZIP is unavailable or has an invalid byte length. Export not completed.");
+  }
   await markDone(job.id, objectKey, finalSize);
   log.info(
     { jobId: job.id, projectId: job.project_id, bytes: finalSize },
     "folder export — done"
   );
+  } catch (error) {
+    try {
+      archive.abort();
+    } catch (abortErr) {
+      log.warn({ err: abortErr, jobId: job.id }, "folder export — archive abort failed");
+    }
+    passthrough.destroy(error instanceof Error ? error : new Error(String(error)));
+    await upload.abort().catch(() => undefined);
+    await uploadPromise.catch(() => undefined);
+    throw error;
+  }
 }
 
 async function addFloorPlansToArchive(
   archive: archiver.Archiver,
   project: Project,
-  log: FastifyBaseLogger,
   progress: ProgressWriter
 ): Promise<void> {
   const folder = "00 Floor Plans";
   // Look up plan binaries (case-safe; mirrors photo lookup).
   const planIds = project.floorPlans.map((p) => p.id);
   const { data: fileRows, error: filesErr } = await supabaseAdmin
-    .from("files")
-    .select("photo_id, object_key, kind")
+    .from("current_project_files")
+    .select("photo_id, object_key, kind, size_bytes, source_filename")
     .eq("project_id", project.id)
     .in("photo_id", planIds)
     .eq("kind", "plan");
   if (filesErr) {
-    log.warn(
-      { err: filesErr, projectId: project.id },
-      "folder export — floor-plan files lookup failed; skipping plan binaries"
-    );
+    throw new Error(`Floor-plan files lookup failed: ${filesErr.message}`);
   }
-  const keyByPlanIdLower = new Map<string, string>();
+  const filenames = new Map(project.floorPlans.map(plan => [plan.id.toLowerCase(), plan.imageFilename]));
+  const fileByPlanIdLower = new Map<string, { objectKey: string; sizeBytes: number }>();
   for (const row of fileRows ?? []) {
-    const r = row as { photo_id: string; object_key: string };
-    keyByPlanIdLower.set(r.photo_id.toLowerCase(), r.object_key);
+    const r = row as { photo_id: string; object_key: string; size_bytes: unknown; source_filename: string | null };
+    assertSnapshotFilename(r.source_filename, filenames.get(r.photo_id.toLowerCase()), r.object_key);
+    fileByPlanIdLower.set(r.photo_id.toLowerCase(), {
+      objectKey: r.object_key,
+      sizeBytes: registeredSize(r.size_bytes, r.object_key),
+    });
   }
 
   // Sidecar with calibration values.
@@ -462,40 +481,25 @@ async function addFloorPlansToArchive(
     lines.push("");
   }
 
-  // Parallel-fetch streams; consume serially in array order.
-  const fetches = parallelFetch(
-    project.floorPlans,
-    async (plan) => {
-      const objectKey = keyByPlanIdLower.get(plan.id.toLowerCase());
-      if (!objectKey) {
-        log.warn(
-          { planId: plan.id },
-          "folder export — no files row for plan; skipping binary"
-        );
-        throw new Error("no_files_row");
-      }
-      return getObjectStream(objectKey);
-    },
-    PHOTO_FETCH_CONCURRENCY
-  );
-
   for (let i = 0; i < project.floorPlans.length; i++) {
     const plan = project.floorPlans[i]!;
-    const stream = await fetches[i]!;
-    if (stream) {
-      const ext = plan.imageFilename.split(".").pop() ?? "png";
-      const safeLabel = safeName(plan.label);
-      const entryDone = waitForEntry(archive);
-      archive.append(stream, {
-        name: `${folder}/${String(i + 1).padStart(2, "0")} ${safeLabel}.${ext}`,
-      });
-      await entryDone;
-    }
+    const file = fileByPlanIdLower.get(plan.id.toLowerCase());
+    if (!file) throw new Error(`Missing required plan file: ${plan.imageFilename}`);
+    const stream = validateAssetStream(await getObjectStream(file.objectKey), file.sizeBytes, file.objectKey);
+    const ext = plan.imageFilename.split(".").pop() ?? "png";
+    const safeLabel = safeName(plan.label);
+    const entryName = `${folder}/${String(i + 1).padStart(2, "0")} ${safeLabel}.${ext}`;
+    const entryDone = waitForEntry(archive, entryName);
+    appendStream(archive, stream, entryName);
+    await entryDone;
     await progress.tick();
   }
 
   const metadata = lines.join("\n");
-  archive.append(metadata, { name: `${folder}/plans.txt` });
+  const metadataName = `${folder}/plans.txt`;
+  const metadataDone = waitForEntry(archive, metadataName);
+  archive.append(metadata, { name: metadataName });
+  await metadataDone;
 }
 
 async function addBucketToArchive(
@@ -510,70 +514,60 @@ async function addBucketToArchive(
   // see comment in addFloorPlansToArchive).
   const photoIds = photos.map((p) => p.id);
   const { data: fileRows, error: filesErr } = await supabaseAdmin
-    .from("files")
-    .select("photo_id, object_key, kind")
+    .from("current_project_files")
+    .select("photo_id, object_key, kind, size_bytes, source_filename")
     .eq("project_id", project.id)
     .in("photo_id", photoIds)
-    .eq("kind", "photo");
+    .in("kind", ["photo", "markup_png", "markup_drawing"]);
   if (filesErr) {
-    log.error(
-      { err: filesErr, projectId: project.id },
-      "folder export — files-table lookup failed; skipping photos but keeping captions.txt"
-    );
+    throw new Error(`Photo files lookup failed: ${filesErr.message}`);
   }
-  const keyByPhotoIdLower = new Map<string, string>();
+  const filenames = new Map<string, string>();
+  for (const photo of photos) {
+    filenames.set(`${photo.id.toLowerCase()}:photo`, photo.imageFilename);
+    if (photo.markupOverlayFilename) filenames.set(`${photo.id.toLowerCase()}:markup_png`, photo.markupOverlayFilename);
+    if (photo.markupDrawingFilename) filenames.set(`${photo.id.toLowerCase()}:markup_drawing`, photo.markupDrawingFilename);
+  }
+  const fileByPhotoAndKind = new Map<string, { objectKey: string; sizeBytes: number }>();
   for (const row of fileRows ?? []) {
-    const r = row as { photo_id: string; object_key: string };
-    keyByPhotoIdLower.set(r.photo_id.toLowerCase(), r.object_key);
+    const r = row as { photo_id: string; object_key: string; kind: string; size_bytes: unknown; source_filename: string | null };
+    const tuple = `${r.photo_id.toLowerCase()}:${r.kind}`;
+    const filename = filenames.get(tuple);
+    // An overlay added after this manifest snapshot is not part of this export.
+    if (filename === undefined) continue;
+    assertSnapshotFilename(r.source_filename, filename, r.object_key);
+    fileByPhotoAndKind.set(tuple, {
+      objectKey: r.object_key,
+      sizeBytes: registeredSize(r.size_bytes, r.object_key),
+    });
   }
 
-  // Parallel fetch the bucket's photos AS STREAMS. The fetch
-  // promise resolves once R2 has sent response headers, not after
-  // the body downloads — body bytes flow lazily as archiver
-  // consumes the stream. So memory is bounded by socket buffers
-  // not photo size, and concurrency can be higher without OOMing.
+  // Open one source only after the previous named archive entry drained.
+  // No waiting stream pool retains sockets or source bodies between entries.
   const fetchStart = Date.now();
-  let fetchedCount = 0;
-  let totalFetchMs = 0;
-  const fetches = parallelFetch(
-    photos,
-    async (photo) => {
-      const objectKey = keyByPhotoIdLower.get(photo.id.toLowerCase());
-      if (!objectKey) throw new Error("no_files_row");
-      const t0 = Date.now();
-      const stream = await getObjectStream(objectKey);
-      const elapsed = Date.now() - t0;
-      totalFetchMs += elapsed;
-      fetchedCount++;
-      if (elapsed > 2000) {
-        log.warn(
-          { photoId: photo.id, objectKey, ms: elapsed },
-          "folder export — slow R2 response (headers)"
-        );
-      }
-      return stream;
-    },
-    PHOTO_FETCH_CONCURRENCY
-  );
 
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i]!;
-    const stream = await fetches[i]!;
-    if (stream) {
-      const filename = photoFilename(project, photo);
-      const entryDone = waitForEntry(archive);
-      archive.append(stream, { name: `${folderName}/${filename}` });
-      // Wait until archiver has drained THIS entry's stream before
-      // moving on; otherwise the loop races ahead and the next R2
-      // stream piles up in memory while this one is still consuming.
-      await entryDone;
-    } else {
-      log.warn(
-        { photoId: photo.id, projectId: project.id },
-        "folder export — photo skipped (no files row OR R2 read failed)"
-      );
-    }
+    const file = fileByPhotoAndKind.get(`${photo.id.toLowerCase()}:photo`);
+    if (!file) throw new Error(`Missing required photo file: ${photo.id}`);
+    const stream = validateAssetStream(await getObjectStream(file.objectKey), file.sizeBytes, file.objectKey);
+    const filename = photoFilename(project, photo);
+    const entryName = `${folderName}/${filename}`;
+    const entryDone = waitForEntry(archive, entryName);
+    appendStream(archive, stream, entryName);
+    await entryDone;
     await progress.tick();
+    for (const [kind, source] of [["markup_png", photo.markupOverlayFilename], ["markup_drawing", photo.markupDrawingFilename]] as const) {
+      if (!source) continue;
+      const file = fileByPhotoAndKind.get(`${photo.id.toLowerCase()}:${kind}`);
+      if (!file) throw new Error(`Missing required ${kind} file: ${source}`);
+      const markupStream = validateAssetStream(await getObjectStream(file.objectKey), file.sizeBytes, file.objectKey);
+      const entryName = `01 Markups/${safeName(source)}`;
+      const entryDone = waitForEntry(archive, entryName);
+      appendStream(archive, markupStream, entryName);
+      await entryDone;
+      await progress.tick();
+    }
     // Periodic memory snapshot so we can correlate growth with
     // progress when investigating SIGTERMs on resource-constrained
     // tiers.
@@ -599,20 +593,22 @@ async function addBucketToArchive(
       folder: folderName,
       photoCount: photos.length,
       wallMs,
-      avgHeaderMs: fetchedCount > 0 ? Math.round(totalFetchMs / fetchedCount) : 0,
-      concurrency: PHOTO_FETCH_CONCURRENCY,
+      concurrency: 1,
     },
     "folder export — bucket batch done"
   );
   const captions = captionsTextForBucket(project, photos);
-  archive.append(captions, { name: `${folderName}/captions.txt` });
+  const captionsName = `${folderName}/captions.txt`;
+  const captionsDone = waitForEntry(archive, captionsName);
+  archive.append(captions, { name: captionsName });
+  await captionsDone;
 }
 
 async function tick(log: FastifyBaseLogger): Promise<void> {
   const job = await claimNextJob(log);
   if (!job) return;
   try {
-    await runJob(job, log);
+    await runFolderExportJob(job, log);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
     log.error({ err: e, jobId: job.id }, "folder export — render failed");

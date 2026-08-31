@@ -67,6 +67,16 @@ export class AccessError extends Error {
   }
 }
 
+export class FrozenProjectError extends Error {
+  readonly status = 409 as const;
+  readonly code = "project_frozen" as const;
+
+  constructor(message = "Project is finalized. An owner or admin must unlock it before editing.") {
+    super(message);
+    this.name = "FrozenProjectError";
+  }
+}
+
 const RANK: Record<ProjectRole, number> = {
   viewer: 1,
   editor: 2,
@@ -180,5 +190,28 @@ export function sendAccessError(reply: FastifyReply, err: unknown): boolean {
     reply.code(err.status).send({ error: err.code, message: err.message });
     return true;
   }
+  if (err instanceof FrozenProjectError) {
+    reply.code(err.status).send({ error: err.code, message: err.message });
+    return true;
+  }
   return false;
+}
+
+/** Require editor access and reject edits to an existing finalized project. */
+export async function assertProjectMutable(
+  userId: string,
+  projectId: string,
+  request?: FastifyRequest
+): Promise<ProjectRole> {
+  const role = await assertProjectAccess(userId, projectId, "editor", request);
+  const { data, error } = await supabaseAdmin
+    .from("projects")
+    .select("manifest")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (error) throw error;
+  if ((data?.manifest as { isFrozen?: boolean } | null)?.isFrozen === true) {
+    throw new FrozenProjectError();
+  }
+  return role;
 }

@@ -24,6 +24,7 @@ import CoreGraphics
 // No other file references this type.
 
 enum ClusterFanning {
+    private struct Cell: Hashable { let x: Int; let y: Int }
 
     struct LeaderLine: Hashable {
         let from: CGPoint
@@ -85,13 +86,34 @@ enum ClusterFanning {
         }
 
         let collisionSqr = collisionRadius * collisionRadius
-        for i in primaryIdx {
-            for j in primaryIdx where j > i {
-                let pi = position(markers[i])
-                let pj = position(markers[j])
+        let positions = Dictionary(uniqueKeysWithValues: primaryIdx.map { ($0, position(markers[$0])) })
+        // Neighbor cells contain every possible collision, including across
+        // zero/negative coordinates. Exact distance still decides membership.
+        // Extremely large/nonfinite imported coordinates use the bounded old
+        // pair scan instead of trapping during Double-to-Int conversion.
+        let canIndex = collisionRadius.isFinite && collisionRadius > 0 && positions.values.allSatisfy {
+            $0.x.isFinite && $0.y.isFinite && abs($0.x / collisionRadius) < 1e12 && abs($0.y / collisionRadius) < 1e12
+        }
+        if canIndex {
+            var cells: [Cell: [Int]] = [:]
+            for i in primaryIdx {
+                let pi = positions[i]!
+                let cell = Cell(x: Int(floor(pi.x / collisionRadius)), y: Int(floor(pi.y / collisionRadius)))
+                for dx in -1...1 { for dy in -1...1 {
+                    for j in cells[Cell(x: cell.x + dx, y: cell.y + dy)] ?? [] {
+                        let pj = positions[j]!
+                        let x = pi.x - pj.x, y = pi.y - pj.y
+                        if x * x + y * y < collisionSqr { union(i, j) }
+                    }
+                } }
+                cells[cell, default: []].append(i)
+            }
+        } else {
+            for i in primaryIdx { for j in primaryIdx where j > i {
+                let pi = positions[i]!, pj = positions[j]!
                 let dx = pi.x - pj.x, dy = pi.y - pj.y
                 if dx * dx + dy * dy < collisionSqr { union(i, j) }
-            }
+            } }
         }
 
         // Group by root, preserving the input ordering of the first
@@ -261,10 +283,26 @@ enum ClusterFanning {
         // Visual breathing room between the arrow tip and the obstacle.
         let margin = max(primaryRadius * 0.18, 4.0)
 
-        for m in markers {
+        // A circle can affect this finite ray only within this conservative
+        // radius. Index once, then examine neighboring cells; exact ray/circle
+        // math below remains the authority. Dense overlaps can still be O(n²),
+        // but ordinary spread-out plans no longer scan every other marker.
+        let cellSide = defaultArrowLength + 2 * (max(primaryRadius, secondaryRadius) + margin)
+        let positions = markers.map(position)
+        let canIndex = cellSide.isFinite && cellSide > 0 && positions.allSatisfy {
+            $0.x.isFinite && $0.y.isFinite && abs($0.x / cellSide) < 1e12 && abs($0.y / cellSide) < 1e12
+        }
+        var cells: [Cell: [Int]] = [:]
+        if canIndex {
+            for (i, point) in positions.enumerated() {
+                cells[Cell(x: Int(floor(point.x / cellSide)), y: Int(floor(point.y / cellSide))), default: []].append(i)
+            }
+        }
+
+        for (index, m) in markers.enumerated() {
             guard isPrimary(m), let b = bearingDegrees(m) else { continue }
 
-            let A      = position(m)
+            let A      = positions[index]
             let myID   = id(m)
             let myR    = primaryRadius
             let angRad = (b - 90) * .pi / 180
@@ -273,9 +311,18 @@ enum ClusterFanning {
 
             var bestLength = defaultArrowLength
 
-            for other in markers {
+            var candidates: [Int]
+            if canIndex {
+                let cell = Cell(x: Int(floor(A.x / cellSide)), y: Int(floor(A.y / cellSide)))
+                candidates = []
+                for x in -1...1 { for y in -1...1 {
+                    candidates.append(contentsOf: cells[Cell(x: cell.x + x, y: cell.y + y)] ?? [])
+                } }
+            } else { candidates = Array(markers.indices) }
+            for otherIndex in candidates {
+                let other = markers[otherIndex]
                 if id(other) == myID { continue }
-                let B = position(other)
+                let B = positions[otherIndex]
                 let R = isPrimary(other) ? primaryRadius : secondaryRadius
                 let abx = B.x - A.x
                 let aby = B.y - A.y

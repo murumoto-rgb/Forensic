@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { MANIFEST_SCHEMA_VERSION, type Project } from "@forensic/shared";
+import { MANIFEST_SCHEMA_VERSION, SearchFilterSchema, type Project } from "@forensic/shared";
+import type { SearchFilter, SavedSearch, WorkflowLibrary } from "@forensic/shared";
 import { signOutLocal } from "../lib/supabase";
 import { api, ApiError, type ProjectListItem } from "../lib/api";
 
@@ -35,6 +36,20 @@ export function ProjectListPage({ session }: Props) {
   // rules) as today; admins also get Team, Branding, Prompt templates.
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  const [searchFilter, setSearchFilter] = useState<SearchFilter>({ query: "", fromDate: null, toDate: null, favoritesOnly: false });
+  const [searchHits, setSearchHits] = useState<import("@forensic/shared").ProjectSearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [library, setLibrary] = useState<WorkflowLibrary | null>(null);
+  const [libraryRevision, setLibraryRevision] = useState<string | null>(null);
+  const [filterName, setFilterName] = useState("");
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const libraryRequest = useRef(0);
+  const libraryWriting = useRef(false);
+  const searchRequest = useRef(0);
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -76,6 +91,59 @@ export function ProjectListPage({ session }: Props) {
     reload();
   }, [reload]);
 
+  const loadLibrary = useCallback(async () => {
+    const request = ++libraryRequest.current;
+    setLibraryBusy(true); setLibraryError(null);
+    try {
+      const response = await api.getWorkflowLibrary();
+      if (request === libraryRequest.current) { setLibrary(response.library); setLibraryRevision(response.revision); }
+    } catch (error) {
+      if (request === libraryRequest.current) setLibraryError(`Could not load saved filters: ${error instanceof Error ? error.message : "Request failed"}`);
+    } finally { if (request === libraryRequest.current) setLibraryBusy(false); }
+  }, []);
+  useEffect(() => { void loadLibrary(); return () => { libraryRequest.current++; searchRequest.current++; }; }, [loadLibrary]);
+  function updateFilter(filter: SearchFilter) {
+    searchRequest.current++;
+    setSearchFilter(filter); setSearchLoading(false); setSearchHits([]); setNextOffset(null); setSearchError(null);
+  }
+  async function runSearch(filter = searchFilter, offset = 0) {
+    const request = ++searchRequest.current;
+    const parsed = SearchFilterSchema.safeParse(filter);
+    if (!parsed.success || (filter.fromDate && filter.toDate && filter.fromDate > filter.toDate)) {
+      setSearchError("Enter valid calendar dates with From on or before To."); setSearchLoading(false); return;
+    }
+    setSearchLoading(true); setSearchError(null);
+    try {
+      const response = await api.searchProjects(parsed.data, offset);
+      if (request !== searchRequest.current) return;
+      setSearchHits(current => offset ? [...current, ...response.hits] : response.hits);
+      setNextOffset(response.nextOffset);
+    } catch (error) {
+      if (request === searchRequest.current) setSearchError(error instanceof Error ? error.message : "Search failed");
+    } finally { if (request === searchRequest.current) setSearchLoading(false); }
+  }
+  async function persistLibrary(next: WorkflowLibrary): Promise<boolean> {
+    if (libraryWriting.current) return false;
+    libraryWriting.current = true; setLibraryBusy(true); setLibraryError(null);
+    try {
+      const response = await api.putWorkflowLibrary({ library: next, expectedRevision: libraryRevision });
+      setLibrary(next); setLibraryRevision(response.revision); return true;
+    } catch (error) {
+      setLibraryError(`Saved filters were not changed: ${error instanceof Error ? error.message : "Request failed"}. Refresh the library before retrying. Your filter name was kept.`); return false;
+    } finally { libraryWriting.current = false; setLibraryBusy(false); }
+  }
+  async function saveSearch() {
+    const name = filterName.trim(); if (!name || !library || libraryBusy) return;
+    const parsed = SearchFilterSchema.safeParse(searchFilter);
+    if (!parsed.success || (searchFilter.fromDate && searchFilter.toDate && searchFilter.fromDate > searchFilter.toDate)) { setSearchError("Enter a valid date range before saving this filter."); return; }
+    const next = { ...library, savedSearches: [...library.savedSearches.filter(saved => saved.name !== name), { id: crypto.randomUUID(), name, filter: parsed.data }] };
+    if (await persistLibrary(next)) setFilterName(value => value.trim() === name ? "" : value);
+  }
+  async function deleteSearch(saved: SavedSearch) {
+    if (!library || libraryBusy) return;
+    await persistLibrary({ ...library, savedSearches: library.savedSearches.filter(current => current.id !== saved.id) });
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
       <header className="mb-8 flex items-center justify-between">
@@ -100,11 +168,11 @@ export function ProjectListPage({ session }: Props) {
               aria-expanded={adminMenuOpen}
               title={
                 isAdmin
-                  ? "Team-wide configuration"
-                  : "Team configuration (non-admin views are read-only)"
+                  ? "Shared libraries and report settings"
+                  : "Shared libraries (non-admin views are read-only)"
               }
             >
-              Team config ▾
+              Libraries ▾
             </button>
             {adminMenuOpen && (
               <>
@@ -178,6 +246,23 @@ export function ProjectListPage({ session }: Props) {
           </button>
         </div>
       </header>
+
+      <section className="mb-8 rounded border border-neutral-800 bg-neutral-900/40 p-4">
+        <h2 className="mb-3 text-sm font-medium text-neutral-200">Search all projects</h2>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs text-neutral-400">Query<input value={searchFilter.query} onChange={(e) => updateFilter({ ...searchFilter, query: e.target.value })} className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100" placeholder="project, caption, address" /></label>
+          <label className="flex flex-col gap-1 text-xs text-neutral-400">From<input type="date" value={searchFilter.fromDate ?? ""} onChange={(e) => updateFilter({ ...searchFilter, fromDate: e.target.value || null })} className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100" /></label>
+          <label className="flex flex-col gap-1 text-xs text-neutral-400">To<input type="date" value={searchFilter.toDate ?? ""} onChange={(e) => updateFilter({ ...searchFilter, toDate: e.target.value || null })} className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100" /></label>
+          <label className="flex items-center gap-2 pb-2 text-xs text-neutral-300"><input type="checkbox" checked={searchFilter.favoritesOnly} onChange={(e) => updateFilter({ ...searchFilter, favoritesOnly: e.target.checked })} />Favorites only</label>
+          <button type="button" onClick={() => void runSearch()} disabled={searchLoading} className="rounded border border-blue-700 px-3 py-1.5 text-sm text-blue-200 disabled:opacity-50">{searchLoading ? "Searching…" : "Search"}</button>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2"><input value={filterName} onChange={(e) => setFilterName(e.target.value)} aria-label="Filter name" placeholder="Name this filter" className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-100" /><button type="button" onClick={() => void saveSearch()} disabled={!filterName.trim() || !library || libraryBusy} className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-200 disabled:opacity-50">Save filter</button>{library?.savedSearches.map((s) => <span key={s.id} className="inline-flex items-center gap-1 rounded border border-neutral-800 px-2 py-1 text-xs"><button type="button" onClick={() => { updateFilter(s.filter); void runSearch(s.filter); }}>{s.name}</button><button type="button" aria-label={`Delete ${s.name}`} disabled={libraryBusy} onClick={() => void deleteSearch(s)} className="text-red-300">×</button></span>)}</div>
+        {libraryError && <div role="alert" className="mt-3 text-xs text-red-300">{libraryError}</div>}
+        <button type="button" onClick={() => void loadLibrary()} disabled={libraryBusy} className="mt-2 text-xs text-blue-200">{libraryBusy ? "Loading filter library…" : "Refresh saved filters"}</button>
+        {searchError && <div role="alert" className="mt-3 text-xs text-red-300">{searchError}</div>}
+        {searchHits.length > 0 && <div className="mt-4 space-y-1">{searchHits.map((h) => <Link key={`${h.projectId}-${h.photoId ?? "project"}-${h.timestamp}`} to={`/projects/${h.projectId}/photos`} className="block rounded border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-800"><span className="font-medium text-neutral-100">{h.projectName}</span>{h.projectAddress && <span className="ml-2 text-neutral-500">{h.projectAddress}</span>}{h.caption && <span className="ml-2 text-neutral-300">{h.caption}</span>}</Link>)}{nextOffset !== null && <button type="button" onClick={() => void runSearch(searchFilter, nextOffset)} disabled={searchLoading} className="mt-2 rounded border border-neutral-700 px-2 py-1 text-xs">Load more</button>}</div>}
+        {!searchLoading && searchHits.length === 0 && <div className="mt-3 text-xs text-neutral-500">No search results yet.</div>}
+      </section>
 
       {error && (
         <div className="mb-6 rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
@@ -523,6 +608,9 @@ function buildEmptyProject(
     buckets: [],
     tagSelection: null,
     aiExtraVocabulary: null,
+    inspectionChecklist: [],
+    inspectionSessions: [],
+    reportLayout: null,
     manifestSchemaVersion: MANIFEST_SCHEMA_VERSION,
   };
 }

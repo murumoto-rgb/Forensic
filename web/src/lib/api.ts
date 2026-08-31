@@ -51,6 +51,7 @@ import type {
   GetUserStorageStatusResponse,
   GetFolderExportManifestResponse,
 } from "@forensic/shared";
+import type { GetWorkflowLibraryResponse, PutWorkflowLibraryRequest, PutWorkflowLibraryResponse, ProjectHealthResponse, ListProjectVersionsResponse, GetProjectVersionResponse, RestoreProjectVersionResponse, ProjectSearchResponse, SearchFilter } from "@forensic/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -177,6 +178,13 @@ export const api = {
     ),
   getProject: (id: string) =>
     request<GetManifestResponse>(`/v1/projects/${id}`),
+  getProjectHealth: (id: string, verify = false) => request<ProjectHealthResponse>(`/v1/projects/${id}/health${verify ? "?verify=true" : ""}`),
+  listProjectVersions: (id: string) => request<ListProjectVersionsResponse>(`/v1/projects/${id}/versions`),
+  getProjectVersion: (id: string, versionId: string) => request<GetProjectVersionResponse>(`/v1/projects/${id}/versions/${versionId}`),
+  restoreProjectVersion: (id: string, body: { versionId: string; expectedRevision: string }) => request<RestoreProjectVersionResponse>(`/v1/projects/${id}/versions/restore`, { method: "POST", body: JSON.stringify(body) }),
+  getWorkflowLibrary: () => request<GetWorkflowLibraryResponse>("/v1/me/workflow"),
+  putWorkflowLibrary: (body: PutWorkflowLibraryRequest) => request<PutWorkflowLibraryResponse>("/v1/me/workflow", { method: "PUT", body: JSON.stringify(body) }),
+  searchProjects: (filter: SearchFilter, offset = 0, limit = 50) => request<ProjectSearchResponse>("/v1/search", { method: "POST", body: JSON.stringify({ filter, offset, limit }) }),
   getPhotoImageUrl: (projectId: string, photoId: string) =>
     request<PhotoUrlResponse>(
       `/v1/projects/${projectId}/photos/${photoId}/image`
@@ -368,6 +376,10 @@ export const api = {
       throw e;
     }
   },
+  uploadBrandingLogo: (pngBase64: string) => request<import("@forensic/shared").BrandingLogoUploadResponse>("/v1/branding/logo", {
+    method: "POST", body: JSON.stringify({ pngBase64 }),
+  }),
+  getBrandingLogo: () => request<import("@forensic/shared").GetBrandingLogoResponse>("/v1/branding/logo"),
   getAIPromptTemplatesConfig: async (): Promise<GetAppConfigResponse<"aiPromptTemplates"> | null> => {
     try {
       return await request<GetAppConfigResponse<"aiPromptTemplates">>(

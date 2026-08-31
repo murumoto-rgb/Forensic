@@ -45,6 +45,8 @@ export function AddPhotosControl({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [uploads, setUploads] = useState<RunningUpload[]>([]);
   const [busy, setBusy] = useState(false);
+  const latest = useRef({ project, canEdit });
+  latest.current = { project, canEdit };
 
   function openPicker() {
     if (!canEdit || busy) return;
@@ -59,6 +61,7 @@ export function AddPhotosControl({
   }
 
   async function runBatch(files: File[]) {
+    if (!latest.current.canEdit || busy) return;
     setBusy(true);
     // Build all the photo structs up front so sequenceNumber + IDs
     // are stable across the run and the final manifest write can
@@ -127,6 +130,7 @@ export function AddPhotosControl({
             projectId: project.id,
             photoId,
             kind: "photo",
+            sourceFilename: newPhoto.imageFilename,
             file,
             contentType: file.type || "image/jpeg",
           });
@@ -155,15 +159,15 @@ export function AddPhotosControl({
     }
     await Promise.all(workers);
 
-    if (successful.length > 0) {
+    if (successful.length > 0 && latest.current.canEdit) {
       // Append in the original picker order — sort by sequenceNumber
       // so the appended block is contiguous even when uploads
       // finished out of order.
       successful.sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-      onProjectChanged({
-        ...project,
-        photos: [...project.photos, ...successful],
-      });
+      const current = latest.current.project;
+      const nextSequence = Math.max(0, ...current.photos.map((p) => p.sequenceNumber), ...current.trashedPhotos.map((p) => p.sequenceNumber)) + 1;
+      onProjectChanged({ ...current, photos: [...current.photos,
+        ...successful.map((p, i) => ({ ...p, sequenceNumber: nextSequence + i }))] });
     }
     setBusy(false);
   }

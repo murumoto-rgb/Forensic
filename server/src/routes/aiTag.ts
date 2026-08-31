@@ -48,13 +48,14 @@ import { authPlugin } from "../middleware/auth.js";
 import { assertProjectAccess, sendAccessError } from "../access.js";
 import { getObjectBytes } from "../r2.js";
 import { recordAITagAudit } from "../audit.js";
+import { reserveAI, releaseAI } from "../resourceLimits.js";
 
 // Cap on max_tokens so a client typo can't force a 60-second
 // response. 16384 is generous for a per-photo structured analysis
 // (the longest AIPhotoAnalysis JSON we've seen on iOS is ~1500
 // tokens) and well below the model ceilings.
-const MAX_TOKENS_CEILING = 16384;
-const DEFAULT_MAX_TOKENS = 4096;
+const MAX_TOKENS_CEILING = env.AI_MAX_OUTPUT_TOKENS;
+const DEFAULT_MAX_TOKENS = Math.min(4096, MAX_TOKENS_CEILING);
 
 const AITagPhotoBodySchema = z.object({
   projectId: z.string().uuid(),
@@ -93,7 +94,7 @@ let anthropicClient: Anthropic | null = null;
 function getAnthropic(): Anthropic | null {
   if (!env.ANTHROPIC_API_KEY) return null;
   if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    anthropicClient = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 0, timeout: 60000 });
   }
   return anthropicClient;
 }
@@ -200,6 +201,11 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     const projectManifest = projectRow.manifest as Project;
+    const photo = projectManifest.photos.find((p) => p.id === photoId);
+    if (!photo) {
+      reply.code(404).send({ error: "not_found", message: "Photo is not in this project." });
+      return;
+    }
 
     // ---------- Build the prompt ----------
     let systemPrompt: string;
@@ -208,7 +214,6 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       // Look up the photo on the manifest so the user prompt can
       // echo `imageFilename` back as the model's photo_id (matches
       // iOS's compileUserPrompt behaviour).
-      const photo = projectManifest.photos.find((p) => p.id === photoId);
       if (!photo) {
         reply.code(404).send({
           error: "not_found",
@@ -298,11 +303,14 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
     // Anthropic — thumbs lose detail the model needs for accurate
     // tagging.
     const { data: fileRow, error: fileErr } = await supabaseAdmin
-      .from("files")
+      .from("current_project_files")
       .select("object_key")
       .eq("project_id", projectId)
       .eq("photo_id", photoId)
       .eq("kind", "photo")
+      .order("uploaded_at", { ascending: false })
+      .limit(1)
+      .abortSignal(AbortSignal.timeout(10000))
       .maybeSingle();
     if (fileErr) {
       request.log.error({ err: fileErr, projectId, photoId }, "AI tag — file lookup failed");
@@ -317,6 +325,11 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
+    // The lease covers only bounded storage/provider operations; DB
+    // lookups above cannot consume its lifetime before paid work starts.
+    const lease = await reserveAI(request.user.id, reply);
+    if (!lease) return;
+    try {
     // Fetch the photo bytes from R2 and base64-encode for the
     // Anthropic message. Anthropic's image content block accepts
     // base64-encoded image data directly; max ~5 MB per image,
@@ -347,7 +360,7 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
     }
 
     const extension =
-      (fileRow.object_key as string).split(".").pop() ?? "jpg";
+      photo.imageFilename.split(".").pop() ?? "jpg";
     const mediaType = mimeTypeFromExtension(extension);
     const base64Data = imageBytes.toString("base64");
 
@@ -473,5 +486,6 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       durationMs,
       model,
     };
+    } finally { await releaseAI(request.user.id, lease); }
   });
 };

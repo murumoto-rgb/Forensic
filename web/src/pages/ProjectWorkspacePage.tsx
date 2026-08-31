@@ -6,17 +6,18 @@ import {
   useLocation,
   useParams,
 } from "react-router-dom";
+import { lazy, Suspense } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { signOutLocal } from "../lib/supabase";
 import { useProjectLock } from "../lib/useProjectLock";
 import { useProjectManifest } from "../lib/useProjectManifest";
 import { LockBanner } from "../components/LockBanner";
 import { PhotosTab } from "../components/workspace/PhotosTab";
-import { FloorPlanTab } from "../components/workspace/FloorPlanTab";
-import { AITab } from "../components/workspace/AITab";
-import { BucketsTab } from "../components/workspace/BucketsTab";
-import { ExportTab } from "../components/workspace/ExportTab";
-import { InfoTab } from "../components/workspace/InfoTab";
+const FloorPlanTab = lazy(() => import("../components/workspace/FloorPlanTab").then((m) => ({ default: m.FloorPlanTab })));
+const AITab = lazy(() => import("../components/workspace/AITab").then((m) => ({ default: m.AITab })));
+const BucketsTab = lazy(() => import("../components/workspace/BucketsTab").then((m) => ({ default: m.BucketsTab })));
+const ExportTab = lazy(() => import("../components/workspace/ExportTab").then((m) => ({ default: m.ExportTab })));
+const InfoTab = lazy(() => import("../components/workspace/InfoTab").then((m) => ({ default: m.InfoTab })));
 
 /**
  * Tabbed workspace shell (Build #5.76.1 — Path P #1/8).
@@ -44,11 +45,11 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { slug: "photos", label: "Photos" },
-  { slug: "plan", label: "Floor Plan" },
-  { slug: "ai", label: "AI" },
+  { slug: "plan", label: "Plan" },
+  { slug: "ai", label: "Review" },
   { slug: "buckets", label: "Buckets" },
   { slug: "export", label: "Export" },
-  { slug: "info", label: "Info" },
+  { slug: "info", label: "Details" },
 ];
 
 export function ProjectWorkspacePage({ session }: Props) {
@@ -70,7 +71,7 @@ export function ProjectWorkspacePage({ session }: Props) {
   const isFrozen = manifest.project?.isFrozen === true;
   const canExport = manifest.hasWriteAccess;
   const canEdit =
-    canExport && lock.status.kind === "holding" && !isFrozen;
+    canExport && lock.status.kind === "holding" && !isFrozen && !manifest.restoring;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -107,14 +108,14 @@ export function ProjectWorkspacePage({ session }: Props) {
           <div className="text-sm text-red-300">No project id in URL.</div>
         ) : manifest.status.kind === "loading" ? (
           <div className="text-sm text-neutral-500">Loading project…</div>
-        ) : manifest.status.kind === "error" ? (
+        ) : manifest.status.kind === "error" && manifest.project === null ? (
           <div className="rounded border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
             {manifest.status.message}
           </div>
         ) : manifest.project == null ? (
           <div className="text-sm text-neutral-500">Project not found.</div>
         ) : (
-          <Routes>
+          <Suspense fallback={<div className="text-sm text-neutral-500">Loading workspace tab…</div>}><Routes>
             <Route index element={<Navigate to="photos" replace />} />
             <Route
               path="photos"
@@ -173,7 +174,7 @@ export function ProjectWorkspacePage({ session }: Props) {
               }
             />
             <Route path="*" element={<Navigate to="photos" replace />} />
-          </Routes>
+          </Routes></Suspense>
         )}
       </div>
     </div>
@@ -220,11 +221,13 @@ function WorkspaceHeader({ session, manifest }: WorkspaceHeaderProps) {
       <div className="flex flex-col items-end gap-2 text-right">
         <span className="text-xs text-neutral-500">{session.user.email}</span>
         <SaveStatusPill status={manifest.status} />
+        {manifest.restoring && <span role="status" className="text-xs text-amber-200">Restoring reviewed version…</span>}
+        {manifest.hasPendingChanges && (manifest.status.kind === "error" || manifest.status.kind === "conflict") && <button type="button" onClick={() => { if (manifest.project) manifest.save(manifest.project); }} className="text-xs text-blue-200">Retry save</button>}
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => void manifest.reload()}
-            disabled={manifest.status.kind === "loading" || manifest.status.kind === "saving"}
+            disabled={manifest.status.kind === "loading" || manifest.status.kind === "saving" || manifest.restoring || manifest.hasPendingChanges}
             className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
             title="Re-fetch the manifest from the server. Mirrors iOS's Sync-now button."
           >

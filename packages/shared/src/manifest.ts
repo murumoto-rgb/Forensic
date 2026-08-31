@@ -17,7 +17,7 @@
  * we normalize on read.
  */
 
-export const MANIFEST_SCHEMA_VERSION = 3 as const;
+export const MANIFEST_SCHEMA_VERSION = 4 as const;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -215,6 +215,24 @@ export interface ProjectExtraVocabulary {
 // Project
 // ---------------------------------------------------------------------------
 
+export interface InspectionChecklistItem {
+  id: string;
+  label: string;
+  isComplete: boolean;
+}
+
+export interface InspectionSession {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface InspectionReportLayout {
+  perPage: number;
+  groupByBucket: boolean;
+  includeMetadataTable: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -256,6 +274,9 @@ export interface Project {
   buckets: Bucket[];
   tagSelection: ProjectTagSelection | null;
   aiExtraVocabulary: ProjectExtraVocabulary | null;
+  inspectionChecklist: InspectionChecklistItem[];
+  inspectionSessions: InspectionSession[];
+  reportLayout: InspectionReportLayout | null;
   /**
    * Integer schema version of this manifest. Server rejects writes
    * whose version exceeds what it knows about (forces the server to be

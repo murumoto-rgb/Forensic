@@ -6,8 +6,11 @@ import UniformTypeIdentifiers
 
 @Observable
 final class ProjectStore {
-    private(set) var activeProjects: [Project] = []
-    private(set) var deletedProjects: [Project] = []
+    /// Cheap cache invalidation token. Advances on every project publication,
+    /// including failed-save snapshots, pulls, restores and initial loading.
+    private(set) var projectGeneration: UInt64 = 0
+    private(set) var activeProjects: [Project] = [] { didSet { projectGeneration &+= 1 } }
+    private(set) var deletedProjects: [Project] = [] { didSet { projectGeneration &+= 1 } }
     private(set) var usingICloud: Bool = false
     /// Human-readable explanation for why iCloud isn't being used (nil when it is).
     private(set) var iCloudUnavailableReason: String?
@@ -49,6 +52,21 @@ final class ProjectStore {
     /// Timestamp of the last successful project save. The save indicator
     /// pulses "Saved" briefly after each write, then fades out.
     private(set) var lastSavedAt: Date?
+    /// Failed local writes remain visible and recoverable in memory. They
+    /// must not be acknowledged as saved or replaced by a server pull.
+    private(set) var saveFailures: [UUID: String] = [:]
+    private var unsavedProjects: [UUID: Project] = [:]
+    private(set) var projectRoles: [UUID: String] = [:]
+    private(set) var projectOwnership: [UUID: Bool] = [:]
+
+    func updateProjectAccess(id: UUID, role: String?, isOwner: Bool?) {
+        if let role { projectRoles[id] = role }
+        if let isOwner { projectOwnership[id] = isOwner }
+    }
+    func isReadOnly(_ project: Project) -> Bool { project.isFrozen || projectRoles[project.id] == "viewer" }
+    func canManageLock(_ project: Project) -> Bool {
+        projectOwnership[project.id] == true || projectRoles[project.id] == "admin" || projectRoles[project.id] == nil
+    }
     /// Loose-coupled hook for surfacing toasts from the store layer
     /// (iCloud conflicts, sync failures). The hosting app wires the
     /// ToastCenter into this slot during init — `nil` is a perfectly
@@ -101,6 +119,7 @@ final class ProjectStore {
     private(set) var loadStatus: String = "Starting up…"
 
     private let fileManager = FileManager.default
+    private let manifestWriter: (Data, URL) throws -> Void
     /// Mutated once during `loadInitial()` when the iCloud probe finishes.
     /// Defaults to local while loadInitial is in flight so the rest of the
     /// API never has a nil rootURL to deal with.
@@ -126,11 +145,15 @@ final class ProjectStore {
     /// probe + project load is in `loadInitial()` so the splash screen can
     /// render immediately and the user doesn't see a 1–3-second white
     /// pause before any UI appears.
-    init() {
-        let local = Self.localProjectsURL
+    init(storageRoot: URL? = nil,
+         manifestWriter: @escaping (Data, URL) throws -> Void = {
+             try $0.write(to: $1, options: .atomic)
+         }) {
+        let local = storageRoot ?? Self.localProjectsURL
         try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
         Self.ensureSubfolders(in: local)
         self.storageRoot = local
+        self.manifestWriter = manifestWriter
     }
 
     /// Async setup: probe iCloud (slow on cold launch), promote storageRoot
@@ -278,7 +301,7 @@ final class ProjectStore {
     /// skip it - the iCloud copy is treated as authoritative.
     private static func migrateProjects(from src: URL, to dst: URL) {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: src.path()) else { return }
+        guard fm.fileExists(atPath: src.path) else { return }
         guard let entries = try? fm.contentsOfDirectory(at: src,
                                                         includingPropertiesForKeys: [.isDirectoryKey])
         else { return }
@@ -286,7 +309,7 @@ final class ProjectStore {
             let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard isDir else { continue }
             let destEntry = dst.appending(path: entry.lastPathComponent, directoryHint: .isDirectory)
-            if fm.fileExists(atPath: destEntry.path()) {
+            if fm.fileExists(atPath: destEntry.path) {
                 // Already there from a previous run; remove the local copy
                 // since iCloud is now the source of truth.
                 try? fm.removeItem(at: entry)
@@ -296,7 +319,7 @@ final class ProjectStore {
                 try fm.copyItem(at: entry, to: destEntry)
                 // Verify the manifest came through before deleting the source.
                 let manifestExists = fm.fileExists(
-                    atPath: destEntry.appending(path: "manifest.json").path()
+                    atPath: destEntry.appending(path: "manifest.json").path
                 )
                 if manifestExists {
                     try fm.removeItem(at: entry)
@@ -339,7 +362,7 @@ final class ProjectStore {
     func markupOverlayURL(for photo: Photo, in project: Project) -> URL? {
         guard let name = photo.markupOverlayFilename else { return nil }
         let url = markupsFolder(for: project).appending(path: name)
-        guard fileManager.fileExists(atPath: url.path()) else { return nil }
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
         return url
     }
 
@@ -348,7 +371,7 @@ final class ProjectStore {
     func markupDrawingURL(for photo: Photo, in project: Project) -> URL? {
         guard let name = photo.markupDrawingFilename else { return nil }
         let url = markupsFolder(for: project).appending(path: name)
-        guard fileManager.fileExists(atPath: url.path()) else { return nil }
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
         return url
     }
 
@@ -363,19 +386,34 @@ final class ProjectStore {
                      pngData: Data,
                      drawingData: Data) -> Project {
         var p = project
-        guard let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
+        guard !isReadOnly(p), !hasUnsavedChanges(projectID: p.id),
+              let idx = p.photos.firstIndex(where: { $0.id == photoID }) else { return p }
         let folder = markupsFolder(for: p)
         try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
         let stem = (p.photos[idx].imageFilename as NSString).deletingPathExtension
-        let pngName = "\(stem)_markup.png"
-        let drawingName = "\(stem)_markup.drawing"
+        let version = UUID().uuidString.lowercased()
+        let pngName = "\(stem)_markup_\(version).png"
+        let drawingName = "\(stem)_markup_\(version).drawing"
         let pngURL = folder.appending(path: pngName)
         let drawingURL = folder.appending(path: drawingName)
-        try? pngData.write(to: pngURL, options: .atomic)
-        try? drawingData.write(to: drawingURL, options: .atomic)
-        p.photos[idx].markupOverlayFilename = pngName
-        p.photos[idx].markupDrawingFilename = drawingName
-        return save(p)
+        do {
+            try pngData.write(to: pngURL, options: .atomic)
+            try drawingData.write(to: drawingURL, options: .atomic)
+            p.photos[idx].markupOverlayFilename = pngName
+            p.photos[idx].markupDrawingFilename = drawingName
+            try persistManifest(p)
+            commitInMemory(p)
+            lastSavedAt = Date()
+            onAfterSave?(p)
+            return p
+        } catch {
+            try? fileManager.removeItem(at: pngURL)
+            try? fileManager.removeItem(at: drawingURL)
+            if let toast = toastCenter { Task { @MainActor in
+                toast.post("Markup was not saved: \(error.localizedDescription)", kind: .error)
+            } }
+            return project
+        }
     }
 
     // MARK: - Re-shoot relationships
@@ -459,12 +497,13 @@ final class ProjectStore {
         storageRoot.appending(path: "branding.json")
     }
 
-    /// Where the optional custom logo lives. Stored as PNG with a stable
-    /// filename so re-imports overwrite the same file (rather than
-    /// accumulating orphan logos).
+    /// Filename changes when bytes change, so a failed replacement cannot
+    /// overwrite the logo referenced by the last successfully saved settings.
     var brandingLogoURL: URL? {
-        let url = storageRoot.appending(path: "branding-logo.png")
-        return fileManager.fileExists(atPath: url.path()) ? url : nil
+        guard let filename = reportBranding.logoFilename,
+              filename == URL(fileURLWithPath: filename).lastPathComponent else { return nil }
+        let url = storageRoot.appending(path: filename)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
     /// Read the branding JSON from disk into `reportBranding`. Called
@@ -477,43 +516,88 @@ final class ProjectStore {
             return
         }
         reportBranding = decoded
+        if decoded.logoFilename != nil && decoded.logoStoragePath == nil && decoded.logoNeedsUpload == nil {
+            reportBranding.logoNeedsUpload = true
+        }
     }
 
-    /// Persist `branding` to disk and publish it as the observable state.
+    /// Publish settings only after their atomic local write succeeds.
     @discardableResult
     func updateBranding(_ branding: ReportBranding) -> ReportBranding {
-        // If the user cleared the logo filename, scrub the file too so
-        // the on-disk state matches the model.
-        if branding.logoFilename == nil,
-           let url = brandingLogoURL {
-            try? fileManager.removeItem(at: url)
+        do {
+            try persistBranding(branding)
+            onReportBrandingChanged?(branding)
+            return branding
+        } catch {
+            if let toast = toastCenter { Task { @MainActor in
+                toast.post("Report branding was not saved: \(error.localizedDescription)", kind: .error)
+            } }
+            return reportBranding
         }
-        if let data = try? encoder().encode(branding) {
-            try? data.write(to: brandingURL, options: .atomic)
-        }
-        reportBranding = branding
-        onReportBrandingChanged?(branding)
-        return branding
     }
 
-    /// Save a fresh logo image (downsampled to a sensible size — PDF
-    /// cover renders at ~75pt wide, so 300px on the long edge is plenty)
-    /// and update the branding manifest with the relative filename.
+    private func persistBranding(_ branding: ReportBranding) throws {
+        let data = try encoder().encode(branding)
+        try data.write(to: brandingURL, options: .atomic)
+        reportBranding = branding
+    }
+
     @discardableResult
     func setBrandingLogo(_ image: UIImage?) -> ReportBranding {
         var branding = reportBranding
-        if let image, let resized = Self.resizeForLogo(image),
-           let data = resized.pngData() {
-            let url = storageRoot.appending(path: "branding-logo.png")
-            try? data.write(to: url, options: .atomic)
-            branding.logoFilename = "branding-logo.png"
-        } else {
-            if let url = brandingLogoURL {
-                try? fileManager.removeItem(at: url)
+        var stagedURL: URL?
+        do {
+            if let image {
+                guard let resized = Self.resizeForLogo(image), let data = resized.pngData() else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                let filename = "branding-logo-\(UUID().uuidString).png"
+                let url = storageRoot.appending(path: filename)
+                stagedURL = url
+                try data.write(to: url, options: .atomic)
+                branding.logoFilename = filename
+                branding.logoNeedsUpload = true
+            } else {
+                branding.logoFilename = nil
+                branding.logoNeedsUpload = false
             }
-            branding.logoFilename = nil
+            branding.logoStoragePath = nil
+            branding.logoCachedStoragePath = nil
+            try persistBranding(branding)
+            onReportBrandingChanged?(branding)
+            return branding
+        } catch {
+            if let stagedURL { try? fileManager.removeItem(at: stagedURL) }
+            if let toast = toastCenter { Task { @MainActor in
+                toast.post("Logo was not saved: \(error.localizedDescription)", kind: .error)
+            } }
+            return reportBranding
         }
-        return updateBranding(branding)
+    }
+
+    /// Called after an acknowledged config CAS; never overwrite a newer pick.
+    func acknowledgeBrandingLogo(filename: String, objectKey: String) throws {
+        guard reportBranding.logoFilename == filename else { return }
+        var current = reportBranding
+        current.logoStoragePath = objectKey
+        current.logoCachedStoragePath = objectKey
+        current.logoNeedsUpload = false
+        try persistBranding(current)
+    }
+
+    func installSharedBrandingLogo(_ data: Data, objectKey: String) throws {
+        guard reportBranding.logoStoragePath == objectKey, reportBranding.logoNeedsUpload != true else { return }
+        guard UIImage(data: data) != nil else { throw CocoaError(.fileReadCorruptFile) }
+        var current = reportBranding
+        let filename = "branding-logo-\(UUID().uuidString).png"
+        let url = storageRoot.appending(path: filename)
+        do {
+            try data.write(to: url, options: .atomic)
+            current.logoFilename = filename
+            current.logoCachedStoragePath = objectKey
+            current.logoNeedsUpload = false
+            try persistBranding(current)
+        } catch { try? fileManager.removeItem(at: url); throw error }
     }
 
     /// Resolve the branding logo to a UIImage. Falls back to the bundled
@@ -949,9 +1033,6 @@ final class ProjectStore {
     /// next PDF render picks up the bundled logo rather than a stale
     /// upload.
     func restoreReportBrandingToDefaults() {
-        if let url = brandingLogoURL {
-            try? fileManager.removeItem(at: url)
-        }
         _ = updateBranding(.empty)
     }
 
@@ -1251,8 +1332,8 @@ final class ProjectStore {
         let legacyURL = projectDir.appending(path: "plan.jpg")
         let newFilename = Self.floorPlanImageFilename(for: plan.id)
         let newURL = projectDir.appending(path: newFilename)
-        let legacyExists = fileManager.fileExists(atPath: legacyURL.path())
-        let newExists    = fileManager.fileExists(atPath: newURL.path())
+        let legacyExists = fileManager.fileExists(atPath: legacyURL.path)
+        let newExists    = fileManager.fileExists(atPath: newURL.path)
         if legacyExists {
             do {
                 try fileManager.moveItem(at: legacyURL, to: newURL)
@@ -1293,6 +1374,7 @@ final class ProjectStore {
 
     @discardableResult
     func save(_ project: Project) -> Project {
+        if projectRoles[project.id] == "viewer" { return self.project(withID: project.id) ?? project }
         // Freeze guard (Build #6.1.1). A locked/finalized project rejects
         // every local edit in one chokepoint — photo mutations, plan
         // edits, distress strokes, batch tagging checkpoints — except
@@ -1300,43 +1382,62 @@ final class ProjectStore {
         // project), otherwise it could never be unlocked. Server pulls
         // bypass this via `applyServerProject`, so sync adoption of a
         // frozen manifest still lands.
-        if project.isFrozen,
-           let current = activeProjects.first(where: { $0.id == project.id })
-                ?? deletedProjects.first(where: { $0.id == project.id }),
-           current.isFrozen {
-            // `ToastCenter` is @MainActor and `save` is nonisolated —
-            // hop for the banner (same pattern as the iCloud-conflict
-            // toast in `checkForUnresolvedConflicts`). The rejection
-            // itself stays synchronous.
-            if let toast = toastCenter {
-                Task { @MainActor in
-                    toast.post("Project is locked — unlock it in the More tab to edit.",
-                               kind: .warning)
-                }
+        if let current = self.project(withID: project.id), current.isFrozen {
+            var contentOnly = project
+            contentOnly.isFrozen = true
+            guard contentOnly == current else {
+                if let toast = toastCenter { Task { @MainActor in
+                    toast.post("Project is locked — unlock it before editing.", kind: .warning)
+                } }
+                return current
             }
-            return current
+            if project == current && !hasUnsavedChanges(projectID: project.id) { return current }
         }
         isSaving = true
-        defer {
-            isSaving = false
-            lastSavedAt = Date()
-        }
-        let dir = projectURL(project)
-        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: photosFolder(for: project), withIntermediateDirectories: true)
-        let manifest = manifestURL(for: project)
+        defer { isSaving = false }
         do {
-            let data = try encoder().encode(project)
-            try data.write(to: manifest, options: .atomic)
+            try persistManifest(project)
         } catch {
-            #if DEBUG
-            print("Failed to save project: \(error)")
-            #endif
+            // Keep the user's latest edit available for retry, without
+            // claiming it survived a relaunch or notifying cloud sync.
+            unsavedProjects[project.id] = project
+            saveFailures[project.id] = error.localizedDescription
+            commitInMemory(project)
+            if let toast = toastCenter {
+                Task { @MainActor in
+                    toast.post("Changes to \"\(project.name)\" are not saved. Keep the app open and retry in Project Health.", kind: .error)
+                }
+            }
+            return project
         }
+        unsavedProjects.removeValue(forKey: project.id)
+        saveFailures.removeValue(forKey: project.id)
         commitInMemory(project)
-        checkForUnresolvedConflicts(at: manifest, projectName: project.name)
+        lastSavedAt = Date()
+        checkForUnresolvedConflicts(at: manifestURL(for: project), projectName: project.name)
         onAfterSave?(project)
         return project
+    }
+
+    private func persistManifest(_ project: Project) throws {
+        try fileManager.createDirectory(at: projectURL(project), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: photosFolder(for: project), withIntermediateDirectories: true)
+        try manifestWriter(try encoder().encode(project), manifestURL(for: project))
+    }
+
+    func hasUnsavedChanges(projectID: UUID) -> Bool {
+        unsavedProjects[projectID] != nil
+    }
+
+    @discardableResult
+    func retryPendingSave(projectID: UUID) -> Bool {
+        guard let pending = unsavedProjects[projectID] else { return true }
+        save(pending)
+        return unsavedProjects[projectID] == nil
+    }
+
+    func retryPendingSaves() {
+        for id in Array(unsavedProjects.keys) { retryPendingSave(projectID: id) }
     }
 
     /// Flip the persistent lock/finalized state (`Project.isFrozen`).
@@ -1410,11 +1511,13 @@ final class ProjectStore {
     /// `onReportBrandingChanged` so a pull doesn't echo back as a
     /// push (same discipline as `applyServerTagLibrary`).
     func applyServerReportBranding(_ wire: ReportBrandingWire) {
-        let merged = reportBranding.applying(wire)
-        if let data = try? encoder().encode(merged) {
-            try? data.write(to: brandingURL, options: .atomic)
+        guard reportBranding.logoNeedsUpload != true else { return }
+        do { try persistBranding(reportBranding.applying(wire)) }
+        catch {
+            if let toast = toastCenter { Task { @MainActor in
+                toast.post("Shared branding could not be saved locally: \(error.localizedDescription)", kind: .error)
+            } }
         }
-        reportBranding = merged
     }
 
     /// Replace the on-disk AI prompt templates + in-memory state with
@@ -1427,7 +1530,9 @@ final class ProjectStore {
         persistAIPromptTemplates()
     }
 
-    func applyServerProject(_ project: Project) {
+    @discardableResult
+    func applyServerProject(_ project: Project) -> Bool {
+        guard !hasUnsavedChanges(projectID: project.id) else { return false }
         // Build #6.19.1: a server-side freeze flip (admin locked or
         // unlocked the project from web) used to land silently — the
         // device's banner just appeared/disappeared with no
@@ -1446,22 +1551,16 @@ final class ProjectStore {
                 }
             }
         }
-        let dir = projectURL(project)
-        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: photosFolder(for: project),
-                                          withIntermediateDirectories: true)
-        let manifest = manifestURL(for: project)
         do {
-            let data = try encoder().encode(project)
-            try data.write(to: manifest, options: .atomic)
+            try persistManifest(project)
         } catch {
-            #if DEBUG
-            print("applyServerProject failed to write manifest: \(error)")
-            #endif
-            return
+            saveFailures[project.id] = "Could not save the downloaded project: \(error.localizedDescription)"
+            return false
         }
+        saveFailures.removeValue(forKey: project.id)
         commitInMemory(project)
         lastSavedAt = Date()
+        return true
     }
 
     /// Surface a toast when iCloud reports the project manifest has been
@@ -1568,7 +1667,7 @@ final class ProjectStore {
         let root = isDel ? deletedRoot : activeRoot
         let newFolderURL = root.appending(path: newFolderName, directoryHint: .isDirectory)
         if oldFolderURL != newFolderURL,
-           fileManager.fileExists(atPath: oldFolderURL.path()) {
+           fileManager.fileExists(atPath: oldFolderURL.path) {
             do {
                 try fileManager.moveItem(at: oldFolderURL, to: newFolderURL)
             } catch {
@@ -1677,7 +1776,7 @@ final class ProjectStore {
     /// File-coordinated move (for iCloud safety). If a folder already exists
     /// at the destination it is removed first so the move can proceed.
     private func coordinatedMove(from src: URL, to dst: URL) {
-        if fileManager.fileExists(atPath: dst.path()) {
+        if fileManager.fileExists(atPath: dst.path) {
             coordinatedRemove(dst)
         }
         let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -1735,11 +1834,11 @@ final class ProjectStore {
     @discardableResult
     func startSession(_ project: Project) -> Project {
         var p = project
-        if p.startedAt == nil {
-            p.startedAt = Date()
-        } else {
-            p.lastResumedAt = Date()
-        }
+        guard !p.isFrozen, !p.inspectionSessions.contains(where: { $0.endedAt == nil }) else { return project }
+        let now = Date()
+        if p.startedAt == nil { p.startedAt = now } else { p.lastResumedAt = now }
+        p.inspectionSessions.append(InspectionSession(startedAt: now))
+        p.manifestSchemaVersion = 4
         p.stopped = false
         return save(p)
     }
@@ -1747,8 +1846,14 @@ final class ProjectStore {
     @discardableResult
     func stopSession(_ project: Project) -> Project {
         var p = project
+        guard !p.isFrozen else { return project }
+        let now = Date()
         p.stopped = true
-        p.lastStoppedAt = Date()
+        p.lastStoppedAt = now
+        for i in p.inspectionSessions.indices where p.inspectionSessions[i].endedAt == nil {
+            p.inspectionSessions[i].endedAt = now
+        }
+        p.manifestSchemaVersion = 4
         return save(p)
     }
 
@@ -1919,6 +2024,10 @@ final class ProjectStore {
                            anchorPixelX: Double,
                            anchorPixelY: Double,
                            northDeg: Double) throws -> Project {
+        guard !isReadOnly(project), !hasUnsavedChanges(projectID: project.id) else {
+            throw NSError(domain: "SitePhoto.Persistence", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Unlock the project and save pending changes before replacing a plan."])
+        }
         var p = project
         guard let idx = p.floorPlans.firstIndex(where: { $0.id == planID }) else {
             return p
@@ -1930,10 +2039,9 @@ final class ProjectStore {
 
         let dir = projectURL(p)
         try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        let oldFilename = p.floorPlans[idx].imageFilename
-        let oldURL = dir.appending(path: oldFilename)
-        try? fileManager.removeItem(at: oldURL)
-        let newFilename = Self.floorPlanImageFilename(for: planID)
+        // Unique immutable filename: the existing image and its calibration
+        // remain a valid pair until the new manifest commits successfully.
+        let newFilename = "plan-\(planID.uuidString.lowercased())-\(UUID().uuidString.lowercased()).jpg"
         let newURL = dir.appending(path: newFilename)
         try imageData.write(to: newURL, options: .atomic)
 
@@ -1950,7 +2058,19 @@ final class ProjectStore {
 
         // Project photo positions onto the new image.
         Self.recomputePixelCoords(in: &p, planID: planID)
-        return save(p)
+        do {
+            try persistManifest(p)
+        } catch {
+            try? fileManager.removeItem(at: newURL)
+            throw error
+        }
+        // Retain the prior image for revision recovery; explicit project
+        // deletion can reclaim it along with the rest of the project.
+        commitInMemory(p)
+        saveFailures.removeValue(forKey: p.id)
+        lastSavedAt = Date()
+        onAfterSave?(p)
+        return p
     }
 
     /// URL for a specific plan's rasterised image on disk.
@@ -4124,7 +4244,7 @@ extension ProjectStore {
     /// times out.
     func loadFileBytes(at url: URL, timeoutSeconds: Double = 30) async -> Data? {
         await ensureDownloaded(url, timeoutSeconds: timeoutSeconds)
-        return try? Data(contentsOf: url)
+        return await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
     }
 
     /// If `url` is an iCloud-backed item that hasn't been downloaded to this

@@ -7,9 +7,8 @@ import { CsvExportControl } from "../CsvExportControl";
 
 /**
  * Export tab — home for the three export modes. Each card kicks off
- * its respective backend job; the unified Exports page
- * (`/projects/:id/exports`) is the persistent listing where every
- * past export lives for re-download.
+ * its respective job. The Exports page stores server-generated files;
+ * the browser folder bundle is a direct local download, not a saved job.
  *
  * Layout: three cards (PDF / Folder by Bucket / AI Analysis CSV
  * link) plus a sticky link to the Exports page.
@@ -35,8 +34,8 @@ export function ExportTab({ projectId, manifest, canExport }: Props) {
         <p className="text-sm text-neutral-400">
           Export the project as a PDF report, a per-bucket folder
           bundle (originals + captions.txt, EXIF preserved), or an
-          AI-analysis CSV. All exports land on the Exports page for
-          re-download.
+          AI-analysis CSV. Server-generated files appear in export history;
+          browser folder bundles download directly to this device.
         </p>
         <Link
           to={`/projects/${projectId}/exports`}
@@ -49,7 +48,7 @@ export function ExportTab({ projectId, manifest, canExport }: Props) {
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Card title="PDF report" emoji="📄">
           <p className="mb-3 text-xs text-neutral-500">
-            Bound report with pages per photo. Pick layout density,
+            Bound report with photos per page. Pick layout density,
             bucket grouping, section order. Matches iOS PDF export.
           </p>
           <ExportPdfControl
@@ -59,6 +58,7 @@ export function ExportTab({ projectId, manifest, canExport }: Props) {
               id: p.id,
               label: p.label,
             }))}
+            reportLayout={project.reportLayout}
           />
         </Card>
 
@@ -66,9 +66,9 @@ export function ExportTab({ projectId, manifest, canExport }: Props) {
           <p className="mb-3 text-xs text-neutral-500">
             One subfolder per bucket. Photos copied in full
             resolution with EXIF preserved bit-for-bit + a
-            captions.txt per folder. The browser fetches photos
-            directly from R2 and zips them locally — no server
-            dyno involved. Keep the tab open while it runs.
+            captions.txt per folder. Includes plans and saved markup files.
+            Your browser downloads and packages the files. Keep the tab open
+            until completion; missing files require an explicit partial download.
           </p>
           <FolderExportClient
             projectId={projectId}
@@ -80,10 +80,9 @@ export function ExportTab({ projectId, manifest, canExport }: Props) {
               Use server-side export instead
             </summary>
             <div className="mt-2">
-              Older flow — server builds the ZIP and you download
-              from the Exports page when ready. Slower and limited
-              by server memory; only worth it if you need the bundle
-              to survive closing this tab.
+              The server streams a ZIP into export history so it can finish
+              after you close this tab. Required files must all be available.
+              Server queue limits apply.
               <div className="mt-2">
                 <FolderExportControl
                   projectId={projectId}

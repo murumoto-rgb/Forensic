@@ -16,16 +16,17 @@
  * cross-reference an error to a user without leaking identity.
  */
 
-import * as Sentry from "@sentry/react";
-import posthog from "posthog-js";
 import { env } from "./env";
 
 let sentryReady = false;
 let posthogReady = false;
+let sentry: typeof import("@sentry/react") | null = null;
+let posthog: typeof import("posthog-js").default | null = null;
 
-export function initObservability(): void {
+export async function initObservability(): Promise<void> {
   if (env.SENTRY_DSN) {
-    Sentry.init({
+    sentry = await import("@sentry/react");
+    sentry.init({
       dsn: env.SENTRY_DSN,
       environment: import.meta.env.MODE,
       release: import.meta.env.VITE_GIT_SHA ?? undefined,
@@ -42,9 +43,11 @@ export function initObservability(): void {
   }
 
   if (env.POSTHOG_KEY) {
+    const module = await import("posthog-js");
+    posthog = module.default;
     posthog.init(env.POSTHOG_KEY, {
       api_host: env.POSTHOG_HOST,
-      autocapture: true,
+      autocapture: false,
       // We're a B2B internal tool — heatmaps + session recording
       // add noise without much benefit, and the latter has obvious
       // privacy implications.
@@ -61,23 +64,21 @@ export function identifyUser(args: {
   email?: string;
 }): void {
   if (sentryReady) {
-    Sentry.setUser({ id: args.userId });
+    sentry?.setUser({ id: args.userId });
   }
   if (posthogReady) {
     // PostHog identify pins this browser to the given user id;
-    // subsequent pageviews + events are attributed. We pass email
-    // as a person property (PostHog dashboard search uses it),
-    // accepting the trade-off for support efficiency.
-    posthog.identify(args.userId, args.email ? { email: args.email } : undefined);
+    // subsequent pageviews + events are attributed to the opaque user id.
+    posthog?.identify(args.userId);
   }
 }
 
 export function resetUser(): void {
   if (sentryReady) {
-    Sentry.setUser(null);
+    sentry?.setUser(null);
   }
   if (posthogReady) {
-    posthog.reset();
+    posthog?.reset();
   }
 }
 
@@ -91,7 +92,7 @@ export function trackEvent(
   properties?: Record<string, unknown>
 ): void {
   if (!posthogReady) return;
-  posthog.capture(name, properties);
+  posthog?.capture(name, properties);
 }
 
 /** Manual Sentry capture. UI code generally doesn't call this
@@ -103,5 +104,5 @@ export function captureException(
   context?: Record<string, unknown>
 ): void {
   if (!sentryReady) return;
-  Sentry.captureException(error, context ? { extra: context } : undefined);
+  sentry?.captureException(error, context ? { extra: context } : undefined);
 }

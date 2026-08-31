@@ -98,7 +98,12 @@ async function markDone(jobId: string, objectKey: string, sizeBytes: number): Pr
  *  quote / newline; double any internal quotes. */
 function csvField(raw: string | number | null | undefined): string {
   if (raw == null) return "";
-  const s = String(raw);
+  // CSV is a derived export. Neutralize spreadsheet formula prefixes in
+  // untrusted captions/tags/AI text; the source manifest is never changed.
+  // This is the documented safe CSV contract until an explicit raw export
+  // option is added to the shared export schema.
+  const rawString = String(raw);
+  const s = /^[\t ]*[=+\-@]/.test(rawString) ? `'${rawString}` : rawString;
   if (/[",\n\r]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }

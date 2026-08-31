@@ -157,6 +157,7 @@ const fixtureProject: Project = {
       },
     ] as unknown as NonNullable<Project["aiExtraVocabulary"]>["primaries"],
   },
+  inspectionChecklist: [], inspectionSessions: [], reportLayout: null,
   manifestSchemaVersion: 2,
 };
 

@@ -1,3 +1,4 @@
+import { sendExportLimit } from "../resourceLimits.js";
 /**
  * Server-side PDF export endpoints (Build #5.62.1, plan item #3).
  *
@@ -176,6 +177,7 @@ export const exportsRoute: FastifyPluginAsync = async (app) => {
       .select("*")
       .maybeSingle();
     if (error || !data) {
+      if (sendExportLimit(reply, error)) return;
       request.log.error({ err: error, projectId }, "pdf export — enqueue failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;

@@ -56,11 +56,13 @@ const PEN_WIDTHS = [2, 4, 8, 16];
 
 export function PhotoMarkupCanvas({
   projectId,
-  project: _project,
+  project,
   photo,
   onClose,
   onPhotoUpdated,
 }: Props) {
+  const latest = useRef({ project, photo });
+  latest.current = { project, photo };
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(
@@ -203,16 +205,20 @@ export function PhotoMarkupCanvas({
         pixelRatio,
       });
       const blob = await dataUrlToBlob(dataUrl);
+      const filename = `${photo.id}-${crypto.randomUUID()}.png`;
       await uploadFile({
         projectId,
         photoId: photo.id,
         kind: "markup_png",
+        sourceFilename: filename,
         file: blob,
         contentType: "image/png",
       });
-      // iOS writes `<photoId>.png` here too.
-      const filename = `${photo.id}.png`;
-      onPhotoUpdated({ ...photo, markupOverlayFilename: filename });
+      const current = latest.current.project.photos.find((p) => p.id === photo.id);
+      if (!current || latest.current.project.isFrozen) throw new Error("This photo is no longer editable. Your saved project was left unchanged.");
+      // A fresh filename lets another device notice the new overlay. Web
+      // replaces the raster markup, so an older PencilKit drawing is stale.
+      onPhotoUpdated({ ...current, markupOverlayFilename: filename, markupDrawingFilename: null });
       onClose();
     } catch (e: unknown) {
       setSaveError(e instanceof Error ? e.message : "Save failed.");

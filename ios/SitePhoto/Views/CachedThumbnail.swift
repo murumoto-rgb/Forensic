@@ -15,9 +15,9 @@ enum ThumbnailCache {
 
     static func key(for url: URL) -> NSString {
         let mtime = ((try? FileManager.default
-            .attributesOfItem(atPath: url.path()))?[.modificationDate] as? Date)
+            .attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)
             .map { String($0.timeIntervalSince1970) } ?? "0"
-        return "\(url.path())|\(mtime)" as NSString
+        return "\(url.path)|\(mtime)" as NSString
     }
 }
 

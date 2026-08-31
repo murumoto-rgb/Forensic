@@ -32,6 +32,7 @@ import type {
   ProjectLock,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
+import { sendTransactionError } from "../projectTransactions.js";
 import { authPlugin } from "../middleware/auth.js";
 import {
   assertProjectAccess,
@@ -147,6 +148,8 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     Reply: GetLockResponse | ApiError;
   }>("/v1/projects/:id/lock", async (request, reply) => {
     const projectId = request.params.id;
+    try { await assertProjectAccess(request.user.id, projectId, "viewer", request); }
+    catch (err) { if (sendAccessError(reply, err)) return; throw err; }
     const callerSession = request.query.clientSession ?? null;
     const { data, error } = await supabaseAdmin
       .from("project_locks")
@@ -221,37 +224,15 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + LOCK_TTL_MS);
-    // Preserve acquired_at when re-acquiring my own / refreshing an
-    // expired row I held; otherwise stamp a fresh acquisition.
-    const acquiredAt =
-      existing && (existing as LockRow).user_id === request.user.id
-        ? (existing as LockRow).acquired_at
-        : now.toISOString();
-
-    const { data: upserted, error: writeErr } = await supabaseAdmin
-      .from("project_locks")
-      .upsert(
-        {
-          project_id: projectId,
-          user_id: request.user.id,
-          user_email: request.user.email,
-          client: parsed.data.client,
-          acquired_at: acquiredAt,
-          last_heartbeat: now.toISOString(),
-          expires_at: expiresAt.toISOString(),
-          client_session: parsed.data.clientSession ?? null,
-        },
-        { onConflict: "project_id" }
-      )
-      .select("*")
-      .maybeSingle();
-    if (writeErr || !upserted) {
-      request.log.error({ err: writeErr, projectId }, "lock acquire — write failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
+    // The database serializes acquisition against manifest/file writes.
+    const { data: result, error: writeErr } = await supabaseAdmin.rpc("acquire_project_lock", {
+      pid: projectId, actor: request.user.id, email: request.user.email ?? "", client_kind: parsed.data.client,
+      session: parsed.data.clientSession ?? null,
+    });
+    if (writeErr) throw writeErr;
+    if (!result) throw new Error("Lock transaction returned no result");
+    if (sendTransactionError(reply, result)) return;
+    const upserted = result.lock;
     request.log.info({ projectId, userId: request.user.id }, "lock acquired");
 
     // Courtesy email to the previous holder when we just picked up
@@ -290,6 +271,9 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
     Reply: LockResponse | ApiError;
   }>("/v1/projects/:id/lock/heartbeat", async (request, reply) => {
     const projectId = request.params.id;
+    try { await assertProjectAccess(request.user.id, projectId, "editor", request); }
+    catch (err) { if (sendAccessError(reply, err)) return; throw err; }
+    const callerSession = (request.headers["x-client-session"] as string | undefined) ?? null;
     const { data: existing, error: readErr } = await supabaseAdmin
       .from("project_locks")
       .select("*")
@@ -300,7 +284,7 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
-    if (!existing || (existing as LockRow).user_id !== request.user.id) {
+    if (!existing || !isLive(existing as LockRow) || (existing as LockRow).user_id !== request.user.id || ((existing as LockRow).client_session !== null && (existing as LockRow).client_session !== callerSession)) {
       // Either nobody holds it, or someone else does — the client's
       // lock is gone (expired + taken, or force-released). 409 tells
       // it to stop editing + re-acquire.
@@ -320,6 +304,8 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       })
       .eq("project_id", projectId)
       .eq("user_id", request.user.id)
+      .eq("acquired_at", (existing as LockRow).acquired_at)
+      .gt("expires_at", now.toISOString())
       .select("*")
       .maybeSingle();
     if (writeErr || !updated) {
@@ -352,6 +338,8 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       .eq("user_id", request.user.id);
     if (callerSession) {
       query = query.eq("client_session", callerSession);
+    } else {
+      query = query.is("client_session", null);
     }
     const { error } = await query;
     if (error) {
@@ -397,6 +385,8 @@ export const locksRoute: FastifyPluginAsync = async (app) => {
       .eq("user_id", request.user.id);
     if (callerSession) {
       query = query.eq("client_session", callerSession);
+    } else {
+      query = query.is("client_session", null);
     }
     const { error } = await query;
     if (error) {

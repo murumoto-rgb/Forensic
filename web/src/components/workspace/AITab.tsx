@@ -55,6 +55,8 @@ export function AITab({ projectId, manifest, canEdit }: Props) {
             revisionRef={manifest.revisionRef}
             setProject={manifest.setProject}
             setRevision={manifest.setRevision}
+            save={manifest.save}
+            saveAndWait={manifest.saveAndWait}
             photoCount={project.photos.length}
           />
         ) : (

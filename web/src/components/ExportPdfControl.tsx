@@ -7,6 +7,7 @@ import type {
 } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
 import { useUserPrefs } from "../lib/useUserPrefs";
+import { Modal } from "./Modal";
 
 /**
  * "Export PDF" button + iOS-parity options modal + status pill
@@ -43,6 +44,7 @@ interface Props {
   /** For the per-plan multi-select. Empty when the project has no
    *  plans — that section collapses out automatically. */
   floorPlans: FloorPlanSummary[];
+  reportLayout?: { perPage: number; groupByBucket: boolean; includeMetadataTable: boolean } | null;
 }
 
 /** iOS-parity defaults — match `DEFAULT_PDF_EXPORT_OPTIONS` on the
@@ -144,6 +146,7 @@ export function ExportPdfControl({
   projectId,
   canExport,
   floorPlans,
+  reportLayout,
 }: Props) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [showModal, setShowModal] = useState(false);
@@ -376,7 +379,7 @@ export function ExportPdfControl({
       )}
       <button
         type="button"
-        onClick={() => setShowModal(true)}
+        onClick={() => { if (reportLayout) setOptions((current) => ({ ...current, perPage: reportLayout.perPage, groupByBucket: reportLayout.groupByBucket, includeMetadataTable: reportLayout.includeMetadataTable })); setShowModal(true); }}
         disabled={!canExport || inFlight}
         className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
         title={
@@ -483,11 +486,7 @@ function ExportOptionsModal({
     (options.selectedFloorIds?.length ?? 0) === 0;
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    >
+    <Modal title="Export PDF — options" onClose={onCancel} className="max-w-lg p-0">
       <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl">
         <h2 className="border-b border-neutral-800 px-6 py-4 text-base font-semibold text-neutral-100">
           Export PDF — options
@@ -757,6 +756,6 @@ function ExportOptionsModal({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

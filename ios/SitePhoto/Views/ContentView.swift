@@ -7,6 +7,7 @@ struct ContentView: View {
 
     @State private var path = NavigationPath()
     @State private var showingNew = false
+    @State private var showingSearch = false
     @State private var pendingDelete: Project?
     @State private var pendingPermanentDelete: Project?
     @State private var pendingRename: Project?
@@ -109,6 +110,9 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingSearch = true } label: { Label("Find evidence", systemImage: "magnifyingglass") }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingNew = true
                     } label: {
@@ -127,6 +131,11 @@ struct ContentView: View {
                 NewProjectView { newProject in
                     showingNew = false
                     path.append(newProject)
+                }
+            }
+            .sheet(isPresented: $showingSearch) {
+                ProjectSearchView { id in
+                    if let project = store.project(withID: id) { path.append(project) }
                 }
             }
             .sheet(isPresented: $showingSettings) {

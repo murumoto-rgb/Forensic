@@ -133,6 +133,7 @@ export function PhotoList({
       });
     return () => {
       cancelled = true;
+      for (const id of requestedIds) cacheRef.current.attempted.delete(id);
     };
     // The effect re-fires when the visible photo set changes; the
     // cache check short-circuits when there's nothing new.
@@ -174,7 +175,7 @@ export function PhotoList({
     <div
       className="grid gap-2"
       style={{
-        gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))",
+        gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 380px), 1fr))",
       }}
     >
       {photos.map((photo, idx) => (
@@ -210,6 +211,11 @@ export function PhotoList({
             onPhotoUpdated({ ...photo, isFavorite: !photo.isFavorite })
           }
           onToggleSelected={() => onToggleSelected(photo.id)}
+          onThumbnailError={() => {
+            cacheRef.current.urls.delete(photo.id);
+            cacheRef.current.attempted.delete(photo.id);
+            setRetryNonce((n) => n + 1);
+          }}
         />
         </div>
       ))}

@@ -16,26 +16,30 @@ export async function uploadFile(args: {
   projectId: string;
   photoId: string;
   kind: FileKind;
+  /** Exact filename referenced by the manifest, not the user's picker name. */
+  sourceFilename: string;
   file: File | Blob;
   contentType: string;
-}): Promise<void> {
-  const { projectId, photoId, kind, file, contentType } = args;
+}): Promise<string> {
+  const { projectId, photoId, kind, sourceFilename, file, contentType } = args;
   if (file.size > FILE_MAX_BYTES) {
     throw new Error(
       `File too large (${(file.size / 1_000_000).toFixed(1)} MB). Limit is 50 MB.`
     );
   }
 
-  const { uploadUrl, objectKey } = await api.requestUploadUrl(projectId, {
+  const { uploadUrl, objectKey, requiredHeaders } = await api.requestUploadUrl(projectId, {
     photoId,
     kind,
     sizeBytes: file.size,
     contentType,
+    immutable: true,
+    sourceFilename,
   });
 
   const r2Response = await fetch(uploadUrl, {
     method: "PUT",
-    headers: { "content-type": contentType },
+    headers: { "content-type": contentType, ...(requiredHeaders ?? {}) },
     body: file,
   });
   if (!r2Response.ok) {
@@ -52,6 +56,8 @@ export async function uploadFile(args: {
       photoId,
       kind,
       sizeBytes: file.size,
+      immutable: true,
+      sourceFilename,
     });
   } catch (e: unknown) {
     if (e instanceof ApiError) {
@@ -59,4 +65,5 @@ export async function uploadFile(args: {
     }
     throw e;
   }
+  return objectKey;
 }

@@ -22,9 +22,10 @@ import {
   type ApiError,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
+import { clientSession, sendTransactionError } from "../projectTransactions.js";
 import { authPlugin } from "../middleware/auth.js";
-import { assertProjectAccess, isOrgAdmin, sendAccessError } from "../access.js";
-import { buildObjectKey, objectExists, presignedPut } from "../r2.js";
+import { assertProjectAccess, assertProjectMutable, isOrgAdmin, sendAccessError } from "../access.js";
+import { buildObjectKey, inspectObject, presignedPut, presignedGet } from "../r2.js";
 
 const FileKindSchema = z.enum([
   "photo",
@@ -40,6 +41,8 @@ const UploadUrlBodySchema = z.object({
   sizeBytes: z.number().int().positive().max(FILE_MAX_BYTES),
   sha256: z.string().optional(),
   contentType: z.string().min(1).max(255),
+  sourceFilename: z.string().min(1).max(512).optional(),
+  immutable: z.boolean().default(false),
 });
 
 const CommitUploadBodySchema = z.object({
@@ -48,6 +51,8 @@ const CommitUploadBodySchema = z.object({
   kind: FileKindSchema,
   sizeBytes: z.number().int().positive().max(FILE_MAX_BYTES),
   sha256: z.string().optional(),
+  sourceFilename: z.string().min(1).max(512).optional(),
+  immutable: z.boolean().default(false),
 });
 
 const SyncFilesCheckBodySchema = z.object({
@@ -69,6 +74,26 @@ const UPLOAD_URL_TTL_SECONDS = 15 * 60;
 export const filesRoute: FastifyPluginAsync = async (app) => {
   await app.register(authPlugin);
 
+  app.get<{ Params: { id: string; entityId: string; kind: string }; Querystring: { filename?: string } }>(
+    "/v1/projects/:id/files/:entityId/:kind", async (request, reply) => {
+      const { id, entityId, kind } = request.params;
+      if (!FileKindSchema.safeParse(kind).success || !z.string().uuid().safeParse(id).success || !z.string().uuid().safeParse(entityId).success) {
+        return reply.code(400).send({ error: "bad_request", message: "Invalid asset identifier" });
+      }
+      try { await assertProjectAccess(request.user.id, id, "viewer", request); }
+      catch (err) { if (sendAccessError(reply, err)) return; throw err; }
+      const { data, error } = await supabaseAdmin.from("current_project_files")
+        .select("object_key, source_filename").eq("project_id", id).eq("photo_id", entityId).eq("kind", kind).maybeSingle();
+      if (error) throw error;
+      if (!data) return reply.code(404).send({ error: "not_found", message: "Asset is not registered for this manifest" });
+      if (request.query.filename !== undefined && request.query.filename !== data.source_filename) {
+        return reply.code(409).send({ error: "revision_mismatch", message: "The asset filename changed. Refresh the manifest before downloading." });
+      }
+      const url = await presignedGet({ objectKey: data.object_key as string, expiresInSeconds: 300 });
+      return { url, expiresAt: new Date(Date.now() + 300000).toISOString() };
+    }
+  );
+
   // -----------------------------------------------------------------
   // POST /v1/projects/:id/files/upload-url
   // -----------------------------------------------------------------
@@ -77,7 +102,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     Body: unknown;
     Reply: UploadUrlResponse | ApiError;
   }>("/v1/projects/:id/files/upload-url", async (request, reply) => {
-    const projectId = request.params.id;
+    const projectId = request.params.id.toLowerCase();
     const parsed = UploadUrlBodySchema.safeParse(request.body);
     if (!parsed.success) {
       request.log.warn(
@@ -91,19 +116,21 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
       });
       return;
     }
-    const { photoId, kind, sizeBytes, contentType } = parsed.data;
-
-    // Upload-url provisioning is an edit intent → editor-or-above.
-    try {
-      await assertProjectAccess(request.user.id, projectId, "editor", request);
-    } catch (err) {
-      if (sendAccessError(reply, err)) return;
-      request.log.error({ err, projectId }, "files upload-url — access check failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
+    if (!parsed.data.immutable || !parsed.data.sourceFilename) {
+      reply.code(426).send({ error: "upgrade_required", message: "Update the app: immutable uploads with sourceFilename are required to protect evidence history." }); return;
     }
+    const { kind, sizeBytes, contentType, immutable } = parsed.data;
+    const photoId = parsed.data.photoId.toLowerCase();
 
-    const objectKey = buildObjectKey({ projectId, photoId, kind });
+    const objectKey = buildObjectKey({ projectId, photoId, kind, ...(immutable ? { uploadId: crypto.randomUUID() } : {}) });
+    const { data: receipt, error: receiptError } = await supabaseAdmin.rpc("issue_upload_receipt", {
+      pid: projectId, actor: request.user.id, entity: photoId, file_kind: kind,
+      filename: parsed.data.sourceFilename, key: objectKey, bytes: sizeBytes,
+      hash: parsed.data.sha256 ?? null, ttl_seconds: UPLOAD_URL_TTL_SECONDS,
+      session: clientSession(request),
+    });
+    if (receiptError) throw receiptError;
+    if (sendTransactionError(reply, receipt)) return;
     let uploadUrl: string;
     try {
       uploadUrl = await presignedPut({
@@ -111,6 +138,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
         contentType,
         contentLength: sizeBytes,
         expiresInSeconds: UPLOAD_URL_TTL_SECONDS,
+        ...(immutable ? { ifNoneMatch: "*" } : {}),
       });
     } catch (err) {
       request.log.error({ err, objectKey }, "Failed to presign R2 PUT");
@@ -119,7 +147,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     }
 
     const expiresAt = new Date(Date.now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString();
-    return { uploadUrl, objectKey, expiresAt };
+    return { uploadUrl, objectKey, expiresAt, ...(immutable ? { requiredHeaders: { "if-none-match": "*" } } : {}) };
   });
 
   // -----------------------------------------------------------------
@@ -130,7 +158,7 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
     Body: unknown;
     Reply: CommitUploadResponse | ApiError;
   }>("/v1/projects/:id/files/commit", async (request, reply) => {
-    const projectId = request.params.id;
+    const projectId = request.params.id.toLowerCase();
     const parsed = CommitUploadBodySchema.safeParse(request.body);
     if (!parsed.success) {
       reply.code(400).send({
@@ -140,27 +168,38 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
       });
       return;
     }
-    const body = parsed.data;
+    const body = { ...parsed.data, photoId: parsed.data.photoId.toLowerCase() };
+    if (!body.immutable || !body.sourceFilename) {
+      reply.code(426).send({ error: "upgrade_required", message: "Update the app: immutable uploads with sourceFilename are required to protect evidence history." }); return;
+    }
 
     // The object key must match the project / photo / kind tuple
     // exactly. Prevents a caller from committing arbitrary keys
     // they don't own.
-    const expectedKey = buildObjectKey({
+    const legacyKey = buildObjectKey({
       projectId,
       photoId: body.photoId,
       kind: body.kind,
     });
-    if (body.objectKey !== expectedKey) {
+    const newKeyPrefix = `${legacyKey}/`;
+    const isLegacyKey = body.objectKey === legacyKey;
+    const isNewKey = body.objectKey.startsWith(newKeyPrefix) &&
+      /^[0-9a-f-]{36}$/.test(body.objectKey.slice(newKeyPrefix.length));
+    if (!isLegacyKey && !isNewKey) {
       reply.code(400).send({
         error: "bad_request",
-        message: `Object key (${body.objectKey}) doesn't match :id/:photoId/:kind (${expectedKey})`,
+        message: `Object key (${body.objectKey}) doesn't match the project/photo/kind upload scope`,
       });
+      return;
+    }
+    if (body.immutable !== isNewKey) {
+      reply.code(400).send({ error: "bad_request", message: "Immutable commits must use a versioned upload key." });
       return;
     }
 
     // Commit is an edit intent.
     try {
-      await assertProjectAccess(request.user.id, projectId, "editor", request);
+      await assertProjectMutable(request.user.id, projectId, request);
     } catch (err) {
       if (sendAccessError(reply, err)) return;
       request.log.error({ err, projectId }, "files commit — access check failed");
@@ -168,39 +207,20 @@ export const filesRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Verify the bytes actually landed in R2 before recording the row.
-    // Prevents a malicious client from registering a key it never
-    // uploaded.
-    let exists: boolean;
-    try {
-      exists = await objectExists(body.objectKey);
-    } catch (err) {
-      request.log.error({ err, objectKey: body.objectKey }, "R2 HEAD failed during commit");
-      reply.code(500).send({ error: "internal", message: "Storage error" });
-      return;
+    // HEAD distinguishes a missing object from an unavailable object store and
+    // checks the declared length. Client sha256 is not a verified content hash.
+    const object = await inspectObject(body.objectKey);
+    if (object.state !== "available" || object.sizeBytes !== body.sizeBytes) {
+      reply.code(409).send({ error: "not_uploaded", message: "Upload is missing, unverifiable, or its byte length does not match." }); return;
     }
-    if (!exists) {
-      reply.code(409).send({
-        error: "not_uploaded",
-        message: `Object ${body.objectKey} is not in R2. Complete the PUT before committing.`,
-      });
-      return;
-    }
-
-    const { error: writeError } = await supabaseAdmin.from("files").upsert({
-      object_key: body.objectKey,
-      project_id: projectId,
-      photo_id: body.photoId,
-      kind: body.kind,
-      size_bytes: body.sizeBytes,
-      sha256: body.sha256 ?? null,
-      uploaded_by: request.user.id,
+    const { data, error } = await supabaseAdmin.rpc("commit_upload_receipt", {
+      pid: projectId, actor: request.user.id, entity: body.photoId, file_kind: body.kind,
+      filename: body.sourceFilename, key: body.objectKey, bytes: body.sizeBytes,
+      hash: body.sha256 ?? null, session: clientSession(request),
     });
-    if (writeError) {
-      request.log.error({ err: writeError, objectKey: body.objectKey }, "Failed to record file row");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
+    if (error) throw error;
+    if (!data) throw new Error("File commit returned no result");
+    if (sendTransactionError(reply, data)) return;
 
     return { ok: true };
   });

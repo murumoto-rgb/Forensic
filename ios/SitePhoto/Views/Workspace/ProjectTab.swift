@@ -10,7 +10,7 @@ enum ProjectTab: String, CaseIterable, Hashable, Identifiable {
     case photos
     case plan
     case ai
-    case buckets
+    case export
     case more
 
     var id: String { rawValue }
@@ -19,9 +19,9 @@ enum ProjectTab: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .photos:  return "Photos"
         case .plan:    return "Plan"
-        case .ai:      return "AI"
-        case .buckets: return "Buckets"
-        case .more:    return "More"
+        case .ai:      return "Review"
+        case .export:  return "Export"
+        case .more:    return "Details"
         }
     }
 
@@ -30,7 +30,7 @@ enum ProjectTab: String, CaseIterable, Hashable, Identifiable {
         case .photos:  return "photo.on.rectangle"
         case .plan:    return "map"
         case .ai:      return "wand.and.sparkles"
-        case .buckets: return "folder.fill"
+        case .export:  return "square.and.arrow.up"
         case .more:    return "ellipsis.circle"
         }
     }

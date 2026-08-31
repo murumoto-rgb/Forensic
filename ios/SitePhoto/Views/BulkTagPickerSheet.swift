@@ -20,7 +20,20 @@ struct BulkTagPickerSheet: View {
 
     private var project: Project? { store.project(withID: projectID) }
     private var entries: [(primary: String, secondaries: [String])] {
-        ControlledVocabulary.entries
+        var names: [String] = []
+        var secondaries: [String: [String]] = [:]
+        for context in store.tagLibrary.contexts {
+            for primary in context.primaries {
+                if secondaries[primary.name] == nil {
+                    names.append(primary.name)
+                    secondaries[primary.name] = []
+                }
+                for secondary in primary.secondaries where !(secondaries[primary.name] ?? []).contains(secondary.name) {
+                    secondaries[primary.name, default: []].append(secondary.name)
+                }
+            }
+        }
+        return names.map { (primary: $0, secondaries: secondaries[$0] ?? []) }
     }
 
     var body: some View {

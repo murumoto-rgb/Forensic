@@ -60,8 +60,15 @@ struct PDFExportService {
     /// `options.sectionOrder`, skipping sections whose data is absent
     /// or whose toggle is off. Page numbers are computed in a pre-pass
     /// so the footer "Page N of M" is accurate without re-rendering.
-    /// Returns a URL to a temp file, or nil on failure.
-    func buildPDF(onProgress: @escaping @Sendable (String) -> Void) async -> URL? {
+    /// A final report never silently omits selected evidence.
+    struct IncompleteExportError: LocalizedError {
+        let missingItems: [String]
+        var errorDescription: String? {
+            "Incomplete export — missing \(missingItems.count) item(s): \(missingItems.prefix(12).joined(separator: ", ")). Recover the missing files in Project Health and retry."
+        }
+    }
+
+    func buildPDF(onProgress: @escaping @Sendable (String) -> Void) async throws -> URL {
         let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)  // Letter at 72 dpi
         let margin: CGFloat = 36  // 0.5 in
 
@@ -71,8 +78,10 @@ struct PDFExportService {
         // Target ≈ 200 PPI at the cell size the user picked. Anything beyond
         // that bloats the PDF without showing more on the printed page.
         let photoMaxPixel = contactSheetMaxPixel(perPage: options.perPage)
-        var loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []
-        for (i, photo) in sortedPhotos.enumerated() {
+        var loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)] = []
+        var missingItems: [String] = []
+        let contactPhotos = options.sectionOrder.contains(.contactSheets) ? sortedPhotos : []
+        for (i, photo) in contactPhotos.enumerated() {
             onProgress("Loading photo \(i + 1) of \(sortedPhotos.count)…")
             let url = store.imageURL(for: photo, in: project)
             if let data = await store.loadFileBytes(at: url),
@@ -83,26 +92,42 @@ struct PDFExportService {
                 let compressed = jpegEncoded(img, quality: 0.82)
                 // Clean copy first so the engineer can compare side-by-side
                 // in the contact sheet (clean cell, then marked cell).
-                loaded.append((photo, compressed, false))
+                loaded.append((photo, compressed, false, nil))
                 if photo.markupOverlayFilename != nil {
-                    loaded.append((photo, compressed, true))
+                    var markupImage: UIImage?
+                    if let overlay = store.markupOverlayURL(for: photo, in: project) {
+                        if let bytes = await store.loadFileBytes(at: overlay),
+                           let image = downsample(data: bytes, maxPixel: photoMaxPixel) {
+                            markupImage = image
+                        } else {
+                            missingItems.append("markup for photo #\(photo.sequenceNumber)")
+                        }
+                    } else {
+                        missingItems.append("markup for photo #\(photo.sequenceNumber)")
+                    }
+                    loaded.append((photo, compressed, true, markupImage))
                 }
+            } else {
+                missingItems.append("photo #\(photo.sequenceNumber)")
             }
         }
 
-        // Load every selected floor plan's rasterised image. Skipped
-        // plans (or plans whose image is missing in iCloud) are silently
-        // omitted; downstream rendering treats absence as "no plan
-        // page for this floor" rather than failing the whole export.
-        let selectedPlans = self.selectedPlans
+        // All selected plans must be available before rendering a final report.
+        let selectedPlans = options.sectionOrder.contains(.plan) ? self.selectedPlans : []
         var planImagesByID: [UUID: UIImage] = [:]
         for plan in selectedPlans {
             onProgress("Loading \(plan.label)…")
             guard let url = store.floorPlanURL(for: project, planID: plan.id),
                   let data = await store.loadFileBytes(at: url),
                   // Plan is drawn full-page (~7.5×9.7 in at 200 PPI ≈ 1934 px max).
-                  let img = downsample(data: data, maxPixel: 2000) else { continue }
+                  let img = downsample(data: data, maxPixel: 2000) else {
+                missingItems.append("plan \(plan.label)")
+                continue
+            }
             planImagesByID[plan.id] = jpegEncoded(img, quality: 0.85)
+        }
+        guard missingItems.isEmpty else {
+            throw IncompleteExportError(missingItems: missingItems)
         }
 
         onProgress("Generating map…")
@@ -116,7 +141,7 @@ struct PDFExportService {
         // ── 2. Pre-pass: count pages so footers can read "Page N of M" ─────────
 
         let floorPartitions = partitionByFloor(loaded: loaded,
-                                                selectedPlans: selectedPlans)
+                                                selectedPlans: self.selectedPlans)
         let totalPages = countPages(
             selectedPlans: selectedPlans,
             planImagesByID: planImagesByID,
@@ -128,6 +153,9 @@ struct PDFExportService {
 
         onProgress("Building PDF…")
         let branding = store.reportBranding
+        if branding.logoStoragePath != nil && (store.brandingLogoURL == nil || branding.logoCachedStoragePath != branding.logoStoragePath) {
+            throw IncompleteExportError(missingItems: ["shared report logo — retry branding sync in Settings"])
+        }
         let logo = store.brandingLogoImage()
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
         var pageIndex = 0
@@ -220,12 +248,8 @@ struct PDFExportService {
 
         let tmpURL = FileManager.default.temporaryDirectory
             .appending(path: "\(safeFilename(project.name)).pdf")
-        do {
-            try pdfData.write(to: tmpURL, options: .atomic)
-            return tmpURL
-        } catch {
-            return nil
-        }
+        try pdfData.write(to: tmpURL, options: .atomic)
+        return tmpURL
     }
 
     // MARK: - Pre-pass: page counting + bucket grouping
@@ -237,11 +261,11 @@ struct PDFExportService {
     /// when `groupByBucket` is on.
     private struct ContactSheetGroup {
         let header: (name: String, color: UIColor)?
-        let items: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+        let items: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]
     }
 
     private func makeContactSheetGroups(
-        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]
     ) -> [ContactSheetGroup] {
         guard options.groupByBucket else {
             return loaded.isEmpty ? [] : [ContactSheetGroup(header: nil, items: loaded)]
@@ -283,12 +307,12 @@ struct PDFExportService {
     private struct FloorPartition {
         let floor: FloorPlan
         let groups: [ContactSheetGroup]
-        let allItems: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+        let allItems: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]
     }
 
     private struct FloorPartitions {
         let placed: [FloorPartition]
-        let unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+        let unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]
     }
 
     /// Slice `loaded` into per-floor partitions + a leftover bucket of
@@ -296,12 +320,12 @@ struct PDFExportService {
     /// re-uses `makeContactSheetGroups` so the optional bucket grouping
     /// still applies inside each floor.
     private func partitionByFloor(
-        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
+        loaded: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)],
         selectedPlans: [FloorPlan]
     ) -> FloorPartitions {
         let selectedIDs = Set(selectedPlans.map(\.id))
-        var byFloor: [UUID: [(photo: Photo, image: UIImage, includeMarkup: Bool)]] = [:]
-        var unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []
+        var byFloor: [UUID: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]] = [:]
+        var unplaced: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)] = []
         for item in loaded {
             if let pid = item.photo.floorPlanID, selectedIDs.contains(pid) {
                 byFloor[pid, default: []].append(item)
@@ -330,7 +354,7 @@ struct PDFExportService {
         pageRect: CGRect,
         margin: CGFloat,
         groups: [ContactSheetGroup],
-        allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
+        allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)],
         blockLabel: String,
         logo: UIImage?,
         branding: ReportBranding,
@@ -745,11 +769,11 @@ struct PDFExportService {
     // MARK: - Contact sheet page
 
     private func drawContactSheet(_ ctx: CGContext, pageRect: CGRect, margin: CGFloat,
-                                   photos: [(photo: Photo, image: UIImage, includeMarkup: Bool)],
+                                   photos: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)],
                                    rangeStart: Int, total: Int,
                                    perPage: Int,
                                    groupName: String?,
-                                   allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool)] = []) {
+                                   allItemsInBlock: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)] = []) {
         let end = rangeStart + photos.count
         let prefix = groupName ?? project.name
         drawText("\(prefix) · Photos \(rangeStart + 1)–\(end) of \(total)",
@@ -758,16 +782,8 @@ struct PDFExportService {
 
         let contentW = pageRect.width - 2 * margin
         let headerH: CGFloat = 24
-        // Grid shape per the user-picked density:
-        //   2 → 1 col × 2 rows (tall cells, full-width photos)
-        //   4 → 2 cols × 2 rows
-        //   6 → 2 cols × 3 rows (legacy default)
-        let (cols, rows): (Int, Int)
-        switch perPage {
-        case 2:  (cols, rows) = (1, 2)
-        case 4:  (cols, rows) = (2, 2)
-        default: (cols, rows) = (2, 3)
-        }
+        // Matches the web/server grid for every shared 1–12 preset.
+        let (cols, rows) = Self.gridDimensions(perPage: perPage)
         let cellW = contentW / CGFloat(cols)
         let cellH = (pageRect.height - 2 * margin - headerH) / CGFloat(rows)
         let pad: CGFloat = 4
@@ -824,13 +840,9 @@ struct PDFExportService {
             // Composite the PencilKit markup overlay only when this cell
             // is the "marked" copy. Photos with markup land in the contact
             // sheet twice — once clean (this branch off), once marked (on).
-            if item.includeMarkup,
-               let markupURL = store.markupOverlayURL(for: item.photo, in: project),
-               let markupData = try? Data(contentsOf: markupURL),
-               // PencilKit overlays are typically captured at the photo's
-               // native resolution. Downsample to the cell target so we
-               // don't embed 4K alpha bitmaps in the PDF.
-               let markupImage = downsample(data: markupData, maxPixel: contactSheetMaxPixel(perPage: perPage)) {
+            if item.includeMarkup, let markupImage = item.markupImage {
+                // Use the verified preloaded overlay, never a second disk read
+                // that could silently lose annotation after a map await.
                 markupImage.draw(in: CGRect(x: ox, y: oy, width: dW, height: dH))
             }
 
@@ -856,7 +868,7 @@ struct PDFExportService {
     /// Falls back to the smallest sequence number in the group when
     /// no explicit primary is marked.
     private func sameLocationLookup(
-        in items: [(photo: Photo, image: UIImage, includeMarkup: Bool)]
+        in items: [(photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?)]
     ) -> [UUID: String] {
         var result: [UUID: String] = [:]
         var byGroup: [UUID: [Photo]] = [:]
@@ -881,7 +893,7 @@ struct PDFExportService {
     /// given the engineer's enabled annotations. Mirrors the per-field
     /// drawing order in `drawCellCaption` so a measure + draw pair
     /// never disagree.
-    private func measureCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool),
+    private func measureCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?),
                                       innerW: CGFloat,
                                       options: PDFExportOptions.AnnotationOptions,
                                       threshold: Double,
@@ -919,7 +931,7 @@ struct PDFExportService {
         return h
     }
 
-    private func drawCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool),
+    private func drawCellCaption(item: (photo: Photo, image: UIImage, includeMarkup: Bool, markupImage: UIImage?),
                                    cellX: CGFloat,
                                    captionTopY: CGFloat,
                                    captionMaxH: CGFloat,
@@ -1567,10 +1579,18 @@ struct PDFExportService {
     ///   6-up → 3.75 × 3.22 in →  750 px
     private func contactSheetMaxPixel(perPage: Int) -> CGFloat {
         switch perPage {
+        case 1:  return 2000
         case 2:  return 1500
+        case 3:  return 1500
         case 4:  return 1000
         default: return 750
         }
+    }
+
+    static func gridDimensions(perPage: Int) -> (Int, Int) {
+        let count = min(12, max(1, perPage))
+        let columns = count <= 3 ? 1 : count <= 6 ? 2 : 3
+        return (columns, (count + columns - 1) / columns)
     }
 
     /// Re-encode `image` through JPEG so the bytes embedded by

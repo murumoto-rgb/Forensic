@@ -4,7 +4,7 @@ import type { Session } from "@supabase/supabase-js";
 import type { ReportBranding } from "@forensic/shared";
 import { signOutLocal, supabase } from "../lib/supabase";
 import { api, ApiError } from "../lib/api";
-import { uploadFile } from "../lib/uploadFile";
+import { brandingLogoData } from "../lib/brandingLogo";
 
 /**
  * Admin editor for the team's report branding (Build #5.92.1).
@@ -17,10 +17,8 @@ import { uploadFile } from "../lib/uploadFile";
  *     top-of-page H1 when set.
  *   - Subtitle         — typically the firm or report kind.
  *   - Footer           — appears at the bottom of every page.
- *   - Logo             — PNG uploaded as `kind=markup_png` to a
- *     branding-namespaced photoId. Storage path is written to
- *     `logoStoragePath`; the PDF exporter resolves a presigned-GET
- *     URL at render time.
+ *   - Logo             — a small PNG in the app-wide branding store.
+ *     Publishing its immutable key uses the same config revision check.
  *
  * Same revision-token optimistic-concurrency model as the other
  * `app_config` admin pages; 409 surfaces as a banner with reload
@@ -42,17 +40,6 @@ const EMPTY: ReportBranding = {
   logoStoragePath: null,
 };
 
-/** Synthetic photoId used as the second URL segment for branding
- *  blobs. The upload endpoint's `kind=markup_png` slot accepts any
- *  UUID-shaped second segment; we use a project's "branding-bucket"
- *  conceptually here — the project param is the calling user's
- *  first project, which any signed-in user has at least one of
- *  (the team-wide concept is enforced by app_config, not by
- *  project ownership). Phase 5's per-team scoping will revisit. */
-function brandingPhotoId(): string {
-  return crypto.randomUUID();
-}
-
 export function AdminReportBrandingPage({ session }: Props) {
   const [load, setLoad] = useState<
     LoadedState | "loading" | { error: string }
@@ -66,7 +53,10 @@ export function AdminReportBrandingPage({ session }: Props) {
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [firstProjectId, setFirstProjectId] = useState<string | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const savedLogoPreview = useRef<string | null>(null);
+  const savedLogoKey = useRef<string | null>(null);
+  const draftLogoKey = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +72,17 @@ export function AdminReportBrandingPage({ session }: Props) {
         } else {
           setLoad({ branding: resp.value, revision: resp.revision });
           setDraft(resp.value);
+          savedLogoKey.current = resp.value.logoStoragePath;
+          draftLogoKey.current = resp.value.logoStoragePath;
           revisionRef.current = resp.revision;
+          if (resp.value.logoStoragePath) {
+            api.getBrandingLogo().then((logo) => {
+              if (cancelled || logo.objectKey !== resp.value.logoStoragePath || savedLogoKey.current !== logo.objectKey) return;
+              savedLogoPreview.current = logo.url;
+              if (draftLogoKey.current === logo.objectKey) setLogoPreview(logo.url);
+            })
+              .catch(() => { if (!cancelled && savedLogoKey.current === resp.value.logoStoragePath) setUploadError("The saved logo could not be downloaded. Retry by reloading this page."); });
+          }
         }
       })
       .catch((e: unknown) => {
@@ -99,28 +99,8 @@ export function AdminReportBrandingPage({ session }: Props) {
     };
   }, []);
 
-  // Fetch any one of the calling user's projects so the logo upload
-  // can scope its R2 object key. (The /files/upload-url endpoint
-  // currently requires a project id in the path; branding-asset
-  // uploads piggy-back on any project the user owns.)
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listProjects()
-      .then((resp) => {
-        if (cancelled) return;
-        const first = resp.projects[0];
-        if (first) setFirstProjectId(first.id);
-      })
-      .catch(() => {
-        if (!cancelled) setFirstProjectId(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   function update(field: keyof ReportBranding, value: string | null) {
+    if (field === "logoStoragePath") draftLogoKey.current = value;
     setDraft((cur) => ({ ...cur, [field]: value }));
     setDirty(true);
     setSavedAt(null);
@@ -130,19 +110,26 @@ export function AdminReportBrandingPage({ session }: Props) {
   function discard() {
     if (typeof load === "object" && "branding" in load) {
       setDraft(load.branding);
+      draftLogoKey.current = load.branding.logoStoragePath;
+      setLogoPreview(load.branding.logoStoragePath ? savedLogoPreview.current : null);
     } else {
       setDraft(EMPTY);
+      draftLogoKey.current = null;
+      setLogoPreview(null);
     }
     setDirty(false);
     setSaveError(null);
+    setUploadError(null);
   }
 
   async function save() {
+    if (saving || uploadingLogo) return;
     setSaving(true);
     setSaveError(null);
     try {
       const expectedRevision = revisionRef.current;
       const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.user.id !== session.user.id) throw new Error("Your account changed. Reload before saving branding.");
       const jwt = sessionData.session?.access_token;
       const resp = await fetch(
         `${import.meta.env.VITE_API_URL ?? ""}/v1/config/reportBranding`,
@@ -180,6 +167,8 @@ export function AdminReportBrandingPage({ session }: Props) {
       const okBody = (await resp.json()) as { revision: string };
       revisionRef.current = okBody.revision;
       setLoad({ branding: draft, revision: okBody.revision });
+      savedLogoKey.current = draft.logoStoragePath;
+      savedLogoPreview.current = logoPreview;
       setDirty(false);
       setSavedAt(Date.now());
     } catch (e: unknown) {
@@ -195,48 +184,26 @@ export function AdminReportBrandingPage({ session }: Props) {
     }
   }
 
-  function openLogoPicker() {
-    if (!firstProjectId) {
-      setUploadError(
-        "Create at least one project before uploading a logo (the upload endpoint scopes by project)."
-      );
-      return;
-    }
-    logoInputRef.current?.click();
-  }
+  function openLogoPicker() { logoInputRef.current?.click(); }
 
   async function onLogoFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
-    if (!file || !firstProjectId) return;
-    if (!file.type.startsWith("image/")) {
-      setUploadError("Logo must be an image.");
-      return;
-    }
+    if (!file) return;
     setUploadingLogo(true);
     setUploadError(null);
     try {
-      const photoId = brandingPhotoId();
-      await uploadFile({
-        projectId: firstProjectId,
-        photoId,
-        kind: "markup_png",
-        file,
-        contentType: file.type || "image/png",
-      });
-      // Storage path mirrors `server/src/r2.ts:buildObjectKey` shape:
-      // <projectId>/<photoId>/<kind>. We stash the full key so PDF
-      // export can presign-GET it directly.
-      const objectKey = `${firstProjectId}/${photoId}/markup_png`;
+      const pngDataUrl = await brandingLogoData(file);
+      const { objectKey } = await api.uploadBrandingLogo(pngDataUrl.split(",")[1]!);
       update("logoStoragePath", objectKey);
+      setLogoPreview(pngDataUrl);
     } catch (e: unknown) {
       setUploadError(e instanceof Error ? e.message : "Logo upload failed.");
-    } finally {
-      setUploadingLogo(false);
-    }
+    } finally { setUploadingLogo(false); }
   }
 
   function clearLogo() {
+    setLogoPreview(null);
     update("logoStoragePath", null);
   }
 
@@ -266,7 +233,7 @@ export function AdminReportBrandingPage({ session }: Props) {
       </header>
 
       <p className="mb-4 text-sm text-neutral-400">
-        Team-wide PDF export customisations. Both iOS and the
+        Shared PDF export customisations. Both iOS and the
         server-side PDF exporter read these at render time. Empty
         fields fall back to the compile-time defaults (project name
         as title, etc).
@@ -282,7 +249,7 @@ export function AdminReportBrandingPage({ session }: Props) {
       )}
 
       {loaded && (
-        <div className="flex flex-col gap-4">
+        <fieldset disabled={saving || uploadingLogo} className="flex flex-col gap-4">
           <Field
             label="Title override"
             value={draft.titleOverride ?? ""}
@@ -316,7 +283,7 @@ export function AdminReportBrandingPage({ session }: Props) {
             <input
               ref={logoInputRef}
               type="file"
-              accept="image/*"
+              accept="image/png,image/jpeg"
               onChange={onLogoFileChosen}
               className="hidden"
             />
@@ -339,6 +306,7 @@ export function AdminReportBrandingPage({ session }: Props) {
                 </button>
               )}
             </div>
+            {draft.logoStoragePath && logoPreview && <img src={logoPreview} alt="Report logo preview" className="mt-3 max-h-20 max-w-full rounded bg-white p-2" />}
             {draft.logoStoragePath && (
               <p className="mt-2 break-all font-mono text-[11px] text-neutral-500">
                 {draft.logoStoragePath}
@@ -348,9 +316,8 @@ export function AdminReportBrandingPage({ session }: Props) {
               <p className="mt-2 text-xs text-red-400">{uploadError}</p>
             )}
             <p className="mt-2 text-[11px] text-neutral-600">
-              Uploads use the same R2 pipeline as photo uploads.
-              Logo storage path is what the PDF exporter resolves to
-              a presigned-GET URL at render time.
+              PNG or JPEG, up to 2 MiB. Save this page to publish the logo to iPhone and web reports.
+              Uploading alone does not change the shared report branding.
             </p>
           </div>
 
@@ -381,7 +348,7 @@ export function AdminReportBrandingPage({ session }: Props) {
               <span className="text-xs text-red-400">{saveError}</span>
             )}
           </div>
-        </div>
+        </fieldset>
       )}
     </div>
   );

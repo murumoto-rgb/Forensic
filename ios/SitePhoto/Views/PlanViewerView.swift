@@ -40,6 +40,7 @@ struct PlanViewerView: View {
     @State private var lastOffset: CGSize = .zero
     @State private var pendingRecenterID: UUID?
     @State private var planImage: UIImage?
+    @State private var layoutCache = PlanLayoutCache()
     @State private var planLoadState: PlanLoadState = .loading
 
     private enum PlanLoadState { case loading, loaded, missing }
@@ -286,6 +287,8 @@ struct PlanViewerView: View {
         // photo). Tail bubbles are no longer rendered — grouped photos
         // collapse into a single ringed bubble; the engineer drills into
         // group members via the photo editor's per-group navigation.
+        let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
+        let layout = layoutCache.value(projectID: projectID, revision: store.projectGeneration, fit: Double(fit), bubbleScale: bubbleScale) {
         let initialMarkers = buildMarkers(project: project)
 
         // MARK: cluster detection (replaces the old fanning rosette)
@@ -327,7 +330,6 @@ struct PlanViewerView: View {
             )
         }
 
-        let arrowLengthPlan = (basePrimaryRview + 38 * bubbleScale) / fit
 
         // Arrow shortening considers the cluster representatives at
         // their displayed positions — no tails to consider anymore.
@@ -342,6 +344,11 @@ struct PlanViewerView: View {
             secondaryRadius: secRplan,
             defaultArrowLength: arrowLengthPlan
         )
+
+            return PlanLayoutSnapshot(primaries: displayedPrimaries, arrowLengths: arrowLengthsByID)
+        }
+        let displayedPrimaries = layout.primaries
+        let arrowLengthsByID = layout.arrowLengths
 
         ZStack(alignment: .topLeading) {
             Image(uiImage: image)
@@ -1035,7 +1042,7 @@ private struct PhotoPreviewBar: View {
     private var thumbnailStrip: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                LazyHStack(spacing: 6) {
                     ForEach(activeSet, id: \.id) { p in
                         thumbnailView(for: p, isCurrent: p.id == photo.id)
                             .id(p.id)
@@ -1064,28 +1071,11 @@ private struct PhotoPreviewBar: View {
 
     @ViewBuilder
     private func thumbnailView(for p: Photo, isCurrent: Bool) -> some View {
-        let thumb: UIImage? = {
-            guard let project = store.project(withID: projectID),
-                  let url = store.thumbnailURL(for: p, in: project),
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return UIImage(data: data)
-        }()
+        let url = store.project(withID: projectID).flatMap { store.thumbnailURL(for: p, in: $0) }
         ZStack {
-            if let thumb {
-                Image(uiImage: thumb)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    // Mirror the main-image rotation so the strip
-                    // tracks what the engineer sees in the preview.
-                    // The 44×44 frame is square, so a simple
-                    // .rotationEffect is enough — the cropped portion
-                    // just reflects the rotated orientation.
-                    .rotationEffect(.degrees(Double(p.previewRotation)))
-            } else {
-                Color.gray.opacity(0.3)
-                Image(systemName: "photo")
-                    .foregroundStyle(.white.opacity(0.6))
-            }
+            Color.gray.opacity(0.3)
+            CachedThumbnail(url: url, maxPixelSize: 132)
+                .rotationEffect(.degrees(Double(p.previewRotation)))
         }
         .frame(width: 44, height: 44)
         .clipShape(RoundedRectangle(cornerRadius: 4))

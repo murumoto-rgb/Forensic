@@ -36,7 +36,8 @@ type State =
   | { kind: "fetching-manifest" }
   | { kind: "downloading"; done: number; total: number; failed: number }
   | { kind: "zipping"; pct: number }
-  | { kind: "done"; sizeMb: number }
+  | { kind: "incomplete"; included: number; total: number; missingIds: string[] }
+  | { kind: "done"; sizeMb: number; included: number; total: number }
   | { kind: "error"; message: string };
 
 const FETCH_CONCURRENCY = 6;
@@ -48,14 +49,17 @@ export function FolderExportClient({
 }: Props) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const cancelRef = useRef(false);
+  const partialRef = useRef<{ zip: JSZip; manifest: FolderExportManifest; missingIds: string[] } | null>(null);
 
   const reset = useCallback(() => {
     cancelRef.current = false;
+    partialRef.current = null;
     setState({ kind: "idle" });
   }, []);
 
   async function start() {
     cancelRef.current = false;
+    partialRef.current = null;
     setState({ kind: "fetching-manifest" });
     try {
       const { manifest } = await api.getFolderExportManifest(projectId);
@@ -75,6 +79,7 @@ export function FolderExportClient({
 
   async function runDownload(manifest: FolderExportManifest): Promise<void> {
     const zip = new JSZip();
+    const attachments = manifest.attachments ?? [];
     const bucketFolderByBucketId = new Map(
       manifest.buckets.map((b) => [b.id, b.folderName])
     );
@@ -101,17 +106,21 @@ export function FolderExportClient({
         buildPlansText(manifest.projectName, manifest.plans)
       );
     }
+    if (attachments.length > 0) {
+      zip.folder("01 Markups");
+    }
 
     // Floor plans first (small, fast).
     setState({
       kind: "downloading",
       done: 0,
-      total: manifest.photos.length + manifest.plans.length,
+      total: manifest.photos.length + manifest.plans.length + attachments.length,
       failed: 0,
     });
 
     let done = 0;
     let failed = 0;
+    const missingIds: string[] = [];
     const tick = () => {
       done += 1;
       setState((s) =>
@@ -120,9 +129,10 @@ export function FolderExportClient({
           : s
       );
     };
-    const tickFailed = () => {
+    const tickFailed = (id: string) => {
       failed += 1;
       done += 1;
+      missingIds.push(id);
       setState((s) =>
         s.kind === "downloading"
           ? { ...s, done, failed }
@@ -133,14 +143,29 @@ export function FolderExportClient({
     for (const [idx, plan] of manifest.plans.entries()) {
       if (cancelRef.current) return;
       try {
+        if (!isValidExpectedSize(plan.sizeBytes)) throw new Error(`Invalid size for ${plan.filename}`);
         const blob = await fetchAsBlob(plan.presignedUrl);
+        if (blob.size !== plan.sizeBytes) throw new Error(`Size mismatch for ${plan.filename}`);
         zip.file(
           `00 Floor Plans/${String(idx + 1).padStart(2, "0")} ${plan.filename}`,
           blob
         );
         tick();
       } catch {
-        tickFailed();
+        tickFailed(plan.filename);
+      }
+    }
+
+    for (const attachment of attachments) {
+      if (cancelRef.current) return;
+      try {
+        if (!isValidExpectedSize(attachment.sizeBytes)) throw new Error(`Invalid size for ${attachment.filename}`);
+        const blob = await fetchAsBlob(attachment.presignedUrl);
+        if (blob.size !== attachment.sizeBytes) throw new Error(`Size mismatch for ${attachment.filename}`);
+        zip.file(`01 Markups/${attachment.filename}`, blob);
+        tick();
+      } catch {
+        tickFailed(attachment.id);
       }
     }
 
@@ -158,11 +183,13 @@ export function FolderExportClient({
             manifest.unbucketedFolderName
           : manifest.unbucketedFolderName;
         try {
+          if (!isValidExpectedSize(photo.sizeBytes)) throw new Error(`Invalid size for ${photo.filename}`);
           const blob = await fetchAsBlob(photo.presignedUrl);
+          if (blob.size !== photo.sizeBytes) throw new Error(`Size mismatch for ${photo.filename}`);
           zip.file(`${folder}/${photo.filename}`, blob);
           tick();
         } catch {
-          tickFailed();
+        tickFailed(photo.id);
         }
       }
     }
@@ -172,8 +199,51 @@ export function FolderExportClient({
 
     if (cancelRef.current) return;
 
+    if (failed > 0) {
+      partialRef.current = { zip, manifest, missingIds };
+      setState({
+        kind: "incomplete",
+        included: manifest.photos.length + manifest.plans.length + attachments.length - missingIds.length,
+        total: manifest.photos.length + manifest.plans.length + attachments.length,
+        missingIds,
+      });
+      return;
+    }
+
+    await finishZip(
+      zip,
+      manifest,
+      manifest.photos.length + manifest.plans.length + attachments.length,
+      manifest.photos.length + manifest.plans.length + attachments.length
+    );
+  }
+
+  async function finishZip(
+    zip: JSZip,
+    manifest: FolderExportManifest,
+    included: number,
+    total: number,
+    missingIds: string[] = []
+  ) {
     // Zip + download.
     setState({ kind: "zipping", pct: 0 });
+    const references = [...manifest.photos, ...manifest.plans, ...(manifest.attachments ?? [])];
+    const missingNames = missingIds.map(id => {
+      const asset = references.find(item => item.id === id || item.filename === id);
+      return asset ? `${asset.filename} (${id})` : id;
+    });
+    zip.file("EXPORT_STATUS.txt", [
+      included === total ? "COMPLETE EXPORT" : "INCOMPLETE — PARTIAL EXPORT",
+      `Project: ${manifest.projectName}`,
+      `Project ID: ${projectId}`,
+      `Manifest revision: ${manifest.revision ?? "Unavailable (older server)"}`,
+      `Generated: ${new Date().toISOString()}`,
+      `Required evidence files: ${total}`,
+      `Included evidence files: ${included}`,
+      ...missingNames.map(name => `Missing: ${name}`),
+      "Counts exclude generated captions, plan metadata and this receipt.",
+      "This records download completeness, not independent backup or cryptographic integrity verification.",
+    ].join("\n"));
     const blob = await zip.generateAsync(
       {
         type: "blob",
@@ -190,9 +260,13 @@ export function FolderExportClient({
     if (cancelRef.current) return;
 
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const filename = `${manifest.projectName} - export ${ts}.zip`;
+    const filename = `${manifest.projectName} - ${included === total ? "export" : "INCOMPLETE export"} ${ts}.zip`;
     triggerDownload(blob, filename);
-    setState({ kind: "done", sizeMb: Math.round(blob.size / 1024 / 1024) });
+    if (included === total) {
+      setState({ kind: "done", sizeMb: Math.round(blob.size / 1024 / 1024), included, total });
+    } else {
+      setState({ kind: "incomplete", included, total, missingIds });
+    }
   }
 
   // Cleanup on unmount.
@@ -217,7 +291,7 @@ export function FolderExportClient({
         className="rounded border border-blue-500 bg-blue-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
         title={
           !canExport
-            ? "Take the edit lock to export."
+            ? "Your project role does not allow exports."
             : photoCount === 0
               ? "Add photos before exporting."
               : "Download everything in your browser — no Render dyno involved."
@@ -277,7 +351,7 @@ export function FolderExportClient({
       {state.kind === "done" && (
         <div className="mt-2 flex items-center gap-3 text-xs text-green-300">
           <span>
-            Done. {state.sizeMb} MB downloaded.
+            Complete export: {state.included} / {state.total} required files ({state.sizeMb} MB).
           </span>
           <button
             type="button"
@@ -286,6 +360,21 @@ export function FolderExportClient({
           >
             Reset
           </button>
+        </div>
+      )}
+
+      {state.kind === "incomplete" && (
+        <div className="mt-2 flex flex-col gap-2 text-xs text-amber-300" role="status">
+          <span>Incomplete: {state.included} of {state.total} required files downloaded. Missing {state.missingIds.length}.</span>
+          <span className="break-all text-[10px] text-amber-400">Missing file references: {state.missingIds.join(", ")}</span>
+          <button type="button" onClick={() => {
+            const partial = partialRef.current;
+            if (partial) {
+              const total = partial.manifest.photos.length + partial.manifest.plans.length + (partial.manifest.attachments ?? []).length;
+              void finishZip(partial.zip, partial.manifest, total - partial.missingIds.length, total, partial.missingIds)
+                .catch(error => setState({ kind: "error", message: error instanceof Error ? error.message : "Partial ZIP could not be generated." }));
+            }
+          }} className="self-start rounded border border-amber-700 px-2 py-1 hover:bg-amber-950/50">Download partial ZIP</button>
         </div>
       )}
 
@@ -311,6 +400,10 @@ async function fetchAsBlob(url: string): Promise<Blob> {
     throw new Error(`HTTP ${resp.status}`);
   }
   return resp.blob();
+}
+
+function isValidExpectedSize(sizeBytes: number | undefined): sizeBytes is number {
+  return typeof sizeBytes === "number" && Number.isSafeInteger(sizeBytes) && sizeBytes > 0;
 }
 
 function triggerDownload(blob: Blob, filename: string): void {

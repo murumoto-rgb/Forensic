@@ -14,6 +14,7 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   ProjectSchema,
@@ -27,12 +28,25 @@ import {
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
 import { deleteObjects } from "../r2.js";
+import { saveProject, sendTransactionError, clientSession } from "../projectTransactions.js";
 import {
   assertProjectAccess,
   isOrgAdmin,
   isProjectOwner,
   sendAccessError,
 } from "../access.js";
+
+function hasFrozenContentChange(current: Project, incoming: Project): boolean {
+  const withoutFreeze = (value: Project) => {
+    const normalized = ProjectSchema.safeParse(value).success
+      ? ProjectSchema.parse(value)
+      : value;
+    const copy = structuredClone(normalized) as Project & { isFrozen?: boolean };
+    copy.isFrozen = true;
+    return copy;
+  };
+  return !isDeepStrictEqual(withoutFreeze(current), withoutFreeze(incoming));
+}
 
 const PutBodySchema = z.object({
   project: ProjectSchema,
@@ -205,7 +219,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
       const { data, error } = await supabaseAdmin
         .from("projects")
-        .select("manifest, revision")
+        .select("manifest, revision, owner_id")
         .eq("id", id)
         .maybeSingle();
 
@@ -232,6 +246,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         project: manifest,
         revision: data.revision as string,
         role,
+        isOwner: data.owner_id === request.user.id,
       };
     }
   );
@@ -294,26 +309,12 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Server's known schema version is the source of truth — but we
-    // LOG rather than REJECT on `client > server`. Hard-rejecting
-    // during a tandem-shipping window (iOS already updated via
-    // TestFlight, Render still building the new server) shows the
-    // user "sync failed" toasts for several minutes. The actual
-    // shapes are nearly always forward-compatible (new fields with
-    // defaults — see Build #5.6.1 `isDeleted`), so accepting +
-    // warning gives the user a working app while operations catches
-    // up. If a genuinely incompatible future change ships, the zod
-    // ProjectSchema parse will catch it.
+    // Refuse unknown schemas before persisting a zod-normalized payload: accepting
+    // them could silently discard fields this server does not understand.
     const { MANIFEST_SCHEMA_VERSION } = await import("@forensic/shared");
     if (project.manifestSchemaVersion > MANIFEST_SCHEMA_VERSION) {
-      request.log.warn(
-        {
-          projectId: id,
-          clientVersion: project.manifestSchemaVersion,
-          serverVersion: MANIFEST_SCHEMA_VERSION,
-        },
-        "Client manifest is newer than this server knows about — accepting anyway. Update server soon."
-      );
+      reply.code(409).send({ error: "manifest_schema_unsupported", message: "Server update required before this manifest can be saved." });
+      return;
     }
 
     // ---------------------------------------------------------------
@@ -346,9 +347,10 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         }
 
         if (!existing) {
-          // First-create on the merge path: the legacy path handles
-          // create cleanly (no row to merge against). Fall through.
-          break;
+          const revision = crypto.randomUUID();
+          const result = await saveProject(request, id, expectedRevision, revision, project);
+          if (sendTransactionError(reply, result)) return;
+          return { revision, project };
         }
 
         if (!updateAccessChecked) {
@@ -362,6 +364,14 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         }
 
         const serverCurrent = existing.manifest as unknown as Project;
+
+        if ((serverCurrent.isFrozen ?? false) && hasFrozenContentChange(serverCurrent, project)) {
+          reply.code(409).send({
+            error: "project_frozen",
+            message: "Project is finalized. An owner or admin must unlock it before editing.",
+          });
+          return;
+        }
 
         // Phase 4 (Build #5.126.1): flipping `isFrozen` requires
         // Owner OR Admin. assertProjectAccess(..., "editor") already
@@ -402,26 +412,11 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         // Compare-and-swap: only update if the row's revision is
         // still the one we just merged against. If another writer
         // raced us, rowCount comes back 0 and we loop.
-        const { data: updatedRows, error: writeError } = await supabaseAdmin
-          .from("projects")
-          .update({
-            name: merged.name,
-            manifest: merged,
-            manifest_schema_version: merged.manifestSchemaVersion,
-            revision: newRevision,
-          })
-          .eq("id", id)
-          .eq("revision", expectedServerRev)
-          .select("id");
-        if (writeError) {
-          request.log.error(
-            { err: writeError, projectId: id },
-            "Failed to write merged project"
-          );
-          reply.code(500).send({ error: "internal", message: "Database error" });
-          return;
+        const result = await saveProject(request, id, expectedServerRev, newRevision, merged);
+        if (result.error && result.error !== "revision_mismatch") {
+          sendTransactionError(reply, result); return;
         }
-        if (updatedRows && updatedRows.length === 1) {
+        if (result.ok) {
           if (attempt > 0) {
             request.log.info(
               { projectId: id, attempts: attempt + 1 },
@@ -479,6 +474,13 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // Phase 4 (Build #5.126.1): flipping `isFrozen` requires Owner
       // OR Admin on the legacy path too.
       const existingManifest = existing.manifest as unknown as Project;
+      if ((existingManifest.isFrozen ?? false) && hasFrozenContentChange(existingManifest, project)) {
+        reply.code(409).send({
+          error: "project_frozen",
+          message: "Project is finalized. An owner or admin must unlock it before editing.",
+        });
+        return;
+      }
       if ((existingManifest.isFrozen ?? false) !== (project.isFrozen ?? false)) {
         // Build #6.14.1: pass `request` so the admin check reuses
         // the cached value `assertProjectAccess` populated above.
@@ -518,27 +520,51 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     // Node 22 without an import.
     const newRevision = crypto.randomUUID();
 
-    // CRITICAL (Build #5.123.1): on UPDATE, preserve the existing
-    // owner_id so a member-editor's save can't quietly steal
-    // ownership. On CREATE, the caller becomes owner.
-    const ownerIdToWrite = existing ? (existing.owner_id as string) : request.user.id;
-
-    const { error: writeError } = await supabaseAdmin.from("projects").upsert({
-      id,
-      owner_id: ownerIdToWrite,
-      name: project.name,
-      manifest: project,
-      manifest_schema_version: project.manifestSchemaVersion,
-      revision: newRevision,
-    });
-
-    if (writeError) {
-      request.log.error({ err: writeError, projectId: id }, "Failed to write project");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
+    const result = await saveProject(request, id, expectedRevision, newRevision, project);
+    if (sendTransactionError(reply, result)) return;
 
     return { revision: newRevision };
+  });
+
+  // Explicit unlock action. Content edits cannot be bundled with an unlock;
+  // callers must send a pure PUT flag change or use this endpoint.
+  app.post<{
+    Params: { id: string };
+    Reply: PutManifestResponse | ApiError;
+  }>("/v1/projects/:id/unlock", async (request, reply) => {
+    const { id } = request.params;
+    try {
+      const allowed =
+        (await isOrgAdmin(request.user.id, request)) ||
+        (await isProjectOwner(request.user.id, id));
+      if (!allowed) {
+        reply.code(403).send({
+          error: "forbidden",
+          message: "Only an owner or admin can unlock a project.",
+        });
+        return;
+      }
+      const { data: row, error: readError } = await supabaseAdmin
+        .from("projects")
+        .select("manifest, revision")
+        .eq("id", id)
+        .maybeSingle();
+      if (readError) throw readError;
+      if (!row) {
+        reply.code(404).send({ error: "not_found", message: `Project ${id} not found` });
+        return;
+      }
+      const manifest = row.manifest as Project;
+      if (manifest.isFrozen !== true) return { revision: row.revision as string };
+      const newRevision = crypto.randomUUID();
+      const result = await saveProject(request, id, row.revision as string, newRevision, { ...manifest, isFrozen: false });
+      if (sendTransactionError(reply, result)) return;
+      return { revision: newRevision };
+    } catch (err) {
+      if (sendAccessError(reply, err)) return;
+      request.log.error({ err, projectId: id }, "Failed to unlock project");
+      reply.code(500).send({ error: "internal", message: "Database error" });
+    }
   });
 
   // -----------------------------------------------------------------
@@ -574,7 +600,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
     const { data, error } = await supabaseAdmin
       .from("projects")
-      .select("manifest")
+      .select("manifest, revision")
       .eq("id", id)
       .maybeSingle();
 
@@ -590,7 +616,15 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
     const manifest = data.manifest as Record<string, unknown> & {
       isDeleted?: boolean;
+      isFrozen?: boolean;
     };
+    if (manifest.isFrozen === true) {
+      reply.code(409).send({
+        error: "project_frozen",
+        message: "Project is finalized. Unlock it before changing project state.",
+      });
+      return;
+    }
     if (manifest.isDeleted !== true) {
       // Already active — nothing to do. Return current revision so
       // the client's UI can refresh without erroring.
@@ -605,19 +639,8 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     const restored = { ...manifest, isDeleted: false };
     const newRevision = crypto.randomUUID();
 
-    const { error: writeError } = await supabaseAdmin
-      .from("projects")
-      .update({
-        manifest: restored,
-        revision: newRevision,
-      })
-      .eq("id", id);
-
-    if (writeError) {
-      request.log.error({ err: writeError, projectId: id }, "Failed to restore project");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
+    const result = await saveProject(request, id, data.revision as string, newRevision, restored as Project);
+    if (sendTransactionError(reply, result)) return;
 
     return { revision: newRevision };
   });
@@ -656,7 +679,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
 
     const { data: existing, error: fetchError } = await supabaseAdmin
       .from("projects")
-      .select("manifest")
+      .select("manifest, revision")
       .eq("id", id)
       .maybeSingle();
     if (fetchError) {
@@ -680,53 +703,18 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Step 2: list every file row for the project.
-    const { data: files, error: filesError } = await supabaseAdmin
-      .from("files")
-      .select("object_key")
-      .eq("project_id", id);
-    if (filesError) {
-      request.log.error({ err: filesError, projectId: id }, "Failed to list files for DELETE");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    const objectKeys = (files ?? []).map((r) => r.object_key as string);
-
-    // Step 3: best-effort R2 reaping. Per-blob errors are logged but
-    // not surfaced — orphaned blobs are a separate cleanup concern.
-    try {
-      await deleteObjects(objectKeys);
-    } catch (err) {
-      request.log.warn(
-        { err, projectId: id, objectCount: objectKeys.length },
-        "deleteObjects partial failure during project hard-delete; continuing with DB cleanup."
-      );
-    }
-
-    // Step 4: drop files rows.
-    if (objectKeys.length > 0) {
-      const { error: filesDeleteError } = await supabaseAdmin
-        .from("files")
-        .delete()
-        .eq("project_id", id);
-      if (filesDeleteError) {
-        request.log.error({ err: filesDeleteError, projectId: id }, "Failed to drop file rows");
-        reply.code(500).send({ error: "internal", message: "Database error" });
-        return;
-      }
-    }
-
-    // Step 5: drop project row. Access was already checked at the top
-    // of the handler; key on id alone here.
-    const { error: projDeleteError } = await supabaseAdmin
-      .from("projects")
-      .delete()
-      .eq("id", id);
-    if (projDeleteError) {
-      request.log.error({ err: projDeleteError, projectId: id }, "Failed to delete project row");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
+    // Transaction first: a concurrent restore/save must not lose its binaries.
+    // The cascade removes metadata only after all guards pass. Failed storage
+    // deletion leaves an orphan, never a live project with destroyed evidence.
+    const { data: result, error: deleteError } = await supabaseAdmin.rpc("delete_project_evidence", {
+      pid: id, actor: request.user.id, expected: existing.revision, session: clientSession(request),
+    });
+    if (deleteError) throw deleteError;
+    if (!result) throw new Error("Delete transaction returned no result");
+    if (sendTransactionError(reply, result)) return;
+    const objectKeys = result.objectKeys as string[];
+    try { await deleteObjects(objectKeys); }
+    catch (err) { request.log.warn({ err, projectId: id }, "Project deleted; orphan storage cleanup is still needed"); }
 
     request.log.info(
       { projectId: id, blobCount: objectKeys.length, by: request.user.id },

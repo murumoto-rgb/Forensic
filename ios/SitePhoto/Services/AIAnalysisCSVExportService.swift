@@ -45,7 +45,7 @@ struct AIAnalysisCSVExportService {
         let baseName = "\(safeProject)_AI_\(stamp)"
         var url = exportRoot.appending(path: "\(baseName).csv")
         var counter = 1
-        while FileManager.default.fileExists(atPath: url.path()) {
+        while FileManager.default.fileExists(atPath: url.path) {
             url = exportRoot.appending(path: "\(baseName) (\(counter)).csv")
             counter += 1
         }
@@ -160,7 +160,8 @@ struct AIAnalysisCSVExportService {
     /// which fields contain a comma/quote/newline and produces the same
     /// shape every time, which is easier to spot-check.
     private func escape(_ s: String) -> String {
-        let doubled = s.replacingOccurrences(of: "\"", with: "\"\"")
+        let safe = SpreadsheetText.neutralize(s)
+        let doubled = safe.replacingOccurrences(of: "\"", with: "\"\"")
         return "\"\(doubled)\""
     }
 

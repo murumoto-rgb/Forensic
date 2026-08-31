@@ -34,6 +34,8 @@ export interface GetManifestResponse {
    * field should fall back to today's owner-only behaviour.
    */
   role?: ProjectRole;
+  /** Explicit ownership: editor membership alone does not permit finalization. */
+  isOwner?: boolean;
 }
 
 export interface PutManifestRequest {
@@ -92,12 +94,16 @@ export interface UploadUrlRequest {
   sha256?: string;
   /** MIME type — clamped to the right family for the kind by the server. */
   contentType: string;
+  /** New clients require a create-only upload; older clients must upgrade. */
+  immutable?: boolean;
+  sourceFilename?: string;
 }
 
 export interface UploadUrlResponse {
   uploadUrl: string;
   objectKey: string;
   expiresAt: string;
+  requiredHeaders?: Record<string, string>;
 }
 
 export interface CommitUploadRequest {
@@ -106,6 +112,8 @@ export interface CommitUploadRequest {
   kind: FileKind;
   sizeBytes: number;
   sha256?: string;
+  immutable?: boolean;
+  sourceFilename?: string;
 }
 
 export interface CommitUploadResponse {
@@ -227,6 +235,7 @@ export interface FolderExportManifestPhoto {
   userObservation: string | null;
   aiSummary: string | null;
   tags: string[];
+  sizeBytes?: number;
 }
 
 export interface FolderExportManifestPlan {
@@ -238,6 +247,16 @@ export interface FolderExportManifestPlan {
   calibrationDistanceFeet: number;
   northDeg: number;
   distressMarkerCount: number;
+  sizeBytes?: number;
+}
+
+export interface FolderExportManifestAttachment {
+  id: string;
+  photoId: string;
+  kind: "markup_png" | "markup_drawing";
+  presignedUrl: string;
+  filename: string;
+  sizeBytes: number;
 }
 
 export interface FolderExportManifestBucket {
@@ -249,12 +268,16 @@ export interface FolderExportManifestBucket {
 
 export interface FolderExportManifest {
   projectName: string;
+  /** Project revision used for this export snapshot; absent on older servers. */
+  revision?: string;
   buckets: FolderExportManifestBucket[];
   /** Bucket entry to use for photos whose `bucketId` doesn't match
    *  any of the above (typically `99 Unbucketed`). */
   unbucketedFolderName: string;
   photos: FolderExportManifestPhoto[];
   plans: FolderExportManifestPlan[];
+  /** Required markup assets associated with exported photos. */
+  attachments?: FolderExportManifestAttachment[];
   /** Total bytes the browser is about to download. Useful for an
    *  "estimated 1.5 GB; ~3 min on a 50 Mbit/s connection" pre-flight. */
   totalSizeBytes: number;
@@ -468,6 +491,11 @@ export interface PhotoUrlsBatchResponse {
 // ===========================================================================
 
 import type { AppConfigKey, AppConfigValueByKey } from "./appConfig.js";
+
+/** Small PNG logo upload; publishing still requires the reportBranding CAS. */
+export interface BrandingLogoUploadRequest { pngBase64: string }
+export interface BrandingLogoUploadResponse { objectKey: string }
+export interface GetBrandingLogoResponse { objectKey: string; url: string; expiresAt: string }
 
 /**
  * Response shape for `GET /v1/config/:key`. The server returns 404

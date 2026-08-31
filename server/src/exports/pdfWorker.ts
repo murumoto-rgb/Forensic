@@ -43,8 +43,9 @@ import type { PdfExportOptions, Project } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
-import { renderReportChunks } from "./htmlReport.js";
+import { renderReportChunks, reportFooterTemplate } from "./htmlReport.js";
 import { applyOptionDefaults } from "./options.js";
+import { loadReportBrandingForExport } from "../reportBranding.js";
 
 /** How often to scan the queue. Render free tier sleeps after 15
  *  min of idle; on cold-start the first poll fires immediately after
@@ -57,6 +58,10 @@ const POLL_MS = 5_000;
 const PDF_PREFIX = "exports/pdf";
 
 let workerStarted = false;
+let tickRunning = false;
+/** pdf-lib retains the final document; explicitly cap output instead of claiming constant memory. */
+export const MAX_PDF_SOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_PDF_PAGES = 1000;
 let browser: Browser | null = null;
 
 interface JobRow {
@@ -152,104 +157,54 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
   const project = (row as { manifest: Project }).manifest;
   const options = applyOptionDefaults(job.options ?? {});
 
-  // Chunked rendering (Build #5.72.1). `renderReportChunks` returns
-  // an array of complete HTML documents — one per body-section
-  // sub-chunk. We feed each through its own Puppeteer setContent →
-  // page.pdf cycle so Chromium's working set tracks the per-chunk
-  // size, not the whole report. `pdf-lib` then merges the per-chunk
-  // PDF buffers into the final document we upload to R2.
-  const chunks = await renderReportChunks(
-    project,
-    job.project_id,
-    log,
-    options
-  );
-  if (chunks.length === 0) {
-    throw new Error(
-      "Selection is empty — no cover, no photos, no plans, no metadata table to render."
-    );
-  }
-
+  const branding = await loadReportBrandingForExport();
+  const chunks = renderReportChunks(project, job.project_id, log, options, branding);
   const pdfFormat = options.pageSize === "a4" ? "A4" : "Letter";
-  const chunkPdfs: Buffer[] = [];
+  const merged = await PDFDocument.create();
+  let chunkIndex = 0;
+  let sourceBytes = 0;
   const mbAtStart = Math.round(process.memoryUsage().rss / 1024 / 1024);
-  log.info(
-    { jobId: job.id, chunkCount: chunks.length, rssMb: mbAtStart },
-    "pdf worker — pre-render"
-  );
 
-  // Publish total chunk count + reset done counter (Build #5.75.1)
-  // so the web client can render "chunk 0 of N" right away. Errors
-  // here don't fail the render — progress is best-effort cosmetic.
-  await supabaseAdmin
-    .from("pdf_export_jobs")
-    .update({ progress_total_chunks: chunks.length, progress_done_chunks: 0 })
-    .eq("id", job.id)
-    .then(undefined, () => {});
+  // Byte/pixel limits can split chunks dynamically. An unknown total is more
+  // honest than fetching/rendering the entire report just to count in advance.
+  await supabaseAdmin.from("pdf_export_jobs")
+    .update({ progress_total_chunks: null, progress_done_chunks: 0 })
+    .eq("id", job.id).then(undefined, () => {});
 
-  // Browser-recycle cadence (Build #5.74.4). Keep RSS bounded by
-  // tearing down + relaunching the Chrome process every N chunks.
-  // 4 keeps overhead low (relaunch costs ~1 s) while preventing
-  // unbounded memory growth across a 30-chunk export.
-  const BROWSER_RECYCLE_EVERY = 4;
-
-  for (let i = 0; i < chunks.length; i++) {
-    if (i > 0 && i % BROWSER_RECYCLE_EVERY === 0) {
-      await recycleBrowser();
-    }
+  for await (const html of chunks) {
+    if (chunkIndex > 0 && chunkIndex % 4 === 0) await recycleBrowser();
     const b = await getOrLaunchBrowser();
-    const html = chunks[i]!;
     const page = await b.newPage();
     try {
       await page.setContent(html, { waitUntil: "load", timeout: 60_000 });
-      const pdf = await page.pdf({ format: pdfFormat, printBackground: true });
-      const pdfBuffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
-      chunkPdfs.push(pdfBuffer);
-      const mbAfter = Math.round(process.memoryUsage().rss / 1024 / 1024);
-      log.info(
-        {
-          jobId: job.id,
-          chunkIndex: i,
-          chunkHtmlBytes: html.length,
-          chunkPdfKb: Math.round(pdfBuffer.byteLength / 1024),
-          rssMb: mbAfter,
-        },
-        "pdf worker — chunk done"
-      );
-      // Best-effort progress update (Build #5.75.1) — the web poll
-      // reads this to render "chunk N of M". Failure here is
-      // cosmetic, never fails the render.
-      await supabaseAdmin
-        .from("pdf_export_jobs")
-        .update({ progress_done_chunks: i + 1 })
-        .eq("id", job.id)
+      // A valid header is not a successful decode. Chromium must have decoded
+      // every required inline image before this chunk can contribute to Done.
+      const imagesReady = await page.evaluate(() => Array.from((globalThis as unknown as { document: { images: ArrayLike<{ complete: boolean; naturalWidth: number; naturalHeight: number }> } }).document.images)
+        .every(image => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0));
+      if (!imagesReady) throw new Error("A required PDF image could not be decoded. Export aborted.");
+      const pdf = await page.pdf({ format: pdfFormat, printBackground: true,
+        ...(branding.footerOverride ? { displayHeaderFooter: true, headerTemplate: "<span></span>", footerTemplate: reportFooterTemplate(branding.footerOverride) } : {}),
+      });
+      sourceBytes += pdf.byteLength;
+      if (sourceBytes > MAX_PDF_SOURCE_BYTES) throw new Error("PDF exceeds the 64 MiB export limit. Export a smaller selection.");
+      const source = await PDFDocument.load(pdf);
+      if (merged.getPageCount() + source.getPageCount() > MAX_PDF_PAGES) throw new Error("PDF exceeds 1000 pages. Export a smaller selection.");
+      const pages = await merged.copyPages(source, source.getPageIndices());
+      for (const copied of pages) merged.addPage(copied);
+      // No chunk-PDF array: source bytes are released after this iteration.
+      chunkIndex++;
+      log.info({ jobId: job.id, chunkIndex, chunkHtmlBytes: Buffer.byteLength(html), chunkPdfKb: Math.round(pdf.byteLength / 1024) }, "pdf worker — chunk done");
+      await supabaseAdmin.from("pdf_export_jobs")
+        .update({ progress_done_chunks: chunkIndex }).eq("id", job.id)
         .then(undefined, () => {});
     } finally {
       await page.close().catch(() => {});
     }
   }
-
-  // Merge per-chunk PDFs into the final document. `pdf-lib` is pure
-  // JS and operates on the parsed page tree, so even hundreds of
-  // pages merge in well under a second on Render's free tier.
-  const merged = await PDFDocument.create();
-  for (const buf of chunkPdfs) {
-    const src = await PDFDocument.load(buf);
-    const pages = await merged.copyPages(src, src.getPageIndices());
-    for (const p of pages) merged.addPage(p);
-  }
+  if (chunkIndex === 0) throw new Error("Selection is empty — nothing to render.");
   const finalBytes = Buffer.from(await merged.save());
-  const mbFinal = Math.round(process.memoryUsage().rss / 1024 / 1024);
-  log.info(
-    {
-      jobId: job.id,
-      finalPdfKb: Math.round(finalBytes.byteLength / 1024),
-      pageCount: merged.getPageCount(),
-      rssMb: mbFinal,
-      rssDeltaMb: mbFinal - mbAtStart,
-    },
-    "pdf worker — merged"
-  );
+  if (finalBytes.byteLength > MAX_PDF_SOURCE_BYTES) throw new Error("PDF exceeds the 64 MiB export limit. Export a smaller selection.");
+  log.info({ jobId: job.id, finalPdfKb: Math.round(finalBytes.byteLength / 1024), pageCount: merged.getPageCount(), rssDeltaMb: Math.round(process.memoryUsage().rss / 1024 / 1024) - mbAtStart }, "pdf worker — merged");
 
   const objectKey = `${PDF_PREFIX}/${job.id}.pdf`;
   await putObjectBytes({
@@ -261,6 +216,8 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     .from("pdf_export_jobs")
     .update({
       status: "done",
+      progress_total_chunks: chunkIndex,
+      progress_done_chunks: chunkIndex,
       pdf_object_key: objectKey,
       completed_at: new Date().toISOString(),
     })
@@ -281,7 +238,7 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
 }
 
 async function markFailed(jobId: string, message: string): Promise<void> {
-  await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from("pdf_export_jobs")
     .update({
       status: "failed",
@@ -289,22 +246,31 @@ async function markFailed(jobId: string, message: string): Promise<void> {
       completed_at: new Date().toISOString(),
     })
     .eq("id", jobId);
+  if (error) throw error;
+}
+
+/** Shared by the polling loop and deterministic worker tests. */
+export async function processPdfExportJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
+  try {
+    await renderJob(job, log);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error({ err: error, jobId: job.id }, "pdf worker — render failed");
+    captureException(error, { jobId: job.id, projectId: job.project_id });
+    await markFailed(job.id, message);
+  }
 }
 
 async function tick(log: FastifyBaseLogger): Promise<void> {
-  const job = await claimNextJob(log);
-  if (!job) return;
+  // Atomic DB claiming prevents duplicate claims, not simultaneous different
+  // jobs. One local job at a time keeps the shared browser and memory bounded.
+  if (tickRunning) return;
+  tickRunning = true;
   try {
-    await renderJob(job, log);
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    log.error({ err: e, jobId: job.id }, "pdf worker — render failed");
-    captureException(e, { jobId: job.id, projectId: job.project_id });
-    try {
-      await markFailed(job.id, message);
-    } catch (markErr) {
-      log.error({ err: markErr, jobId: job.id }, "pdf worker — markFailed also failed");
-    }
+    const job = await claimNextJob(log);
+    if (job) await processPdfExportJob(job, log);
+  } finally {
+    tickRunning = false;
   }
 }
 
@@ -317,11 +283,7 @@ export function startPdfExportWorker(log: FastifyBaseLogger): void {
   if (workerStarted) return;
   workerStarted = true;
   log.info("pdf export worker started");
-  // We use setInterval rather than a recursive setTimeout because we
-  // want a steady cadence even if a tick stalls; concurrent ticks are
-  // prevented by the atomic claim (a second tick that fires while the
-  // first is mid-render will simply find no queued rows or fail its
-  // own claim and back off).
+  // The local in-flight guard prevents overlapping renders across ticks.
   setInterval(() => {
     void tick(log).catch((err) => {
       log.error({ err }, "pdf worker — unhandled tick error");

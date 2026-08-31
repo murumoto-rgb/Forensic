@@ -60,6 +60,8 @@ final class AppConfigSyncer {
     /// indicator later without races. Same pattern `ManifestSyncer`
     /// uses for project IDs.
     private(set) var inFlight: Set<String> = []
+    private(set) var brandingSyncError: String?
+    private(set) var brandingNeedsReview = false
 
     init(api: APIClient, auth: AuthService, toast: ToastCenter) {
         self.api = api
@@ -147,8 +149,13 @@ final class AppConfigSyncer {
         if let entry = bundle.entries["reportBranding"] {
             do {
                 let wire = try entry.value.decode(as: ReportBrandingWire.self)
-                store.applyServerReportBranding(wire)
-                storeRevision(entry.revision, for: "reportBranding")
+                if store.reportBranding.logoNeedsUpload == true {
+                    await pushReportBranding(store.reportBranding)
+                } else if pendingReportBranding == nil && !inFlight.contains("reportBranding") && brandingSyncError == nil {
+                    store.applyServerReportBranding(wire)
+                    storeRevision(entry.revision, for: "reportBranding")
+                    await downloadSharedLogoIfNeeded()
+                }
             } catch {
                 surfaceError(error, label: "report branding")
             }
@@ -204,6 +211,8 @@ final class AppConfigSyncer {
         pendingTagLibraryTask?.cancel()
         pendingAIRulesTemplateTask?.cancel()
         pendingReportBrandingTask?.cancel()
+        brandingSyncError = nil
+        brandingNeedsReview = false
         pendingAIPromptTemplatesTask?.cancel()
     }
 
@@ -326,6 +335,7 @@ final class AppConfigSyncer {
 
     private func pushReportBranding(_ branding: ReportBranding) async {
         let key = "reportBranding"
+        guard let account = auth.session?.user.id else { return }
         guard !inFlight.contains(key) else {
             queuePushReportBranding(branding)
             return
@@ -334,15 +344,73 @@ final class AppConfigSyncer {
         defer { inFlight.remove(key) }
 
         do {
-            let resp = try await api.putReportBranding(branding.wireValue,
+            var toPush = branding
+            if branding.logoNeedsUpload == true, let filename = branding.logoFilename {
+                guard let store, store.reportBranding.logoFilename == filename else { return }
+                if store.reportBranding.logoNeedsUpload != true, let uploadedKey = store.reportBranding.logoStoragePath {
+                    toPush.logoStoragePath = uploadedKey
+                } else {
+                    guard let url = store.brandingLogoURL,
+                          let bytes = await store.loadFileBytes(at: url) else { throw CocoaError(.fileReadNoSuchFile) }
+                    let uploaded = try await api.uploadBrandingLogo(bytes)
+                    toPush.logoStoragePath = uploaded.objectKey
+                }
+            }
+            guard auth.session?.user.id == account, !Task.isCancelled else { return }
+            let resp = try await api.putReportBranding(toPush.wireValue,
                                                         expectedRevision: storedRevision(for: key))
+            guard auth.session?.user.id == account else { return }
             storeRevision(resp.revision, for: key)
+            if let filename = branding.logoFilename, let objectKey = toPush.logoStoragePath {
+                try store?.acknowledgeBrandingLogo(filename: filename, objectKey: objectKey)
+            }
+            brandingSyncError = nil
+            brandingNeedsReview = false
+            await downloadSharedLogoIfNeeded()
         } catch APIClient.APIError.http(status: 409, _, _) {
-            await refetchAndRetryReportBranding(branding)
+            brandingNeedsReview = true
+            brandingSyncError = "Shared branding changed elsewhere. Your local settings are preserved. Review them before replacing the shared version."
+            toast.post(brandingSyncError!, kind: .warning)
         } catch APIClient.APIError.notAuthenticated {
             return
         } catch {
+            if Task.isCancelled { return }
+            brandingSyncError = error.localizedDescription
             surfaceError(error, label: "report branding")
+        }
+    }
+
+    /// User-triggered retry. Updating a conflicting server version requires
+    /// explicit confirmation from the branding editor; background sync never
+    /// silently claims a fresh revision and overwrites it.
+    func retryReportBranding(replaceSharedVersion: Bool = false) async {
+        guard let store, !inFlight.contains("reportBranding") else { return }
+        if brandingNeedsReview && !replaceSharedVersion { return }
+        if replaceSharedVersion {
+            do {
+                let bundle = try await api.getAppConfigBundle()
+                if let entry = bundle.entries["reportBranding"] { storeRevision(entry.revision, for: "reportBranding") }
+                else { clearRevision(for: "reportBranding") }
+            } catch { brandingSyncError = error.localizedDescription; return }
+        }
+        await pushReportBranding(store.reportBranding)
+    }
+
+    private func downloadSharedLogoIfNeeded() async {
+        guard let store, let key = store.reportBranding.logoStoragePath,
+              store.reportBranding.logoNeedsUpload != true,
+              store.reportBranding.logoCachedStoragePath != key || store.brandingLogoURL == nil else { return }
+        let account = auth.session?.user.id
+        do {
+            let shared = try await api.getBrandingLogo()
+            guard shared.objectKey == key else { throw CocoaError(.fileReadUnknown) }
+            let bytes = try await api.downloadBrandingLogo(shared.url)
+            guard auth.session?.user.id == account else { return }
+            try store.installSharedBrandingLogo(bytes, objectKey: key)
+            brandingSyncError = nil
+        } catch {
+            brandingSyncError = "Shared logo is not available on this device: " + error.localizedDescription
+            surfaceError(error, label: "report logo")
         }
     }
 
@@ -397,40 +465,6 @@ final class AppConfigSyncer {
             storeRevision(resp.revision, for: "aiRulesTemplate")
         } catch {
             surfaceError(error, label: "AI rules template")
-        }
-    }
-
-    private func refetchAndRetryReportBranding(_ branding: ReportBranding) async {
-        do {
-            let bundle = try await api.getAppConfigBundle()
-            var toPush = branding
-            if let entry = bundle.entries["reportBranding"] {
-                storeRevision(entry.revision, for: "reportBranding")
-                // Adopt the server's logo path on conflict — iOS can't
-                // change the logo over the wire, so the server's value
-                // is by definition the newer intent for that field.
-                // Text overrides stay local-wins (the active editor).
-                if let wire = try? entry.value.decode(as: ReportBrandingWire.self) {
-                    toPush.logoStoragePath = wire.logoStoragePath
-                }
-            } else {
-                clearRevision(for: "reportBranding")
-            }
-            let resp = try await api.putReportBranding(toPush.wireValue,
-                                                        expectedRevision: storedRevision(for: "reportBranding"))
-            storeRevision(resp.revision, for: "reportBranding")
-            // Keep the adopted logo path locally so the next push
-            // round-trips the value the server now holds — but build
-            // it from the store's *current* state, not `toPush`, so
-            // any text edit the user made while this retry was in
-            // flight isn't rolled back.
-            if let storeRef = store {
-                var local = storeRef.reportBranding
-                local.logoStoragePath = toPush.logoStoragePath
-                storeRef.applyServerReportBranding(local.wireValue)
-            }
-        } catch {
-            surfaceError(error, label: "report branding")
         }
     }
 
