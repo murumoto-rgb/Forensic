@@ -114,10 +114,10 @@ async function requestOnce<T>(path: string, init: RequestInit): Promise<T> {
 
 // Backoff schedule applied to every request. First attempt is
 // immediate (0ms); subsequent attempts wait. ApiErrors (HTTP) skip
-// the retry loop entirely. Total ceiling: ~57 sec across 5 tries,
-// which covers the worst-case Render free-tier cold-start (the
-// keepalive cron should prevent these in practice; this is the
-// safety net for when the cron itself misses a beat).
+// the retry loop entirely. Six attempts have 57 sec of backoff in
+// total, plus the time spent in each fetch. Free-plan cold starts can
+// take about a minute; no scheduled keepalive is assumed. HTTP errors
+// (including maintenance/quota responses) remain visible for retry.
 const RETRY_BACKOFFS_MS = [0, 2000, 5000, 10000, 15000, 25000];
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -9,6 +9,9 @@ const state = vi.hoisted(() => ({
   reads: [] as string[], events: [] as string[], active: 0, maxActive: 0,
   badKey: "", malformedKey: "", stalledHeaderKey: "", stalledBodyKey: "", registryError: false, imagesReady: true,
   updates: [] as Array<Record<string, unknown>>, uploads: 0, pdfCalls: 0, brandingCalls: 0, brandingError: false,
+  browserLaunches: 0, browserCloses: 0, failStatusWrite: false,
+  browserKills: 0, stalledBrowserClose: false, failedBrowserClose: false,
+  stalledPageClose: false,
   customBytes: new Map<string, Buffer>(), html: [] as string[], printOptions: [] as Array<Record<string, unknown>>,
   project: null as unknown as Project, image: null as unknown as Buffer, pdf: null as unknown as Uint8Array,
 }));
@@ -16,7 +19,7 @@ vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) =>
   let payload: Record<string, unknown> | null = null;
   const filters: Array<[string, unknown[]]> = [];
   const execute = () => {
-    if (table === "pdf_export_jobs") { if (payload) state.updates.push(payload); return { data: null, error: null }; }
+    if (table === "pdf_export_jobs") { if (payload) state.updates.push(payload); return { data: null, error: payload?.status === "failed" && state.failStatusWrite ? new Error("status write failed") : null }; }
     if (table === "projects") return { data: { manifest: state.project }, error: null };
     if (table === "current_project_files") return { data: state.files.filter(row => filters.every(([key, values]) => key === "project_id" || values.includes(row[key as keyof typeof row]))), error: state.registryError ? new Error("registry unavailable") : null };
     throw new Error(`Unexpected table ${table}`);
@@ -31,10 +34,12 @@ vi.mock("../src/r2.js", async importOriginal => ({
 }));
 vi.mock("../src/reportBranding.js", () => ({ loadReportBrandingForExport: async () => { state.brandingCalls++; if (state.brandingError) throw new Error("Configured report logo missing"); return { titleOverride: "Firm report", subtitleOverride: "Verified review", footerOverride: "Private", logoDataUrl: null }; } }));
 vi.mock("../src/sentry.js", () => ({ captureException: () => {} }));
-vi.mock("puppeteer", () => ({ default: { launch: async () => ({ connected: true, close: async () => {}, newPage: async () => ({
+vi.mock("puppeteer", () => ({ default: { launch: async () => { state.browserLaunches++; return { connected: true,
+  process: () => ({ kill: (signal: string) => { if (signal === "SIGKILL") state.browserKills++; } }),
+  close: async () => { state.browserCloses++; if (state.failedBrowserClose) throw new Error("DevTools disconnected"); if (state.stalledBrowserClose) await new Promise(() => {}); }, newPage: async () => ({
   setContent: async (html: string) => { state.html.push(html); }, evaluate: async () => state.imagesReady,
-  pdf: async (options: Record<string, unknown>) => { state.printOptions.push(options); state.pdfCalls++; state.events.push("pdf"); return state.pdf; }, close: async () => {},
-}) }) } }));
+  pdf: async (options: Record<string, unknown>) => { state.printOptions.push(options); state.pdfCalls++; state.events.push("pdf"); return state.pdf; }, close: async () => { if (state.stalledPageClose) await new Promise(() => {}); },
+}) }; } } }));
 import { renderReportChunks, PAGES_PER_CHUNK } from "../src/exports/htmlReport.js";
 import { applyOptionDefaults } from "../src/exports/options.js";
 import { processPdfExportJob } from "../src/exports/pdfWorker.js";
@@ -59,6 +64,9 @@ beforeEach(() => {
   state.files = []; state.reads = []; state.events = []; state.active = 0; state.maxActive = 0;
   state.badKey = ""; state.malformedKey = ""; state.stalledHeaderKey = ""; state.stalledBodyKey = ""; state.registryError = false; state.imagesReady = true;
   state.updates = []; state.uploads = 0; state.pdfCalls = 0; state.brandingCalls = 0; state.brandingError = false; state.customBytes.clear(); state.html = []; state.printOptions = [];
+  state.browserLaunches = 0; state.browserCloses = 0; state.failStatusWrite = false;
+  state.browserKills = 0; state.stalledBrowserClose = false; state.failedBrowserClose = false;
+  state.stalledPageClose = false;
   vi.spyOn(r2, "send").mockImplementation((async (command: { input: { Key: string } }) => {
     const key = command.input.Key;
     state.reads.push(key); state.events.push(`read:${key}`);
@@ -268,6 +276,7 @@ describe("actual PDF worker consumes stream and fails closed", () => {
     expect(state.html.every(html => html.includes('class="report-footer">Private'))).toBe(true);
     expect(state.uploads).toBe(1);
     expect(state.updates.at(-1)).toMatchObject({ status: "done", progress_total_chunks: 2, progress_done_chunks: 2 });
+    expect(state.browserLaunches).toBe(1); expect(state.browserCloses).toBe(1);
   });
   it("a late missing asset marks Failed without uploading a partial PDF", async () => {
     fixture(12); state.badKey = "11.png";
@@ -276,6 +285,7 @@ describe("actual PDF worker consumes stream and fails closed", () => {
     expect(state.uploads).toBe(0);
     expect(state.updates.at(-1)).toMatchObject({ status: "failed" });
     expect(state.updates.some(update => update.status === "done")).toBe(false);
+    expect(state.browserLaunches).toBe(1); expect(state.browserCloses).toBe(1);
   });
   it("fails without publishing if the configured report logo is missing", async () => {
     fixture(1); state.brandingError = true;
@@ -290,5 +300,59 @@ describe("actual PDF worker consumes stream and fails closed", () => {
     expect(state.pdfCalls).toBe(0);
     expect(state.uploads).toBe(0);
     expect(state.updates.at(-1)).toMatchObject({ status: "failed", error_message: expect.stringMatching(/decoded/) });
+    expect(state.browserCloses).toBe(1);
+  });
+  it("releases the browser even when recording a failed job rejects", async () => {
+    fixture(1); state.imagesReady = false; state.failStatusWrite = true;
+    await expect(processPdfExportJob({ id: "job-status-failure", project_id: pid, status: "running", options: options() }, log)).rejects.toThrow("status write failed");
+    expect(state.browserLaunches).toBe(1); expect(state.browserCloses).toBe(1);
+    expect(state.uploads).toBe(0);
+  });
+  it("launches a fresh browser for the next job instead of retaining the idle instance", async () => {
+    fixture(1);
+    for (const jobId of ["first", "second"]) {
+      await processPdfExportJob({ id: jobId, project_id: pid, status: "running", options: options() }, log);
+      expect(state.browserCloses).toBe(state.browserLaunches);
+    }
+    expect(state.browserLaunches).toBe(2); expect(state.browserCloses).toBe(2);
+    expect(state.uploads).toBe(2);
+  });
+  it("bounds stalled browser cleanup, terminates its child, and allows the next job", async () => {
+    fixture(1); vi.useFakeTimers(); state.stalledBrowserClose = true;
+    let completed = false;
+    const first = processPdfExportJob({ id: "stalled-close", project_id: pid, status: "running", options: options() }, log).then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(state.browserCloses).toBe(1); expect(completed).toBe(false);
+    expect(state.browserKills).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await first;
+    expect(completed).toBe(true); expect(state.browserKills).toBe(1);
+    expect(state.updates.at(-1)).toMatchObject({ status: "done" });
+    state.stalledBrowserClose = false;
+    const second = processPdfExportJob({ id: "after-stalled-close", project_id: pid, status: "running", options: options() }, log);
+    await vi.advanceTimersByTimeAsync(50);
+    await second;
+    expect(state.browserLaunches).toBe(2); expect(state.browserCloses).toBe(2);
+    expect(state.uploads).toBe(2); expect(vi.getTimerCount()).toBe(0);
+  });
+  it("terminates its browser after a rejected close without changing a successful export", async () => {
+    fixture(1); state.failedBrowserClose = true;
+    await processPdfExportJob({ id: "failed-close", project_id: pid, status: "running", options: options() }, log);
+    expect(state.browserKills).toBe(1); expect(state.uploads).toBe(1);
+    expect(state.updates.at(-1)).toMatchObject({ status: "done" });
+  });
+  it("a stalled page close cannot block browser cleanup after a rendering failure", async () => {
+    fixture(1); vi.useFakeTimers(); state.imagesReady = false; state.stalledPageClose = true; state.stalledBrowserClose = true;
+    let completed = false;
+    const job = processPdfExportJob({ id: "stalled-page-close", project_id: pid, status: "running", options: options() }, log).then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(completed).toBe(false); expect(state.browserCloses).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(state.browserCloses).toBe(1); expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await job;
+    expect(completed).toBe(true); expect(state.browserKills).toBe(1);
+    expect(state.uploads).toBe(0); expect(state.updates.at(-1)).toMatchObject({ status: "failed" });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

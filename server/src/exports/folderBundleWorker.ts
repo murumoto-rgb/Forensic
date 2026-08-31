@@ -37,8 +37,8 @@ import {
 import { supabaseAdmin } from "../supabase.js";
 import { getObjectSize, getObjectStream, r2, r2Bucket } from "../r2.js";
 import { captureException } from "../sentry.js";
+import { startQueuePoller } from "./queuePoller.js";
 
-const POLL_MS = 5_000;
 const FOLDER_PREFIX = "exports/folder";
 
 let workerStarted = false;
@@ -625,9 +625,9 @@ async function addBucketToArchive(
   await captionsDone;
 }
 
-async function tick(log: FastifyBaseLogger): Promise<void> {
+async function tick(log: FastifyBaseLogger): Promise<boolean> {
   const job = await claimNextJob(log);
-  if (!job) return;
+  if (!job) return false;
   try {
     await runFolderExportJob(job, log);
   } catch (e: unknown) {
@@ -640,15 +640,14 @@ async function tick(log: FastifyBaseLogger): Promise<void> {
       log.error({ err: markErr, jobId: job.id }, "folder export — markFailed also failed");
     }
   }
+  return true;
 }
 
 export function startFolderExportWorker(log: FastifyBaseLogger): void {
   if (workerStarted) return;
   workerStarted = true;
   log.info("folder export worker started");
-  setInterval(() => {
-    void tick(log).catch((err) => {
-      log.error({ err }, "folder export worker — unhandled tick error");
-    });
-  }, POLL_MS);
+  startQueuePoller(() => tick(log), (err) => {
+    log.error({ err }, "folder export worker — unhandled tick error");
+  });
 }

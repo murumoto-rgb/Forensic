@@ -19,8 +19,8 @@ import type {
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
+import { startQueuePoller } from "./queuePoller.js";
 
-const POLL_MS = 5_000;
 const CSV_PREFIX = "exports/csv";
 
 let workerStarted = false;
@@ -237,9 +237,9 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   );
 }
 
-async function tick(log: FastifyBaseLogger): Promise<void> {
+async function tick(log: FastifyBaseLogger): Promise<boolean> {
   const job = await claimNextJob(log);
-  if (!job) return;
+  if (!job) return false;
   try {
     await runJob(job, log);
   } catch (e: unknown) {
@@ -252,15 +252,14 @@ async function tick(log: FastifyBaseLogger): Promise<void> {
       log.error({ err: markErr, jobId: job.id }, "csv export — markFailed also failed");
     }
   }
+  return true;
 }
 
 export function startCsvExportWorker(log: FastifyBaseLogger): void {
   if (workerStarted) return;
   workerStarted = true;
   log.info("csv export worker started");
-  setInterval(() => {
-    void tick(log).catch((err) => {
-      log.error({ err }, "csv export worker — unhandled tick error");
-    });
-  }, POLL_MS);
+  startQueuePoller(() => tick(log), (err) => {
+    log.error({ err }, "csv export worker — unhandled tick error");
+  });
 }

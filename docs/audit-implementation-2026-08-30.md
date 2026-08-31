@@ -1,6 +1,6 @@
 # Forensic / SitePhoto audit implementation
 
-**Candidate build:** 6.38.4, branch codex/audit-reliability-improvements
+**Candidate build:** 6.38.5, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
 **Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
@@ -14,7 +14,7 @@ The original audit remains the baseline record. Its earlier backlog reconciled t
 | Finding | Candidate correction | Evidence and qualification |
 |---|---|---|
 | F01 — profile privilege escalation / incomplete RLS history | Explicit RLS; authenticated profile updates restricted to display name. Shared configuration requires the intended role and atomic revision checks. | Local PostgreSQL permission tests and the separately applied/read-back profile-column hotfix; environment-specific receipts kept private. |
-| F02 — finalized records still editable | Transactional access, revision, session-lock and freeze checks for manifests, uploads, commits, restores and deletion. Explicit owner/admin unlock; viewer reads/exports remain available. | Real SQL functions and Fastify negative cases, including receipt revocation and exact retry behavior. |
+| F02 — finalized records still editable | Transactional access, revision, session-lock and freeze checks for manifests, uploads, commits, restores and deletion. Explicit owner/admin unlock; viewers can read and download existing authorized exports, while creating exports requires editor access. | Real SQL functions and Fastify negative cases, including receipt revocation and exact retry behavior. |
 | F03 — queued saves erase remote edits | Each queued mutation keeps its own base; pending edits are rebased after acknowledgment and on retry. | DOM tests run the real hook and shared merge implementation. |
 | F04 — AI checkpoint overwrites manual edits | Apply only AI-owned fields to the latest photo; use the same save coordinator and await server acknowledgment. | Delayed AI result preserves manual caption, favorite and bucket; completion waits for acknowledgment. No paid AI call. |
 | F05 — failed iOS disk write reported saved | Acknowledge only successful atomic local persistence; retain visible pending data, block unsafe pulls, and retry without a false saved state. | Simulator fault injection covers failed save and successful retry. |
@@ -51,10 +51,10 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Check | Result |
 |---|---|
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
-| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **146 passed / 11 files** |
+| Server SQL, authorization, recovery, upload, stream, PDF, branding and Free-plan operation tests | **161 passed / 13 files** |
 | Web DOM behavior tests | **36 passed / 4 files** |
 | iOS simulator tests | **22 passed**, including save/plan failure injection, object-store verification, account/context isolation, lock access and complete/incomplete folder export |
-| Total regression tests | **285 passed** |
+| Total regression tests | **300 passed** |
 | Separate PostgreSQL transaction overlap checks | **3 passed**, using three connections with observed blocking |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
@@ -89,6 +89,8 @@ PDF generation now consumes bounded HTML/image chunks instead of retaining all p
 
 Each PDF image's 30-second deadline includes SDK retries, response headers and the complete body. Folder exports query registrations in groups of at most 100 IDs. A synthetic 205-photo/205-plan case verified 820 required assets and 822 actual ZIP entries, including final-chunk assets; a failed later query aborts instead of publishing a partial archive. This is a correctness check, not production throughput measurement.
 
+Build 6.38.5 keeps the existing Render Free plan. Each export worker now waits for its current job to settle before polling again, backs off from 5 to 60 seconds while idle, and resets to 5 seconds after claimed work. Across three idle workers the settled scan rate falls from 2,160 to 180 per hour, about 92% fewer scans by arithmetic, not a measured cost saving. New work can wait up to 60 seconds for discovery. PDF jobs release their browser at completion; page and browser cleanup each have a five-second deadline, with forced termination limited to the owned Chromium child. No global export-memory or interrupted-job recovery guarantee is implied. Scheduled Render wake pings are removed; the separate Supabase workflow is unchanged apart from its comment. Fifteen new server regressions cover these boundaries and the maintenance entrypoint.
+
 ## Dependency and operational limits
 
 The production scan fell from **20 advisories (11 high, 6 moderate, 3 low)** to **one moderate advisory**, with no high or critical findings. The remaining advisory concerns OpenTelemetry 1.30.1 through Sentry 8. Its patched major is not a supported drop-in override for this Sentry version. The server now sets an explicit 16 KiB HTTP header limit; this mitigation does not mark the package advisory fixed. A tested supported Sentry upgrade remains follow-up work. [Maintainer advisory](https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-8988-4f7v-96qf).
@@ -105,6 +107,8 @@ The narrowly scoped profile-column permission hotfix was applied and read back b
 
 The full update requires migrations **0016 → 0017 → 0018 → 0019**, the R2 conditional PUT CORS header and matching server/web/iOS versions. Pause writes and drain legacy upload URLs before cutover. Do not blindly replay old migrations against a manually initialized database. Preserve local originals and a recoverable database/object baseline. Follow server/RECOVERY.md for the ordered release and smoke checks.
 
-At this candidate checkpoint the existing Render Free service is quota-suspended. Its old binary can resume when the monthly quota resets, so suspension is not a durable mutation gate. Main merge, automatic web/TestFlight release and migrations 0016–0019 remain held until any required compute-cost approval and the controlled API cutover. No paid hosting upgrade has been made.
+At this candidate checkpoint the existing Render Free service is quota-suspended. The owner chose to keep Free; no paid upgrade is needed for the prepared release procedure. The workspace had used 750.22 of its shared 750 free hours, with bandwidth and build minutes below their separate limits. Already-consumed hours cannot be recovered by code changes; the next calendar-month reset is September 1. Other workspace services are untouched.
+
+Its old binary can resume when the monthly quota resets, so suspension is not a durable mutation gate. Main merge, automatic web/TestFlight release and migrations 0016–0019 remain held until deployment is permitted and the controlled API cutover is complete. The new standalone `server/maintenance.mjs` can serve the maintenance barrier on Free without importing the application, database or workers. Its 200 health response confirms only that barrier, not schema/API readiness. Verify the exact deployment, terminated old instances and drained legacy work before migrating, then restore the matching API start command. See [Free-plan operations](free-plan-operations.md). Neither that maintenance deployment nor the feature migration has been performed; no paid hosting change has been made.
 
 After v4 and immutable evidence are written, a simple old-binary rollback is unsafe. Prefer a forward fix or a deliberately compatible build with writes paused. Retain all protected versions and object bytes. The local validation reported here did not deploy migrations, send user emails or call a paid model. Release operations and their exact Git/provider receipts are recorded separately; do not infer production or TestFlight delivery from these local checks.

@@ -144,6 +144,11 @@ assuming candidate protections are deployed.
 
 ## Deploys + rollback
 
+- **Free-plan release:** Build 6.38.5 retains `plan: free`. Idle workers back
+  off and Chromium closes after each PDF job; scheduled Render wake pings
+  are removed. Use the standalone maintenance entrypoint for a verified
+  old-server write/worker barrier after the provider permits deployment.
+  See `docs/free-plan-operations.md`; a paid upgrade is not a prerequisite.
 - **Web / server:** automatic deployment does not coordinate a schema
   cutover. For migrations 0016–0019, follow `server/RECOVERY.md`: enforce
   old-server mutation/job admission shutdown, drain uploads and jobs,
@@ -170,8 +175,9 @@ assuming candidate protections are deployed.
   service can resume its old binary at the next monthly reset. Do not
   apply the new schema or automatically release new clients on the
   assumption that a temporary 503 permanently stops old writers.
-  Finish candidate checks and backups first, then obtain any required
-  compute-cost approval and establish the enforced cutover gate.
+  Finish candidate checks and backups first, then establish the enforced
+  cutover gate. Keeping Free requires waiting for the quota reset; no new
+  hosting charge has been approved.
 - **Backup gate:** retained version history is not an independent copy.
   Free Supabase projects need manual/off-site dumps; PITR is a paid
   add-on. R2 has no supported S3 bucket-versioning switch. Verify the

@@ -16,6 +16,21 @@ Rollback is not a schema downgrade. Do not reopen writes on `aa1a24e` after migr
 
 These are candidate release requirements, not evidence that deployment, an independent backup, or a physical-device/iCloud recovery drill has completed. Protected version history shares the live database and object store; it is not an independent backup. Preserve off-site database dumps and object copies, and verify restoration in isolation. Free Supabase projects need manual exports/off-site backups; PITR is a paid add-on, not included simply by having Pro. [Supabase backup documentation](https://supabase.com/docs/guides/platform/backups). R2 does not implement `GetBucketVersioning` or `PutBucketVersioning`; there is no S3 bucket-versioning switch to enable. [R2 API compatibility](https://developers.cloudflare.com/r2/api/s3/api/). See [the backup drill](../docs/backup-restore-drill.md) before any recovery operation.
 
+### Keeping the current Free compute plan
+
+Build 6.38.5 adds a dependency-free `server/maintenance.mjs` entrypoint, so
+Render's paid maintenance feature is not required for the cutover. Deploy
+that exact reviewed entrypoint while the old schema is intact, confirm its
+SHA and the termination of old instances/workers, then hold it through the
+legacy URL drain and migrations. Quota suspension itself cannot substitute
+for that verification. See [Free-plan operations](../docs/free-plan-operations.md).
+
+Idle queue polling now backs off to 60 seconds, with one pending tick per
+worker; claimed work returns to five seconds. PDF browser/page cleanup is
+bounded and Chromium is released after every job. New-job pickup may take
+up to a minute after idle. Export contents and existing limits are unchanged;
+no 512 MB peak-memory or transparent interrupted-job recovery is claimed.
+
 ## Storage and rollout
 
 - New upload URLs and commits require `immutable: true` and `sourceFilename`. Older requests get HTTP 426. The unique object key is protected by a signed `If-None-Match: *` condition. Clients must send the returned `requiredHeaders`; R2 CORS must allow `If-None-Match` for browser uploads.

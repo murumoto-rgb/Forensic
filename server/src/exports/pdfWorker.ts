@@ -1,9 +1,9 @@
 /**
  * Background PDF export worker (Build #5.62.1).
  *
- * Polls the `pdf_export_jobs` table every few seconds for queued
- * rows, claims one atomically, renders the project's manifest into
- * an HTML page, prints the page to a PDF via headless Chromium
+ * Polls the `pdf_export_jobs` table with a 5–60 second delay after
+ * each settled tick, claims one row atomically, renders the project's
+ * manifest in bounded HTML chunks, and prints via headless Chromium
  * (Puppeteer), uploads the result to R2, and marks the row done.
  * On render failure the row is flipped to 'failed' with the error
  * surfaced so the web client can show it.
@@ -20,20 +20,11 @@
  *   Only one worker's update will succeed; the other sees an empty
  *   response and skips that id.
  *
- * Memory budget: Puppeteer loads ~250 MB of Chromium per browser
- * instance. We reuse a single browser across jobs (lazy-launched on
- * first claim, kept alive for the lifetime of the process) to avoid
- * paying that cost per render. A new page is opened per job and
- * closed when done.
+ * Chromium launches lazily for a claimed job, reuses a browser across
+ * up to four chunks, and closes after every job so idle API traffic
+ * does not retain a browser process. This is not an RSS guarantee.
  *
- * The PDF layout in THIS PR is intentionally minimal — a cover page
- * showing the project name, photo count, and a generation timestamp.
- * Real per-photo + per-plan pages land in PR #2; the options sheet
- * lands in PR #3. The MVP is the pipeline plumbing, not the polish.
- *
- * Skeleton skip condition: if either Supabase or R2 isn't reachable
- * (boot env vars unset in dev), the polling loop never starts. The
- * server otherwise still serves all non-export routes.
+ * PDF layout is delegated to htmlReport's streamed report chunks.
  */
 
 import type { FastifyBaseLogger } from "fastify";
@@ -46,12 +37,7 @@ import { captureException } from "../sentry.js";
 import { renderReportChunks, reportFooterTemplate } from "./htmlReport.js";
 import { applyOptionDefaults } from "./options.js";
 import { loadReportBrandingForExport } from "../reportBranding.js";
-
-/** How often to scan the queue. Render free tier sleeps after 15
- *  min of idle; on cold-start the first poll fires immediately after
- *  the server boots. 5 s is responsive enough for a click-and-wait
- *  UI without hammering the DB. */
-const POLL_MS = 5_000;
+import { startQueuePoller } from "./queuePoller.js";
 
 /** R2 prefix for rendered PDFs. Keeps them out of the
  *  `<projectId>/<photoId>/<kind>` namespace photos use. */
@@ -62,6 +48,7 @@ let tickRunning = false;
 /** pdf-lib retains the final document; explicitly cap output instead of claiming constant memory. */
 export const MAX_PDF_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_PDF_PAGES = 1000;
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
 let browser: Browser | null = null;
 
 interface JobRow {
@@ -96,17 +83,34 @@ async function getOrLaunchBrowser(): Promise<Browser> {
   return browser;
 }
 
-/** Close + null the current browser so the next call relaunches.
- *  Used as a watchdog between chunk-render batches to keep Chrome's
- *  RSS from growing unbounded on 500+ photo exports (Build #5.74.4). */
-async function recycleBrowser(): Promise<void> {
-  if (browser) {
-    try {
-      await browser.close();
-    } catch {
-      // Best-effort — if the close fails, just drop the reference.
-    }
-    browser = null;
+async function closeWithDeadline(close: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      close(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Browser close timed out")), BROWSER_CLOSE_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Release the owned browser after a job and between batches. Closing a broken
+ * DevTools connection is bounded so it cannot permanently occupy the worker. */
+async function recycleBrowser(log: FastifyBaseLogger): Promise<void> {
+  const previous = browser;
+  browser = null;
+  if (!previous) return;
+  try {
+    await closeWithDeadline(() => previous.close());
+  } catch (err) {
+    log.warn({ err }, "pdf worker — browser close failed; terminating owned browser process");
+    // This is our Puppeteer-launched child, never the user's browser. A
+    // stalled DevTools close must not retain the worker/polling slot forever.
+    try { previous.process()?.kill("SIGKILL"); } catch { /* Already exited. */ }
   }
 }
 
@@ -172,7 +176,7 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
     .eq("id", job.id).then(undefined, () => {});
 
   for await (const html of chunks) {
-    if (chunkIndex > 0 && chunkIndex % 4 === 0) await recycleBrowser();
+    if (chunkIndex > 0 && chunkIndex % 4 === 0) await recycleBrowser(log);
     const b = await getOrLaunchBrowser();
     const page = await b.newPage();
     try {
@@ -198,7 +202,13 @@ async function renderJob(job: JobRow, log: FastifyBaseLogger): Promise<void> {
         .update({ progress_done_chunks: chunkIndex }).eq("id", job.id)
         .then(undefined, () => {});
     } finally {
-      await page.close().catch(() => {});
+      try {
+        await closeWithDeadline(() => page.close());
+      } catch {
+        // A stuck page close must not prevent outer job cleanup. Discard the
+        // browser now rather than reusing its broken connection for a chunk.
+        await recycleBrowser(log);
+      }
     }
   }
   if (chunkIndex === 0) throw new Error("Selection is empty — nothing to render.");
@@ -258,17 +268,20 @@ export async function processPdfExportJob(job: JobRow, log: FastifyBaseLogger): 
     log.error({ err: error, jobId: job.id }, "pdf worker — render failed");
     captureException(error, { jobId: job.id, projectId: job.project_id });
     await markFailed(job.id, message);
+  } finally {
+    await recycleBrowser(log);
   }
 }
 
-async function tick(log: FastifyBaseLogger): Promise<void> {
+async function tick(log: FastifyBaseLogger): Promise<boolean> {
   // Atomic DB claiming prevents duplicate claims, not simultaneous different
   // jobs. One local job at a time keeps the shared browser and memory bounded.
-  if (tickRunning) return;
+  if (tickRunning) return false;
   tickRunning = true;
   try {
     const job = await claimNextJob(log);
     if (job) await processPdfExportJob(job, log);
+    return job !== null;
   } finally {
     tickRunning = false;
   }
@@ -283,10 +296,7 @@ export function startPdfExportWorker(log: FastifyBaseLogger): void {
   if (workerStarted) return;
   workerStarted = true;
   log.info("pdf export worker started");
-  // The local in-flight guard prevents overlapping renders across ticks.
-  setInterval(() => {
-    void tick(log).catch((err) => {
-      log.error({ err }, "pdf worker — unhandled tick error");
-    });
-  }, POLL_MS);
+  startQueuePoller(() => tick(log), (err) => {
+    log.error({ err }, "pdf worker — unhandled tick error");
+  });
 }
