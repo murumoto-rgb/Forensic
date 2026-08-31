@@ -42,8 +42,12 @@ import Observation
 @Observable
 @MainActor
 final class ManifestSyncer {
-    private let api: APIClient
-    private let auth: AuthService
+    struct SyncContext: Sendable {
+        fileprivate let generation: UUID
+        fileprivate let userID: UUID
+    }
+    private let api: any ManifestSyncTransport
+    private let currentUserID: () -> UUID?
     private let toast: ToastCenter
     /// Set on init by SitePhotoApp so the syncer can write pulled
     /// projects back to the local store. Weak to avoid a retain
@@ -90,7 +94,13 @@ final class ManifestSyncer {
 
     init(api: APIClient, auth: AuthService, toast: ToastCenter) {
         self.api = api
-        self.auth = auth
+        self.currentUserID = { auth.session?.user.id }
+        self.toast = toast
+    }
+
+    init(transport: any ManifestSyncTransport, currentUserID: @escaping () -> UUID?, toast: ToastCenter) {
+        self.api = transport
+        self.currentUserID = currentUserID
         self.toast = toast
     }
 
@@ -100,14 +110,14 @@ final class ManifestSyncer {
     /// caller doesn't block waiting for the network. Toasts on
     /// error.
     func sync(_ project: Project) {
-        guard auth.session != nil else { return }
+        guard let context = captureContext() else { return }
         let id = project.id
         guard store?.hasUnsavedChanges(projectID: id) != true else { return }
         queued[id] = project
         dirty.insert(id)
         guard !inFlight.contains(id) else { return }
         inFlight.insert(id)
-        Task { await drainQueue(projectID: id) }
+        Task { await drainQueue(projectID: id, context: context) }
     }
 
     /// Re-push every project whose last push failed (Build #6.30.1).
@@ -116,7 +126,7 @@ final class ManifestSyncer {
     /// so edits made since the failure ride along; `pushOnce`'s merge
     /// path keeps it lossless against server-side changes.
     func retryPending() {
-        guard auth.session != nil, let store, !pendingRetry.isEmpty else { return }
+        guard currentUserID() != nil, let store, !pendingRetry.isEmpty else { return }
         let ids = pendingRetry
         for id in ids {
             guard let project = store.project(withID: id)
@@ -140,18 +150,23 @@ final class ManifestSyncer {
     /// existing push retry path handles it; we just skip projects
     /// that are inFlight at this moment.
     func pullAllFromServer() async {
-        guard auth.session != nil else { return }
+        guard let userID = currentUserID() else { return }
+        let runGeneration = generation
         let response: ProjectListResponse
         do {
             response = try await api.listProjects()
         } catch APIClient.APIError.notAuthenticated {
             return
         } catch {
-            surfaceError(error, projectName: "project list")
+            if runGeneration == generation, currentUserID() == userID {
+                surfaceError(error, projectName: "project list")
+            }
             return
         }
 
+        guard runGeneration == generation, currentUserID() == userID else { return }
         for item in response.projects {
+            guard runGeneration == generation, currentUserID() == userID else { return }
             await pullIfNeeded(item: item)
         }
     }
@@ -170,10 +185,11 @@ final class ManifestSyncer {
     /// server, and their photos generate a 404 storm on
     /// upload-url.
     func pushAllToServer() async {
-        guard auth.session != nil else { return }
+        guard let context = captureContext() else { return }
         guard let store else { return }
         for project in store.activeProjects {
-            await pushAwait(project: project)
+            guard context.generation == generation, currentUserID() == context.userID else { return }
+            await pushAwait(project: project, context: context)
         }
     }
 
@@ -192,6 +208,7 @@ final class ManifestSyncer {
         }
         dirty.removeAll()
         queued.removeAll()
+        inFlight.removeAll()
         pendingRetry.removeAll()
     }
 
@@ -202,8 +219,7 @@ final class ManifestSyncer {
     /// shape on the very first push for a project (no stored base
     /// yet — the server's legacy path runs, and we capture the
     /// just-pushed manifest as the base for next time).
-    private func pushOnce(project: Project) async throws {
-        let requestGeneration = generation
+    private func pushOnce(project: Project, context: SyncContext) async throws {
         let expectedRevision = storedRevision(for: project.id)
         let base = storedBase(for: project.id)
         let response = try await api.putProject(
@@ -212,7 +228,7 @@ final class ManifestSyncer {
             expectedRevision: expectedRevision,
             baseManifest: base
         )
-        guard requestGeneration == generation, auth.session != nil else { return }
+        guard context.generation == generation, currentUserID() == context.userID else { return }
         storeRevision(response.revision, for: project.id)
         // Adopt the server's merged result so future edits base on
         // what the server now holds. If the server skipped merge
@@ -239,8 +255,9 @@ final class ManifestSyncer {
     /// Awaitable equivalent of `sync(_:)` — used by
     /// `pushAllToServer()` so we know every project is on the
     /// server before kicking off photo upload.
-    private func pushAwait(project: Project) async {
+    private func pushAwait(project: Project, context: SyncContext? = nil) async {
         let id = project.id
+        guard let context = context ?? captureContext() else { return }
         guard store?.hasUnsavedChanges(projectID: id) != true else { return }
         queued[id] = project
         dirty.insert(id)
@@ -249,24 +266,29 @@ final class ManifestSyncer {
             return
         }
         inFlight.insert(id)
-        await drainQueue(projectID: id)
+        await drainQueue(projectID: id, context: context)
     }
 
-    private func drainQueue(projectID id: UUID) async {
-        let runGeneration = generation
+    private func drainQueue(projectID id: UUID, context: SyncContext) async {
         defer {
-            inFlight.remove(id)
-            let waiters = completionWaiters.removeValue(forKey: id) ?? []
-            for waiter in waiters { waiter.resume() }
+            // An older drain can finish after reset and a new account may
+            // already have started a replacement drain for this ID.
+            if context.generation == generation, currentUserID() == context.userID {
+                inFlight.remove(id)
+                let waiters = completionWaiters.removeValue(forKey: id) ?? []
+                for waiter in waiters { waiter.resume() }
+            }
         }
-        while let project = queued.removeValue(forKey: id) {
-            guard runGeneration == generation, auth.session != nil else { return }
+        while context.generation == generation, currentUserID() == context.userID,
+              let project = queued.removeValue(forKey: id) {
+            guard context.generation == generation, currentUserID() == context.userID else { return }
             do {
                 guard store?.hasUnsavedChanges(projectID: id) != true else {
                     throw NSError(domain: "SitePhoto.Sync", code: 1, userInfo: [NSLocalizedDescriptionKey: "Save local changes before syncing."])
                 }
-                try await pushOnce(project: project)
+                try await pushOnce(project: project, context: context)
             } catch {
+                guard context.generation == generation, currentUserID() == context.userID else { return }
                 // Do not replace a fresher snapshot queued during the request.
                 if queued[id] == nil { queued[id] = project }
                 pendingRetry.insert(id)
@@ -274,12 +296,13 @@ final class ManifestSyncer {
                 return
             }
         }
+        guard context.generation == generation, currentUserID() == context.userID else { return }
         dirty.remove(id)
         pendingRetry.remove(id)
     }
 
     func syncNow(projectID: UUID) async {
-        guard auth.session != nil,
+        guard currentUserID() != nil,
               let project = store?.project(withID: projectID) else { return }
         await pushAwait(project: project)
     }
@@ -289,7 +312,26 @@ final class ManifestSyncer {
             || store?.hasUnsavedChanges(projectID: projectID) == true || hasUnpushedLocalEdits(id: projectID)
     }
 
-    func adoptRestored(_ response: GetManifestResponse) throws {
+    /// Internal diagnostic for observing an awaitable sync barrier without
+    /// exposing or resuming its continuations.
+    func pendingWaiterCount(projectID: UUID) -> Int {
+        completionWaiters[projectID]?.count ?? 0
+    }
+
+    func captureContext() -> SyncContext? {
+        guard let userID = currentUserID() else { return nil }
+        return SyncContext(generation: generation, userID: userID)
+    }
+
+    func isCurrent(_ context: SyncContext) -> Bool {
+        context.generation == generation && currentUserID() == context.userID
+    }
+
+    func adoptRestored(_ response: GetManifestResponse, context: SyncContext) throws {
+        guard isCurrent(context) else {
+            throw NSError(domain: "SitePhoto.Sync", code: 4, userInfo: [NSLocalizedDescriptionKey:
+                "The signed-in account changed while the restore was running. Review the project again before retrying."])
+        }
         let id = response.project.id
         guard !hasPendingChanges(projectID: id), store?.applyServerProject(response.project) == true else {
             throw NSError(domain: "SitePhoto.Sync", code: 3, userInfo: [NSLocalizedDescriptionKey:
@@ -302,11 +344,24 @@ final class ManifestSyncer {
 
     private func pullIfNeeded(item: ProjectListItem) async {
         let id = item.id
+        guard let requestContext = captureContext() else { return }
         // Don't trample an in-flight push.
         if inFlight.contains(id) { return }
+        // A revision match is a manifest no-op, but access metadata is held
+        // only in memory and must still be refreshed after relaunch.
+        if storedRevision(for: id) == item.revision {
+            guard !storeAccessKnown(id: id) else { return }
+            do {
+                let resp = try await api.getProject(id: id)
+                guard isCurrent(requestContext) else { return }
+                store?.updateProjectAccess(id: id, role: resp.role, isOwner: resp.isOwner)
+            } catch APIClient.APIError.notAuthenticated { return }
+            catch APIClient.APIError.http(status: 404, _, _) { return }
+            catch { if isCurrent(requestContext) { surfaceError(error, projectName: item.name) } }
+            return
+        }
+
         if store?.hasUnsavedChanges(projectID: id) == true { return }
-        // No-op when server matches local.
-        if storedRevision(for: id) == item.revision { return }
 
         // Robust dirty check: same-session in-memory flag OR the
         // on-disk manifest differs from the stored base (survives
@@ -322,6 +377,10 @@ final class ManifestSyncer {
         // Clean local — adopt server.
         do {
             let resp = try await api.getProject(id: id)
+            // The request may have crossed a sign-out/account switch while
+            // it was in flight. Do not let an old user's response restore
+            // access grants into the shared store after resetRevisions().
+            guard isCurrent(requestContext) else { return }
             store?.updateProjectAccess(id: id, role: resp.role, isOwner: resp.isOwner)
             // The user may have edited while the GET was in flight.
             guard !dirty.contains(id), !inFlight.contains(id),
@@ -338,8 +397,12 @@ final class ManifestSyncer {
             // local copy in a later phase.
             return
         } catch {
-            surfaceError(error, projectName: item.name)
+            if isCurrent(requestContext) { surfaceError(error, projectName: item.name) }
         }
+    }
+
+    private func storeAccessKnown(id: UUID) -> Bool {
+        store?.isProjectAccessKnown(id: id) ?? false
     }
 
     /// Compare the project's on-disk manifest to the stored base

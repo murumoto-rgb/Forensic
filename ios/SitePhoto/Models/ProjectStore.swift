@@ -73,7 +73,18 @@ final class ProjectStore {
         if let role { projectRoles[id] = role } else { projectRoles.removeValue(forKey: id) }
         if let isOwner { projectOwnership[id] = isOwner } else { projectOwnership.removeValue(forKey: id) }
     }
+
+    /// Drop all in-memory authorization state when the authenticated user
+    /// changes. Project manifests and evidence remain on disk; only grants
+    /// tied to the previous account are invalidated.
+    func resetProjectAccess() {
+        projectRoles.removeAll()
+        projectOwnership.removeAll()
+        knownProjectAccess.removeAll()
+        locallyCreatedProjects.removeAll()
+    }
     func isReadOnly(_ project: Project) -> Bool { project.isFrozen || projectRoles[project.id] == "viewer" }
+    func isProjectAccessKnown(id: UUID) -> Bool { knownProjectAccess.contains(id) }
     func canManageLock(_ project: Project) -> Bool {
         projectOwnership[project.id] == true
             || projectRoles[project.id] == "admin"
@@ -1551,7 +1562,6 @@ final class ProjectStore {
     func applyServerProject(_ project: Project) -> Bool {
         guard !hasUnsavedChanges(projectID: project.id) else { return false }
         locallyCreatedProjects.remove(project.id)
-        knownProjectAccess.insert(project.id)
         // Build #6.19.1: a server-side freeze flip (admin locked or
         // unlocked the project from web) used to land silently — the
         // device's banner just appeared/disappeared with no

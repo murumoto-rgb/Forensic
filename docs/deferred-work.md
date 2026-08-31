@@ -8,8 +8,8 @@ without re-deriving the context.
 
 ## Cloud-first storage (offload projects to R2, download on demand)
 
-**Status:** Deferred. Hybrid local-first model is the current
-shipped behaviour and is the intended steady state for now.
+**Status:** Deferred. Hybrid binary storage with local originals is the
+current shipped behaviour. Automatic offloading is not enabled.
 
 **Idea (user request, 2026-06-06):** Let a project's photo / plan
 binaries live permanently on Cloudflare R2 and NOT require a full
@@ -18,12 +18,12 @@ local copy on the phone. Local disk becomes a size-capped cache;
 tapping a project (or a specific photo / plan) re-fetches binaries
 on demand.
 
-**Why deferred:** The hybrid model — local disk is source of truth,
-iCloud Drive is an optional backup, R2 is the upload sink + backfill
-source for new devices — gives most of the safety net without the
-UX disruption of an on-demand fetch model. Cloud-first is a
-Phase 5/6 effort once the team is comfortable with the backend
-being authoritative.
+**Why deferred:** Local originals remain available for offline work, while
+manifest synchronization uses the server revision and a three-way merge.
+R2 supplies uploaded binaries for backfill on new devices. The deferred
+change here is automatic binary offloading, not manifest authority.
+iCloud synchronization and the live R2 bucket are not independent verified
+backups; preserve separate copies and follow the backup/restore drill.
 
 **What it would take (rough scope, ~1–2 weeks):**
 1. **Lazy fetch** — replace eager `BinaryBackfillService` with an
@@ -45,9 +45,9 @@ being authoritative.
    download-then-export, or lean on the server-side PDF path
    (Sprint E2 groundwork in the AI-tagging plan partly anticipates
    this).
-7. **Backup-story messaging** — today the iCloud Drive folder is a
-   usable archive; cloud-first moves that archive to R2, so the
-   user-facing "where is my work safe" copy needs updating.
+7. **Backup-story messaging** — distinguish synchronized working copies
+   from independent archives. Offloading must not delete the only verified
+   local copy before an independent recovery path has been tested.
 
 **Trade-off summary:**
 

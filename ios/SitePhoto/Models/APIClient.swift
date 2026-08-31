@@ -1,5 +1,12 @@
 import Foundation
 
+@MainActor
+protocol ManifestSyncTransport: AnyObject {
+    func listProjects() async throws -> ProjectListResponse
+    func getProject(id: UUID) async throws -> GetManifestResponse
+    func putProject(id: UUID, project: Project, expectedRevision: String?, baseManifest: Project?) async throws -> PutManifestResponse
+}
+
 /// Thin REST client for the Forensic Fastify server.
 ///
 /// Authenticates every request with the current Supabase JWT
@@ -17,7 +24,7 @@ import Foundation
 /// ISO; on-disk backwards-compat demands deferredToDate. The
 /// same `Project` struct round-trips through both.
 @MainActor
-final class APIClient {
+final class APIClient: ManifestSyncTransport {
     /// Top-level error surfaced to callers. Each case carries
     /// enough context to drive a toast message.
     enum APIError: Error, LocalizedError {

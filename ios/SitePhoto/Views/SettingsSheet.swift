@@ -98,6 +98,7 @@ struct SettingsSheet: View {
                             photoSyncer.resetUploadCache()
                             appConfigSyncer.resetRevisions()
                             backfillService.reset()
+                            store.resetProjectAccess()
                             try? await auth.signOut()
                             dismiss()
                         }

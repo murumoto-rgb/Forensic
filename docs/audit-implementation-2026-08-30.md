@@ -1,6 +1,6 @@
 # Forensic / SitePhoto audit implementation
 
-**Candidate build:** 6.38.3, branch codex/audit-reliability-improvements
+**Candidate build:** 6.38.4, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
 **Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
@@ -26,7 +26,7 @@ The original audit remains the baseline record. Its earlier backlog reconciled t
 
 Additional integration fixes include unescaped filesystem paths for directories containing spaces, exact snapshot filename checks during exports, conditional immutable uploads, bounded object reads, safe CSV text, owner-aware freeze controls, custom iOS bulk-tag vocabulary and actual report-logo binary transfer.
 
-## Five improvement areas delivered
+## Five improvement areas implemented
 
 1. **Owner and database safety.** Permission repair, service-only mutation RPCs, immutable upload receipts, daily/concurrent AI and export budgets, reduced telemetry and checked Keychain writes. Runtime production settings still need their approved cutover.
 2. **Reliable saves and synchronization.** Shared web mutation coordination, iOS durability acknowledgments, atomic plan replacement, conflict-preserving settings and recovery boundaries.
@@ -34,7 +34,7 @@ Additional integration fixes include unescaped filesystem paths for directories 
 4. **Performance.** Deferred heavy web modules and optional telemetry; cached/spatially indexed plan geometry; lazy cached thumbnails; background byte hashing; bounded PDF generation and serialized folder streams.
 5. **Workflow and accessibility.** Photos / Plan / Review / Export / Details language, reusable export/recovery/preset dialogs, single-owner “Libraries” wording, report-layout parity, synced logo behavior and corrected backlog/parity documentation.
 
-## Five additions delivered on web and iOS
+## Five additions implemented on web and iOS
 
 | Addition | What the owner can do | Safety boundary |
 |---|---|---|
@@ -53,18 +53,21 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
 | Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **146 passed / 11 files** |
 | Web DOM behavior tests | **36 passed / 4 files** |
-| iOS simulator tests | **16 passed**, including save/plan failure injection, object-store verification, lock access and complete/incomplete folder export |
-| Total regression tests | **279 passed** |
+| iOS simulator tests | **22 passed**, including save/plan failure injection, object-store verification, account/context isolation, lock access and complete/incomplete folder export |
+| Total regression tests | **285 passed** |
+| Separate PostgreSQL transaction overlap checks | **3 passed**, using three connections with observed blocking |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
 | iOS Debug simulator build/test | Passed with Xcode 26.6 and iOS 26.5; unsigned |
 | Narrow permission hotfix rehearsal | Passed against 15 historical migrations in local PGlite; repeated application and subsequent migration 0016 both passed |
-| Final independent review | Logo-preview races, exact AI snapshot binding, checkpoint errors, archive filename collisions, registry-only upload acknowledgments, UUID casing, native lock permissions, large folder queries and PDF read deadlines corrected and regression-tested |
+| Final independent review | Logo-preview races, exact AI snapshot binding, checkpoint errors, archive filename collisions, registry-only upload acknowledgments, UUID casing, native session/lock permissions, large folder queries and PDF read deadlines corrected and regression-tested |
 | Working-copy preservation | Canonical checkout and its pre-existing edited verification document preserved |
 
-JavaScript validation used Node 22.23.2 and pnpm 9.12.0. Database tests execute the actual migration SQL in PGlite with fake external identity/storage boundaries. They do not prove simultaneous multi-connection PostgreSQL behavior. The real headless-Chrome PDF test verified decoded/aligned markup and exactly two pages; hosts without Chrome explicitly skip that optional integration test.
+JavaScript validation used Node 22.23.2 and pnpm 9.12.0. Database tests execute the actual migration SQL in PGlite with fake external identity/storage boundaries. They do not themselves prove simultaneous multi-connection PostgreSQL behavior. A separate PostgreSQL 17.11 run used three independent connections and observed actual lock waits: competing revision saves reject the loser; freeze-first revokes a pending upload; commit-first preserves evidence through freezing and exact retry. All three cases passed. This synthetic test is not a throughput stress test or a production/Supabase runtime certification. The real headless-Chrome PDF test verified decoded/aligned markup and exactly two pages; hosts without Chrome explicitly skip that optional integration test.
 
 A first combined run exceeded the default PostgreSQL/WASM startup timeout while Xcode was running; a later run passed all assertions but exceeded Chrome's short cleanup timeout. Those integration setup/cleanup timeouts were increased to 30 seconds. The final combined run passed. These are correctness tests, not latency benchmarks.
+
+Native access metadata is reset at account boundaries without deleting local evidence. A matching cached manifest revision still refreshes unknown permissions, including when local changes cannot yet be saved. Generation and account checks discard late list/GET/PUT/restore results; old queue work cannot clear a replacement account's work. Recovery and restore previews remain tied to the session that started them. Six additional simulator regressions exercise these boundaries with controlled responses and explicit completion/waiter checks. HTTP 401 remains a visible reauthentication error and does not automatically sign the user out.
 
 Browser verification used the candidate UI and a synthetic local API: login/logout, non-admin owner controls, asset-health failures, Start/Stop/Resume, checklist and preset preview/apply, version diff and confirmed restore, saved search creation/reuse/deletion, export dialog keyboard behavior, and the deliberate one-missing-file export. No real project, account or object was created for these tests.
 
@@ -94,7 +97,7 @@ AI request budgets reduce accidental cost, but are not exact dollar caps. This w
 
 The live storage probe passed with the actual server signer: the approved production-origin preflight succeeded, an initial conditional upload succeeded, an overwrite returned 412, omitting the signed condition returned 403, and readback preserved the initial bytes. Its disposable fixture was removed and absence verified. The independent local object copy passed a full checksum readback. The real public-data snapshot also passed 49 local migration/recovery assertions with existing rows unchanged. These are recorded in separate private/sanitized operational receipts.
 
-Other unverified release checks: physical iPhone offline/camera/PencilKit behavior; large-project end-to-end latency and peak memory; multi-connection transaction stress; full provider/Auth and independent-cloud backup restoration; App Store/TestFlight packaging and deployed source readback. No background-upload service, local-copy eviction, storage garbage collection or broad visual redesign was introduced.
+Other unverified release checks: physical iPhone offline/camera/PencilKit behavior; large-project end-to-end latency and peak memory; production concurrency/load stress; full provider/Auth and independent-cloud backup restoration; App Store/TestFlight packaging and deployed source readback. No background-upload service, local-copy eviction, storage garbage collection or broad visual redesign was introduced.
 
 ## Release handoff
 

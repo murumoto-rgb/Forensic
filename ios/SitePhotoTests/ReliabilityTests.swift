@@ -14,6 +14,21 @@ final class ReliabilityTests: XCTestCase {
         return url
     }
 
+    private func waitFor(
+        _ description: String, file: StaticString = #filePath, line: UInt = #line,
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Timed out waiting for \(description)", file: file, line: line)
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return true
+    }
+
     func testFailedSaveKeepsLatestEditAndBlocksPullUntilRetrySucceeds() throws {
         var fail = false
         let store = ProjectStore(storageRoot: try temporaryRoot()) { bytes, url in
@@ -129,6 +144,9 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(store.canManageLock(project))
         store.updateProjectAccess(id: project.id, role: "editor", isOwner: true)
         XCTAssertTrue(store.canManageLock(project))
+        store.resetProjectAccess()
+        XCTAssertFalse(store.canManageLock(project))
+        XCTAssertEqual(store.setFrozen(project, frozen: true), project)
 
         // A later authoritative response must revoke stale owner/admin
         // capability when both optional fields are absent.
@@ -144,6 +162,181 @@ final class ReliabilityTests: XCTestCase {
         await reloadedStore.loadInitial()
         let reloaded = try XCTUnwrap(reloadedStore.project(withID: project.id))
         XCTAssertFalse(reloadedStore.canManageLock(reloaded))
+    }
+
+    func testCachedRevisionRefreshesAccessWithoutReplacingLocalProject() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot()) { _, _ in
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        let local = Project(name: "Local edit")
+        store.save(local)
+        store.resetProjectAccess()
+        XCTAssertTrue(store.hasUnsavedChanges(projectID: local.id))
+        XCTAssertFalse(store.canManageLock(local))
+        let userID = UUID()
+        let transport = TestManifestTransport()
+        transport.listResponse = ProjectListResponse(projects: [
+            ProjectListItem(id: local.id, name: local.name, manifestSchemaVersion: 4,
+                revision: "same", createdAt: local.createdAt, updatedAt: local.createdAt)
+        ])
+        var remote = local; remote.name = "Remote replacement"
+        transport.getResponse = GetManifestResponse(project: remote, revision: "same", role: "editor", isOwner: true)
+        let revisionKey = "sitephoto.serverRevision.\(local.id.uuidString.lowercased())"
+        UserDefaults.standard.set("same", forKey: revisionKey)
+        defer { UserDefaults.standard.removeObject(forKey: revisionKey) }
+
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { userID }, toast: ToastCenter())
+        syncer.store = store
+        await syncer.pullAllFromServer()
+
+        XCTAssertEqual(transport.getCalls, 1)
+        XCTAssertEqual(store.project(withID: local.id)?.name, "Local edit")
+        XCTAssertTrue(store.canManageLock(local))
+        XCTAssertTrue(store.isProjectAccessKnown(id: local.id))
+    }
+
+    func testLateAccessResponseAfterResetCannotRestoreOldGrant() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        let local = store.save(Project(name: "Late response"))
+        var currentUser: UUID? = UUID()
+        let transport = TestManifestTransport()
+        transport.listResponse = ProjectListResponse(projects: [
+            ProjectListItem(id: local.id, name: local.name, manifestSchemaVersion: 4,
+                revision: "same", createdAt: local.createdAt, updatedAt: local.createdAt)
+        ])
+        var remote = local; remote.name = "Old account project"
+        transport.getResponse = GetManifestResponse(project: remote, revision: "same", role: "admin", isOwner: true)
+        transport.delayGet = true
+        let revisionKey = "sitephoto.serverRevision.\(local.id.uuidString.lowercased())"
+        UserDefaults.standard.set("same", forKey: revisionKey)
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { currentUser }, toast: ToastCenter())
+        syncer.store = store
+        defer { syncer.resetRevisions(); transport.cancelPending() }
+        let finished = expectation(description: "old access request completed")
+        Task { await syncer.pullAllFromServer(); finished.fulfill() }
+        guard await waitFor("access GET", { transport.getStarted }) else { return }
+        let restoreContext = try XCTUnwrap(syncer.captureContext())
+        currentUser = nil
+        syncer.resetRevisions()
+        store.resetProjectAccess()
+        transport.resumeGet()
+        await fulfillment(of: [finished], timeout: 3)
+
+        XCTAssertFalse(store.isProjectAccessKnown(id: local.id))
+        XCTAssertFalse(store.canManageLock(local))
+        XCTAssertEqual(store.project(withID: local.id)?.name, "Late response")
+        XCTAssertNil(UserDefaults.standard.string(forKey: revisionKey))
+        XCTAssertThrowsError(try syncer.adoptRestored(
+            GetManifestResponse(project: remote, revision: "same", role: "admin", isOwner: true),
+            context: restoreContext
+        ))
+    }
+
+    func testOldQueueFailureCannotClearReplacementAccountWork() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        let project = store.save(Project(name: "Queued project"))
+        var currentUser: UUID? = UUID()
+        let transport = TestManifestTransport(); transport.delayPut = true
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { currentUser }, toast: ToastCenter())
+        syncer.store = store
+        defer { syncer.resetRevisions(); transport.cancelPending() }
+        let oldFinished = expectation(description: "old failed drain completed")
+        Task { await syncer.syncNow(projectID: project.id); oldFinished.fulfill() }
+        guard await waitFor("old PUT", { transport.putCalls == 1 }) else { return }
+        currentUser = UUID(); syncer.resetRevisions(); store.resetProjectAccess()
+        var replacement = project; replacement.name = "Replacement account snapshot"
+        store.save(replacement)
+        let newFinished = expectation(description: "replacement drain completed")
+        Task { await syncer.syncNow(projectID: project.id); newFinished.fulfill() }
+        guard await waitFor("replacement PUT", { transport.putCalls == 2 }) else { return }
+
+        transport.resumePut(call: 1, with: .failure(NSError(domain: "test", code: 1)))
+        await fulfillment(of: [oldFinished], timeout: 3)
+        XCTAssertTrue(syncer.inFlight.contains(project.id), "old failure must not clear the replacement drain")
+        XCTAssertFalse(syncer.pendingRetry.contains(project.id), "old failure must not enqueue a retry for the new account")
+        transport.resumePut(call: 2, with: .success(PutManifestResponse(revision: "replacement", project: nil)))
+        await fulfillment(of: [newFinished], timeout: 3)
+        XCTAssertFalse(syncer.inFlight.contains(project.id))
+        XCTAssertEqual(store.project(withID: project.id)?.name, replacement.name)
+    }
+
+    func testOldQueueSuccessCannotAdoptOverReplacementAccountSave() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        let project = store.save(Project(name: "Original"))
+        var currentUser: UUID? = UUID()
+        let transport = TestManifestTransport(); transport.delayPut = true
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { currentUser }, toast: ToastCenter())
+        syncer.store = store
+        defer { syncer.resetRevisions(); transport.cancelPending() }
+        let revisionKey = "sitephoto.serverRevision.\(project.id.uuidString.lowercased())"
+        let oldFinished = expectation(description: "old successful drain completed")
+        Task { await syncer.syncNow(projectID: project.id); oldFinished.fulfill() }
+        guard await waitFor("old PUT", { transport.putCalls == 1 }) else { return }
+        currentUser = UUID(); syncer.resetRevisions(); store.resetProjectAccess()
+        var replacement = project; replacement.name = "Saved by replacement account"
+        store.save(replacement)
+        let newFinished = expectation(description: "replacement drain completed")
+        Task { await syncer.syncNow(projectID: project.id); newFinished.fulfill() }
+        guard await waitFor("replacement PUT", { transport.putCalls == 2 }) else { return }
+        var staleResponse = project; staleResponse.name = "Must never be adopted"
+        transport.resumePut(call: 1, with: .success(PutManifestResponse(revision: "old", project: staleResponse)))
+        await fulfillment(of: [oldFinished], timeout: 3)
+        XCTAssertEqual(store.project(withID: project.id)?.name, replacement.name)
+        XCTAssertNil(UserDefaults.standard.string(forKey: revisionKey))
+        XCTAssertTrue(syncer.inFlight.contains(project.id))
+        transport.resumePut(call: 2, with: .success(PutManifestResponse(revision: "new", project: nil)))
+        await fulfillment(of: [newFinished], timeout: 3)
+        XCTAssertFalse(syncer.inFlight.contains(project.id))
+        XCTAssertEqual(UserDefaults.standard.string(forKey: revisionKey), "new")
+    }
+
+    func testResetBeforeDelayedDrainStartsCannotConsumeReplacementSnapshot() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        let project = store.save(Project(name: "A"))
+        var currentUser: UUID? = UUID()
+        let transport = TestManifestTransport(); transport.delayPut = true
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { currentUser }, toast: ToastCenter())
+        syncer.store = store
+        defer { syncer.resetRevisions(); transport.cancelPending() }
+        // No suspension before both enqueue operations: the first drain can
+        // start only after its account context has already been invalidated.
+        syncer.sync(project)
+        currentUser = UUID(); syncer.resetRevisions(); store.resetProjectAccess()
+        var replacement = project; replacement.name = "B"
+        store.save(replacement); syncer.sync(replacement)
+        guard await waitFor("replacement PUT", { transport.putCalls == 1 }) else { return }
+        XCTAssertEqual(transport.putProjects[1]?.name, "B")
+        XCTAssertTrue(syncer.inFlight.contains(project.id))
+        transport.resumePut(call: 1, with: .success(PutManifestResponse(revision: "B", project: nil)))
+        guard await waitFor("replacement completion", { !syncer.inFlight.contains(project.id) }) else { return }
+        XCTAssertEqual(transport.putCalls, 1)
+        XCTAssertEqual(store.project(withID: project.id)?.name, "B")
+    }
+
+    func testResetResumesPushAllWaiterWithoutStartingNextOldProject() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        store.save(Project(name: "First")); store.save(Project(name: "Second"))
+        let first = try XCTUnwrap(store.activeProjects.first)
+        var currentUser: UUID? = UUID()
+        let transport = TestManifestTransport(); transport.delayPut = true
+        let syncer = ManifestSyncer(transport: transport, currentUserID: { currentUser }, toast: ToastCenter())
+        syncer.store = store
+        defer { syncer.resetRevisions(); transport.cancelPending() }
+        let oldFinished = expectation(description: "original drain completed")
+        Task { await syncer.syncNow(projectID: first.id); oldFinished.fulfill() }
+        guard await waitFor("first PUT", { transport.putCalls == 1 }) else { return }
+        let sweepFinished = expectation(description: "invalidated sweep completed")
+        Task { await syncer.pushAllToServer(); sweepFinished.fulfill() }
+        guard await waitFor("sweep's actual queued waiter", {
+            syncer.pendingWaiterCount(projectID: first.id) == 1
+        }) else { return }
+        currentUser = UUID(); syncer.resetRevisions(); store.resetProjectAccess()
+        await fulfillment(of: [sweepFinished], timeout: 3)
+        XCTAssertEqual(transport.putCalls, 1, "old sweep must not start the second project")
+        transport.resumePut(call: 1, with: .success(PutManifestResponse(revision: "old", project: nil)))
+        await fulfillment(of: [oldFinished], timeout: 3)
+        XCTAssertTrue(syncer.inFlight.isEmpty)
+        XCTAssertEqual(transport.putCalls, 1)
     }
 
     func testMissingEvidenceFailsPDFInsteadOfProducingPartialSuccess() async throws {
@@ -279,5 +472,64 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(second.pageCount, first.pageCount)
         let actual = second.page(at: second.pageCount - 1)?.thumbnail(of: CGSize(width: 500, height: 700), for: .mediaBox).pngData()
         XCTAssertEqual(actual, expected)
+    }
+}
+
+@MainActor
+private final class TestManifestTransport: ManifestSyncTransport {
+    var listResponse = ProjectListResponse(projects: [])
+    var getResponse: GetManifestResponse?
+    var getCalls = 0
+    var getStarted = false
+    var delayGet = false
+    private var getContinuation: CheckedContinuation<GetManifestResponse, Error>?
+    var putCalls = 0
+    var delayPut = false
+    private var putContinuations: [Int: CheckedContinuation<PutManifestResponse, Error>] = [:]
+    var putProjects: [Int: Project] = [:]
+
+    func listProjects() async throws -> ProjectListResponse { listResponse }
+
+    func getProject(id: UUID) async throws -> GetManifestResponse {
+        getCalls += 1
+        getStarted = true
+        if let getResponse, !delayGet { return getResponse }
+        return try await withCheckedThrowingContinuation { continuation in
+            getContinuation = continuation
+        }
+    }
+
+    func resumeGet() {
+        guard let continuation = getContinuation, let getResponse else { return }
+        getContinuation = nil
+        continuation.resume(returning: getResponse)
+    }
+
+    func putProject(id: UUID, project: Project, expectedRevision: String?, baseManifest: Project?) async throws -> PutManifestResponse {
+        putCalls += 1
+        putProjects[putCalls] = project
+        if delayPut {
+            return try await withCheckedThrowingContinuation { continuation in
+                putContinuations[putCalls] = continuation
+            }
+        }
+        return PutManifestResponse(revision: "next", project: nil)
+    }
+
+    func resumePut(call: Int, with result: Result<PutManifestResponse, Error>) {
+        guard let continuation = putContinuations.removeValue(forKey: call) else {
+            XCTFail("No pending PUT for call \(call)")
+            return
+        }
+        continuation.resume(with: result)
+    }
+
+    func cancelPending() {
+        let get = getContinuation
+        getContinuation = nil
+        get?.resume(throwing: CancellationError())
+        let puts = putContinuations
+        putContinuations.removeAll()
+        for continuation in puts.values { continuation.resume(throwing: CancellationError()) }
     }
 }

@@ -16,6 +16,7 @@ struct ProjectHealthView: View {
     @State private var versionPreview: ProjectVersionResponse?
     @State private var previewLocal: Project?
     @State private var previewRevision: String?
+    @State private var previewContext: ManifestSyncer.SyncContext?
     @State private var confirmingRestore = false
     private var project: Project? { store.project(withID: projectID) }
 
@@ -138,51 +139,84 @@ struct ProjectHealthView: View {
     }
     private func refresh(verify: Bool = false) async {
         guard !busy else { return }
+        guard let context = syncer.captureContext() else {
+            errorMessage = "Sign in to check cloud storage."; return
+        }
         busy = true; errorMessage = nil
         defer { busy = false }
         await scanLocal()
+        guard syncer.isCurrent(context) else { return }
         guard let api = store.apiClient else { errorMessage = "Sign in to check cloud storage."; return }
         do {
-            health = try await api.projectHealth(id: projectID, verify: verify)
-            versions = try await api.projectVersions(id: projectID).versions
+            let fetchedHealth = try await api.projectHealth(id: projectID, verify: verify)
+            guard syncer.isCurrent(context) else { return }
+            health = fetchedHealth
+            let fetchedVersions = try await api.projectVersions(id: projectID).versions
+            guard syncer.isCurrent(context) else { return }
+            versions = fetchedVersions
             let response = try await api.getProject(id: projectID)
+            guard syncer.isCurrent(context) else { return }
             store.updateProjectAccess(id: projectID, role: response.role, isOwner: response.isOwner)
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            if syncer.isCurrent(context) { errorMessage = error.localizedDescription }
+        }
     }
     private func recover() async {
         guard !busy else { return }
+        guard let context = syncer.captureContext() else {
+            errorMessage = "Sign in again before retrying recovery."; return
+        }
         busy = true; errorMessage = nil
-        guard store.retryPendingSave(projectID: projectID) else { busy = false; return }
+        defer { busy = false }
+        guard store.retryPendingSave(projectID: projectID) else { return }
         await syncer.syncNow(projectID: projectID)
+        guard syncer.isCurrent(context) else { return }
         if let project {
             await backfill.backfillProject(project)
+            guard syncer.isCurrent(context) else { return }
             if let latest = self.project { await photoSyncer.syncProject(latest) }
+            guard syncer.isCurrent(context) else { return }
         }
         busy = false
         await refresh(verify: true)
     }
     private func preview(_ version: ProjectVersionSummary) async {
-        guard let api = store.apiClient, !busy else { return }
+        guard let api = store.apiClient, !busy,
+              let context = syncer.captureContext() else { return }
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
             previewLocal = project
-            previewRevision = try await api.getProject(id: projectID).revision
-            versionPreview = try await api.projectVersion(id: projectID, versionID: version.id)
-        } catch { errorMessage = error.localizedDescription }
+            previewContext = context
+            let current = try await api.getProject(id: projectID)
+            guard syncer.isCurrent(context) else { return }
+            previewRevision = current.revision
+            let response = try await api.projectVersion(id: projectID, versionID: version.id)
+            guard syncer.isCurrent(context) else { return }
+            versionPreview = response
+        } catch {
+            if syncer.isCurrent(context) { errorMessage = error.localizedDescription }
+        }
     }
     private func restore(_ preview: ProjectVersionResponse) async {
         guard let api = store.apiClient, let revision = previewRevision, !busy else { return }
+        guard let context = previewContext, syncer.isCurrent(context) else {
+            errorMessage = "Sign in again before restoring a project version."; return
+        }
         guard !syncer.hasPendingChanges(projectID: projectID), project == previewLocal else {
             errorMessage = "Save and sync pending edits, then open a fresh restore preview."; return
         }
         busy = true; errorMessage = nil
+        defer { busy = false }
         do {
             let response = try await api.restoreVersion(id: projectID, versionID: preview.id, expectedRevision: revision)
-            try syncer.adoptRestored(response)
+            try syncer.adoptRestored(response, context: context)
             await backfill.backfillProject(response.project)
+            guard syncer.isCurrent(context) else { return }
             versionPreview = nil
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            if syncer.isCurrent(context) { errorMessage = error.localizedDescription }
+        }
         busy = false
         if versionPreview == nil { await refresh(verify: true) }
     }

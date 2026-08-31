@@ -137,17 +137,22 @@ struct SitePhotoApp: App {
                     //    manifest synced).
                     //  * photo upload last, once everything the
                     //    server cares about is in place.
-                    if auth.session != nil {
+                    if let launchUserID = auth.session?.user.id {
                         Task {
+                            guard auth.session?.user.id == launchUserID else { return }
                             // App config first — the manifest pull may
                             // surface projects that reference tag-
                             // library IDs the local seed doesn't carry
                             // yet, and pulling the library first means
                             // those references resolve cleanly.
                             await appConfigSyncer.pullAllFromServer()
+                            guard auth.session?.user.id == launchUserID else { return }
                             await syncer.pullAllFromServer()
+                            guard auth.session?.user.id == launchUserID else { return }
                             await syncer.pushAllToServer()
+                            guard auth.session?.user.id == launchUserID else { return }
                             await photoSyncer.syncAll()
+                            guard auth.session?.user.id == launchUserID else { return }
                             // Backfill any photos / plans whose
                             // manifest is present but whose binary
                             // never landed locally (simulator,
@@ -178,13 +183,24 @@ struct SitePhotoApp: App {
                 // user hadn't authenticated yet). Both passes are
                 // idempotent so a double-fire on the persisted-
                 // session case is harmless.
-                .onChange(of: auth.session?.user.id) { _, newUserId in
-                    guard newUserId != nil else { return }
+                .onChange(of: auth.session?.user.id) { oldUserId, newUserId in
+                    // Access grants are account-scoped, while project files
+                    // and manifests intentionally remain available offline.
+                    store.resetProjectAccess()
+                    if oldUserId != nil, oldUserId != newUserId {
+                        syncer.resetRevisions()
+                    }
+                    guard let newUserId else { return }
                     Task {
+                        guard auth.session?.user.id == newUserId else { return }
                         await appConfigSyncer.pullAllFromServer()
+                        guard auth.session?.user.id == newUserId else { return }
                         await syncer.pullAllFromServer()
+                        guard auth.session?.user.id == newUserId else { return }
                         await syncer.pushAllToServer()
+                        guard auth.session?.user.id == newUserId else { return }
                         await photoSyncer.syncAll()
+                        guard auth.session?.user.id == newUserId else { return }
                         await backfillService.backfillAll()
                     }
                 }
@@ -274,4 +290,3 @@ private struct SplashScreen: View {
         }
     }
 }
-
