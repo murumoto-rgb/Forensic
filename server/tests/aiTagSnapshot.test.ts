@@ -36,7 +36,7 @@ vi.mock("../src/supabase.js", () => ({
 import { aiTagRoute } from "../src/routes/aiTag.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
-const photoId = "22222222-2222-4222-8222-222222222222";
+const photoId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const legacyKey = `${projectId}/${photoId}/photo`;
 let app: FastifyInstance;
 beforeEach(async () => {
@@ -51,10 +51,27 @@ beforeEach(async () => {
   app = Fastify(); await app.register(aiTagRoute); await app.ready();
 });
 afterEach(async () => { await app.close(); });
-const request = () => app.inject({ method: "POST", url: "/v1/ai/tag-photo", headers: { authorization: "Bearer synthetic" },
-  payload: { projectId, photoId, model: "claude-sonnet-4-6", systemPrompt: "Describe evidence", userText: "photo_id: snapshot.jpg" } });
+const request = (requestedPhotoId = photoId) => app.inject({ method: "POST", url: "/v1/ai/tag-photo", headers: { authorization: "Bearer synthetic" },
+  payload: { projectId, photoId: requestedPhotoId, model: "claude-sonnet-4-6", systemPrompt: "Describe evidence", userText: "photo_id: snapshot.jpg" } });
 
 describe("AI evidence snapshot binding", () => {
+  it.each([
+    [photoId.toUpperCase(), photoId], // Swift manifest and iOS request.
+    [photoId, photoId.toUpperCase()],
+  ])("resolves manifest UUID %s from equivalent request UUID %s", async (manifestPhotoId, requestedPhotoId) => {
+    const project = ProjectSchema.parse(state.project);
+    project.photos[0]!.id = manifestPhotoId;
+    state.project = project;
+    state.file.object_key = legacyKey;
+    const response = await request(requestedPhotoId);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().rawText).toBe("synthetic-analysis");
+    expect(state.read).toHaveBeenCalledExactlyOnceWith(legacyKey);
+    expect(state.reserve).toHaveBeenCalledTimes(1);
+    expect(state.provider).toHaveBeenCalledTimes(1);
+    expect(state.release).toHaveBeenCalledTimes(1);
+    expect(state.provider.mock.calls[0]![0].messages[0].content[1].text).toBe("photo_id: snapshot.jpg");
+  });
   it.each(["replacement.png", null])("refuses current filename %s after reading a different manifest, without paid admission", async filename => {
     // The file view is read after the manifest; simulate a rename/restore in
     // between. Null is not a supported legacy fallback: 0017 backfills it.

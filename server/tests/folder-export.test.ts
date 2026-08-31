@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const ids = { project: "11111111-1111-4111-8111-111111111111", photo: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", plan: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", bucket: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" };
 const photo = (overrides: Record<string, unknown> = {}) => ({ id: ids.photo, sequenceNumber: 1, timestamp: "2026-08-30T00:00:00Z", imageFilename: "photo.jpg", thumbnailFilename: null, positionSource: "none", isPrimary: false, cameraZoom: 1, flashMode: "auto", tags: [], pendingSuggestions: [], isFavorite: false, previewRotation: 0, userCaption: null, userObservation: null, aiAnalysis: null, bucketID: "deleted-bucket", markupOverlayFilename: null, markupDrawingFilename: null, ...overrides });
 const baseProject = (p = photo()) => ({ id: ids.project, name: "Case", photos: [p], floorPlans: [], buckets: [], manifestSchemaVersion: 4 });
-const state = vi.hoisted(() => ({ manifest: null as any, files: [] as any[], revision: "revision-snapshot", projectSelects: [] as string[], replaceSnapshotOnRegistryRead: false, presigns: [] as string[] }));
+const state = vi.hoisted(() => ({ manifest: null as any, files: [] as any[], revision: "revision-snapshot", projectSelects: [] as string[], replaceSnapshotOnRegistryRead: false, presigns: [] as string[], lookupSizes: [] as number[], failLookup: 0 }));
 
 vi.mock("../src/middleware/auth.js", () => ({ authPlugin: async (app: any) => { app.decorateRequest("user", null); app.addHook("preHandler", async (req: any) => { req.user = { id: "33333333-3333-4333-8333-333333333333" }; }); } }));
 vi.mock("../src/access.js", () => ({ assertProjectAccess: vi.fn(async () => undefined), sendAccessError: vi.fn(() => false) }));
@@ -16,6 +16,9 @@ vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) =>
   const run = async (single = false) => {
     if (table === "projects") return { data: single ? { manifest: state.manifest, revision: state.revision } : [{ manifest: state.manifest, revision: state.revision }], error: null };
     if (table !== "current_project_files") throw new Error(`Unexpected table ${table}`);
+    const requestedIds = filters.find(([key]) => key === "photo_id")?.[1] as string[];
+    state.lookupSizes.push(requestedIds.length);
+    if (requestedIds.length > 100 || state.lookupSizes.length === state.failLookup) return { data: null, error: { message: "Registry query failed" } };
     if (state.replaceSnapshotOnRegistryRead) { state.manifest = { ...state.manifest, name: "Later project name" }; state.revision = "revision-later"; }
     const data = state.files.filter(row => filters.every(([key, value]) => Array.isArray(value) ? value.some(item => equal(item, row[key])) : equal(row[key], value)));
     return { data: single ? data[0] ?? null : data, error: null };
@@ -36,9 +39,24 @@ function completeFixture() {
     { project_id: ids.project, photo_id: ids.photo, object_key: "drawing-key", kind: "markup_drawing", size_bytes: 30, source_filename: "strokes.json" },
   ];
 }
+function largeFixture() {
+  completeFixture();
+  const firstPhoto = state.manifest.photos[0]; const firstPlan = state.manifest.floorPlans[0];
+  state.manifest.photos = []; state.manifest.floorPlans = []; state.files = [];
+  for (let i = 0; i < 205; i++) {
+    const photoId = `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`;
+    const planId = `bbbbbbbb-bbbb-4bbb-8bbb-${String(i).padStart(12, "0")}`;
+    state.manifest.photos.push({ ...firstPhoto, id: photoId.toUpperCase(), sequenceNumber: i + 1, imageFilename: `photo-${i}.jpg`, markupOverlayFilename: `overlay-${i}.png`, markupDrawingFilename: `drawing-${i}.data` });
+    state.manifest.floorPlans.push({ ...firstPlan, id: planId.toUpperCase(), imageFilename: `plan-${i}.png`, label: `Floor ${i}` });
+    for (const [kind, entityId, filename] of [["photo", photoId, `photo-${i}.jpg`], ["plan", planId, `plan-${i}.png`], ["markup_png", photoId, `overlay-${i}.png`], ["markup_drawing", photoId, `drawing-${i}.data`]]) {
+      state.files.push({ project_id: ids.project, photo_id: entityId, object_key: `${kind}-${i}`, kind, size_bytes: 3, source_filename: filename });
+    }
+  }
+}
 let app: FastifyInstance;
 beforeEach(async () => {
   state.files = []; state.manifest = baseProject(); state.revision = "revision-snapshot"; state.projectSelects = []; state.presigns = []; state.replaceSnapshotOnRegistryRead = false;
+  state.lookupSizes = []; state.failLookup = 0;
   app = Fastify(); app.addHook("onRequest", async (req: any) => { req.user = { id: "33333333-3333-4333-8333-333333333333" }; });
   await app.register(projectExportsRoute); await app.ready();
 });
@@ -46,6 +64,23 @@ afterEach(async () => { await app.close(); });
 const request = () => app.inject({ method: "GET", url: `/v1/projects/${ids.project}/folder-export-manifest` });
 
 describe("folder export manifest completeness and snapshot binding", () => {
+  it("chunks all four asset kinds and retains final-chunk IDs in manifest order", async () => {
+    largeFixture();
+    const response = await request(); expect(response.statusCode, response.body).toBe(200);
+    const manifest = response.json().manifest;
+    expect(state.lookupSizes).toEqual([100, 100, 5, 100, 100, 5, 100, 100, 5]);
+    expect(manifest.photos.map((p: any) => p.id)).toEqual(state.manifest.photos.map((p: any) => p.id));
+    expect(manifest.plans.map((p: any) => p.id)).toEqual(state.manifest.floorPlans.map((p: any) => p.id));
+    expect(manifest.attachments).toHaveLength(410); expect(state.presigns).toHaveLength(820);
+    expect(state.presigns).toEqual(expect.arrayContaining(["photo-204", "plan-204", "markup_png-204", "markup_drawing-204"]));
+    expect(manifest.totalSizeBytes).toBe(2460);
+  });
+  it.each([2, 5, 8])("fails before any presign if registry chunk %s fails", async chunk => {
+    largeFixture(); state.failLookup = chunk;
+    const response = await request(); expect(response.statusCode, response.body).toBe(500);
+    expect(state.lookupSizes).toHaveLength(chunk); expect(state.lookupSizes.every(size => size <= 100)).toBe(true);
+    expect(state.presigns).toEqual([]);
+  });
   it("returns 409 instead of silently dropping a missing registry row", async () => {
     const response = await request();
     expect(response.statusCode, response.body).toBe(409); expect(response.json().details.missing).toContain(`photo ${ids.photo}`); expect(state.presigns).toEqual([]);

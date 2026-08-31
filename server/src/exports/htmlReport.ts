@@ -40,7 +40,7 @@ import type {
   Project,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
-import { getObjectStream } from "../r2.js";
+import { getObjectBytes } from "../r2.js";
 import { probeImageDimensions } from "./imageProbe.js";
 import type { ReportBrandingForExport } from "../reportBranding.js";
 
@@ -163,22 +163,12 @@ interface ImageBlob {
   height: number;
 }
 
-/** Stream with an enforced byte limit; never buffer an arbitrary R2 object. */
+/** Bound both bytes and elapsed time, including retries and response headers. */
 async function fetchImage(asset: AssetReference, log: FastifyBaseLogger): Promise<ImageBlob> {
   if (asset.sizeBytes > MAX_IMAGE_BYTES) throw new Error("PDF image exceeds 12 MiB. Use a smaller original image before exporting.");
-  const stream = await getObjectStream(asset.key);
-  const timeout = setTimeout(() => stream.destroy(new Error("PDF image download timed out")), 30_000);
   try {
-    const parts: Buffer[] = [];
-    let size = 0;
-    for await (const part of stream) {
-      const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
-      size += bytes.length;
-      if (size > MAX_IMAGE_BYTES || size > asset.sizeBytes) throw new Error("PDF image byte length exceeds its verified registration");
-      parts.push(bytes);
-    }
-    if (size !== asset.sizeBytes) throw new Error("PDF image byte length does not match its registration");
-    const bytes = Buffer.concat(parts, size);
+    const bytes = await getObjectBytes(asset.key, { timeoutMs: 30_000, maxBytes: asset.sizeBytes });
+    if (bytes.length !== asset.sizeBytes) throw new Error("PDF image byte length does not match its registration");
     const dims = probeImageDimensions(bytes);
     if (asset.requirePng && dims.type !== "png") throw new Error("Required PDF markup must be a PNG image. Export aborted.");
     if (dims.width * dims.height > MAX_CHUNK_PIXELS) throw new Error("PDF image dimensions exceed the safe rendering limit");
@@ -186,9 +176,6 @@ async function fetchImage(asset: AssetReference, log: FastifyBaseLogger): Promis
   } catch (error) {
     log.warn({ err: error, objectKey: asset.key }, "Required PDF image unavailable; export aborted");
     throw error;
-  } finally {
-    clearTimeout(timeout);
-    stream.destroy();
   }
 }
 

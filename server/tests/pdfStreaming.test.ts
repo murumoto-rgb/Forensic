@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
 import { PDFDocument } from "pdf-lib";
 import type { FastifyBaseLogger } from "fastify";
@@ -7,7 +7,7 @@ import { PhotoSchema, ProjectSchema, type Project } from "@forensic/shared";
 const state = vi.hoisted(() => ({
   files: [] as Array<{ photo_id: string; kind: string; object_key: string; size_bytes: number; source_filename: string }>,
   reads: [] as string[], events: [] as string[], active: 0, maxActive: 0,
-  badKey: "", malformedKey: "", registryError: false, imagesReady: true,
+  badKey: "", malformedKey: "", stalledHeaderKey: "", stalledBodyKey: "", registryError: false, imagesReady: true,
   updates: [] as Array<Record<string, unknown>>, uploads: 0, pdfCalls: 0, brandingCalls: 0, brandingError: false,
   customBytes: new Map<string, Buffer>(), html: [] as string[], printOptions: [] as Array<Record<string, unknown>>,
   project: null as unknown as Project, image: null as unknown as Buffer, pdf: null as unknown as Uint8Array,
@@ -24,17 +24,9 @@ vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) =>
   const query = { select() { return query; }, eq(key: string, value: unknown) { filters.push([key, [value]]); return query; }, in(key: string, values: unknown[]) { filters.push([key, values]); return query; }, update(value: Record<string, unknown>) { payload = value; return query; }, maybeSingle() { return Promise.resolve(execute()); }, then(resolve: never, reject: never) { return Promise.resolve(execute()).then(resolve, reject); } };
   return query;
 } } }));
-vi.mock("../src/r2.js", () => ({
-  getObjectStream: async (key: string) => {
-    state.reads.push(key); state.events.push(`read:${key}`);
-    if (key === state.badKey) throw new Error("Required object missing");
-    const bytes = state.customBytes.get(key) ?? (key === state.malformedKey ? Buffer.alloc(state.image.length) : state.image);
-    return Readable.from((async function* () {
-      state.active++; state.maxActive = Math.max(state.active, state.maxActive);
-      try { await new Promise(resolve => setTimeout(resolve, 1)); yield bytes; }
-      finally { state.active--; }
-    })());
-  },
+vi.mock("../src/env.js", () => ({ env: { R2_ACCOUNT_ID: "synthetic", R2_ACCESS_KEY_ID: "synthetic", R2_SECRET_ACCESS_KEY: "synthetic", R2_BUCKET: "synthetic" } }));
+vi.mock("../src/r2.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/r2.js")>(),
   putObjectBytes: async () => { state.uploads++; },
 }));
 vi.mock("../src/reportBranding.js", () => ({ loadReportBrandingForExport: async () => { state.brandingCalls++; if (state.brandingError) throw new Error("Configured report logo missing"); return { titleOverride: "Firm report", subtitleOverride: "Verified review", footerOverride: "Private", logoDataUrl: null }; } }));
@@ -46,6 +38,7 @@ vi.mock("puppeteer", () => ({ default: { launch: async () => ({ connected: true,
 import { renderReportChunks, PAGES_PER_CHUNK } from "../src/exports/htmlReport.js";
 import { applyOptionDefaults } from "../src/exports/options.js";
 import { processPdfExportJob } from "../src/exports/pdfWorker.js";
+import { r2 } from "../src/r2.js";
 const log = { info() {}, warn() {}, error() {} } as unknown as FastifyBaseLogger;
 const pid = "33333333-3333-4333-8333-333333333333";
 const id = (i: number) => `44444444-4444-4444-8444-${String(i).padStart(12, "0")}`;
@@ -64,9 +57,29 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   state.files = []; state.reads = []; state.events = []; state.active = 0; state.maxActive = 0;
-  state.badKey = ""; state.malformedKey = ""; state.registryError = false; state.imagesReady = true;
+  state.badKey = ""; state.malformedKey = ""; state.stalledHeaderKey = ""; state.stalledBodyKey = ""; state.registryError = false; state.imagesReady = true;
   state.updates = []; state.uploads = 0; state.pdfCalls = 0; state.brandingCalls = 0; state.brandingError = false; state.customBytes.clear(); state.html = []; state.printOptions = [];
+  vi.spyOn(r2, "send").mockImplementation((async (command: { input: { Key: string } }) => {
+    const key = command.input.Key;
+    state.reads.push(key); state.events.push(`read:${key}`);
+    if (key === state.badKey) throw new Error("Required object missing");
+    if (key === state.stalledHeaderKey) return new Promise(() => {});
+    const bytes = state.customBytes.get(key) ?? (key === state.malformedKey ? Buffer.alloc(state.image.length) : state.image);
+    if (key === state.stalledBodyKey) {
+      // Header latency consumes part of the same deadline as body transfer.
+      await new Promise(resolve => setTimeout(resolve, 10_000));
+      const body = new Readable({ read() {} });
+      body.push(bytes.subarray(0, 1));
+      return { Body: body, ContentLength: bytes.length };
+    }
+    return { ContentLength: bytes.length, Body: Readable.from((async function* () {
+      state.active++; state.maxActive = Math.max(state.active, state.maxActive);
+      try { await new Promise(resolve => setTimeout(resolve, 1)); yield bytes; }
+      finally { state.active--; }
+    })()) };
+  }) as never);
 });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("bounded report production with consumer backpressure", () => {
   it("fetches only one bounded batch before the consumer requests another", async () => {
@@ -230,6 +243,21 @@ describe("bounded report production with consumer backpressure", () => {
 });
 
 describe("actual PDF worker consumes stream and fails closed", () => {
+  it.each(["headers", "body"])("fails a stalled R2 %s read within the complete 30-second deadline without publishing", async stage => {
+    fixture(1); vi.useFakeTimers();
+    if (stage === "headers") state.stalledHeaderKey = "0.png";
+    else state.stalledBodyKey = "0.png";
+    let completed = false;
+    const job = processPdfExportJob({ id: `job-timeout-${stage}`, project_id: pid, status: "running", options: options() }, log).then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.reads).toEqual(["0.png"]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(completed).toBe(true);
+    await job;
+    expect(state.uploads).toBe(0); expect(state.pdfCalls).toBe(0);
+    expect(state.updates.at(-1)).toMatchObject({ status: "failed", error_message: expect.stringMatching(/timed out/) });
+    expect(state.updates.some(update => update.status === "done")).toBe(false);
+  });
   it("renders the first batch before fetching the second, then marks complete", async () => {
     fixture(12);
     await processPdfExportJob({ id: "job-1", project_id: pid, status: "running", options: options() }, log);

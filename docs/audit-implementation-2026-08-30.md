@@ -1,6 +1,6 @@
 # Forensic / SitePhoto audit implementation
 
-**Candidate build:** 6.38.2, branch codex/audit-reliability-improvements
+**Candidate build:** 6.38.3, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
 **Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
@@ -51,15 +51,15 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Check | Result |
 |---|---|
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
-| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **135 passed / 11 files** |
+| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **146 passed / 11 files** |
 | Web DOM behavior tests | **36 passed / 4 files** |
-| iOS simulator tests | **15 passed**, including save/plan failure injection, object-store verification and complete/incomplete folder export |
-| Total regression tests | **267 passed** |
+| iOS simulator tests | **16 passed**, including save/plan failure injection, object-store verification, lock access and complete/incomplete folder export |
+| Total regression tests | **279 passed** |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
 | iOS Debug simulator build/test | Passed with Xcode 26.6 and iOS 26.5; unsigned |
 | Narrow permission hotfix rehearsal | Passed against 15 historical migrations in local PGlite; repeated application and subsequent migration 0016 both passed |
-| Final independent review | Logo-preview races, exact AI snapshot binding, checkpoint errors, archive filename collisions and registry-only iOS upload acknowledgments corrected and regression-tested |
+| Final independent review | Logo-preview races, exact AI snapshot binding, checkpoint errors, archive filename collisions, registry-only upload acknowledgments, UUID casing, native lock permissions, large folder queries and PDF read deadlines corrected and regression-tested |
 | Working-copy preservation | Canonical checkout and its pre-existing edited verification document preserved |
 
 JavaScript validation used Node 22.23.2 and pnpm 9.12.0. Database tests execute the actual migration SQL in PGlite with fake external identity/storage boundaries. They do not prove simultaneous multi-connection PostgreSQL behavior. The real headless-Chrome PDF test verified decoded/aligned markup and exactly two pages; hosts without Chrome explicitly skip that optional integration test.
@@ -84,6 +84,8 @@ The geometry benchmark used macOS native Swift with optimization, 21 runs per me
 
 PDF generation now consumes bounded HTML/image chunks instead of retaining all photo data URLs. Limits include ten logical pages and 32 MiB of registered image data per fetch batch, 12 MiB per streamed image, 48 MiB HTML and 80 megapixels per chunk, and 64 MiB / 1,000 pages for the PDF. One PDF renders per server process. The merged PDF still grows with output; no production peak-RSS result is claimed. See server/RECOVERY.md for exact behavior and clear over-limit failures.
 
+Each PDF image's 30-second deadline includes SDK retries, response headers and the complete body. Folder exports query registrations in groups of at most 100 IDs. A synthetic 205-photo/205-plan case verified 820 required assets and 822 actual ZIP entries, including final-chunk assets; a failed later query aborts instead of publishing a partial archive. This is a correctness check, not production throughput measurement.
+
 ## Dependency and operational limits
 
 The production scan fell from **20 advisories (11 high, 6 moderate, 3 low)** to **one moderate advisory**, with no high or critical findings. The remaining advisory concerns OpenTelemetry 1.30.1 through Sentry 8. Its patched major is not a supported drop-in override for this Sentry version. The server now sets an explicit 16 KiB HTTP header limit; this mitigation does not mark the package advisory fixed. A tested supported Sentry upgrade remains follow-up work. [Maintainer advisory](https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-8988-4f7v-96qf).
@@ -99,5 +101,7 @@ Other unverified release checks: physical iPhone offline/camera/PencilKit behavi
 The narrowly scoped profile-column permission hotfix was applied and read back before PR publication on 2026-08-30. Authenticated users can update their display name but cannot update `is_admin`; service-role administration remains available. Registration settings were not changed. The private deployment receipt records the environment-specific evidence.
 
 The full update requires migrations **0016 → 0017 → 0018 → 0019**, the R2 conditional PUT CORS header and matching server/web/iOS versions. Pause writes and drain legacy upload URLs before cutover. Do not blindly replay old migrations against a manually initialized database. Preserve local originals and a recoverable database/object baseline. Follow server/RECOVERY.md for the ordered release and smoke checks.
+
+At this candidate checkpoint the existing Render Free service is quota-suspended. Its old binary can resume when the monthly quota resets, so suspension is not a durable mutation gate. Main merge, automatic web/TestFlight release and migrations 0016–0019 remain held until any required compute-cost approval and the controlled API cutover. No paid hosting upgrade has been made.
 
 After v4 and immutable evidence are written, a simple old-binary rollback is unsafe. Prefer a forward fix or a deliberately compatible build with writes paused. Retain all protected versions and object bytes. The local validation reported here did not deploy migrations, send user emails or call a paid model. Release operations and their exact Git/provider receipts are recorded separately; do not infer production or TestFlight delivery from these local checks.

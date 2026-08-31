@@ -58,14 +58,27 @@ final class ProjectStore {
     private var unsavedProjects: [UUID: Project] = [:]
     private(set) var projectRoles: [UUID: String] = [:]
     private(set) var projectOwnership: [UUID: Bool] = [:]
+    /// Existing projects fail closed until a server response supplies
+    /// access metadata. A project created locally may use lock controls
+    /// before its first server response, so it remains explicitly tracked.
+    private var knownProjectAccess: Set<UUID> = []
+    private var locallyCreatedProjects: Set<UUID> = []
 
     func updateProjectAccess(id: UUID, role: String?, isOwner: Bool?) {
-        if let role { projectRoles[id] = role }
-        if let isOwner { projectOwnership[id] = isOwner }
+        knownProjectAccess.insert(id)
+        // The response is authoritative. An omitted optional field is the
+        // legacy/unknown shape and must clear any previously trusted grant;
+        // retaining an old owner/admin value would keep exposing the lock
+        // control after access was revoked or could no longer be verified.
+        if let role { projectRoles[id] = role } else { projectRoles.removeValue(forKey: id) }
+        if let isOwner { projectOwnership[id] = isOwner } else { projectOwnership.removeValue(forKey: id) }
     }
     func isReadOnly(_ project: Project) -> Bool { project.isFrozen || projectRoles[project.id] == "viewer" }
     func canManageLock(_ project: Project) -> Bool {
-        projectOwnership[project.id] == true || projectRoles[project.id] == "admin" || projectRoles[project.id] == nil
+        projectOwnership[project.id] == true
+            || projectRoles[project.id] == "admin"
+            || (!knownProjectAccess.contains(project.id)
+                && locallyCreatedProjects.contains(project.id))
     }
     /// Loose-coupled hook for surfacing toasts from the store layer
     /// (iCloud conflicts, sync failures). The hosting app wires the
@@ -1375,6 +1388,9 @@ final class ProjectStore {
     @discardableResult
     func save(_ project: Project) -> Project {
         if projectRoles[project.id] == "viewer" { return self.project(withID: project.id) ?? project }
+        if self.project(withID: project.id) == nil {
+            locallyCreatedProjects.insert(project.id)
+        }
         // Freeze guard (Build #6.1.1). A locked/finalized project rejects
         // every local edit in one chokepoint — photo mutations, plan
         // edits, distress strokes, batch tagging checkpoints — except
@@ -1448,6 +1464,7 @@ final class ProjectStore {
     /// push surfaces through the normal sync error toast.
     @discardableResult
     func setFrozen(_ project: Project, frozen: Bool) -> Project {
+        guard canManageLock(project) else { return self.project(withID: project.id) ?? project }
         var updated = project
         updated.isFrozen = frozen
         return save(updated)
@@ -1533,6 +1550,8 @@ final class ProjectStore {
     @discardableResult
     func applyServerProject(_ project: Project) -> Bool {
         guard !hasUnsavedChanges(projectID: project.id) else { return false }
+        locallyCreatedProjects.remove(project.id)
+        knownProjectAccess.insert(project.id)
         // Build #6.19.1: a server-side freeze flip (admin locked or
         // unlocked the project from web) used to land silently — the
         // device's banner just appeared/disappeared with no

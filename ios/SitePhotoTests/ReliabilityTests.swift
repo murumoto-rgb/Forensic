@@ -105,6 +105,47 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(store.save(incoming).isFrozen)
     }
 
+    func testLockCapabilityFailsClosedAfterAccessIsKnownButAllowsLocalCreation() async throws {
+        let store = ProjectStore(storageRoot: try temporaryRoot())
+        let project = store.save(Project(name: "Access gated"))
+
+        // A brand-new local project can be finalized before its first server
+        // response; the creator is the only actor who can reach this state.
+        XCTAssertTrue(store.canManageLock(project))
+
+        // A response with omitted legacy access fields still establishes that
+        // this is an existing server project. Unknown access must not expose
+        // a local freeze mutation while the caller's role is unresolved.
+        store.updateProjectAccess(id: project.id, role: nil, isOwner: nil)
+        XCTAssertFalse(store.canManageLock(project))
+        XCTAssertEqual(store.setFrozen(project, frozen: true), project)
+        XCTAssertFalse(store.project(withID: project.id)!.isFrozen)
+
+        store.updateProjectAccess(id: project.id, role: "editor", isOwner: false)
+        XCTAssertFalse(store.canManageLock(project))
+        store.updateProjectAccess(id: project.id, role: "admin", isOwner: false)
+        XCTAssertTrue(store.canManageLock(project))
+        store.updateProjectAccess(id: project.id, role: nil, isOwner: nil)
+        XCTAssertFalse(store.canManageLock(project))
+        store.updateProjectAccess(id: project.id, role: "editor", isOwner: true)
+        XCTAssertTrue(store.canManageLock(project))
+
+        // A later authoritative response must revoke stale owner/admin
+        // capability when both optional fields are absent.
+        store.updateProjectAccess(id: project.id, role: nil, isOwner: nil)
+        XCTAssertFalse(store.canManageLock(project))
+        store.updateProjectAccess(id: project.id, role: "viewer", isOwner: false)
+        XCTAssertFalse(store.canManageLock(project))
+
+        // A project loaded from disk is an existing project, even before its
+        // first access response on this device; it must not inherit the
+        // locally-created exception.
+        let reloadedStore = ProjectStore(storageRoot: store.rootURL)
+        await reloadedStore.loadInitial()
+        let reloaded = try XCTUnwrap(reloadedStore.project(withID: project.id))
+        XCTAssertFalse(reloadedStore.canManageLock(reloaded))
+    }
+
     func testMissingEvidenceFailsPDFInsteadOfProducingPartialSuccess() async throws {
         let store = ProjectStore(storageRoot: try temporaryRoot())
         var project = Project(name: "Missing evidence")

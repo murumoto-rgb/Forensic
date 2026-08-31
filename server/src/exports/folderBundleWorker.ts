@@ -43,6 +43,28 @@ const FOLDER_PREFIX = "exports/folder";
 
 let workerStarted = false;
 
+interface RegistryFile {
+  photo_id: string;
+  object_key: string;
+  kind: string;
+  size_bytes: unknown;
+  source_filename: string | null;
+}
+
+async function loadFolderFiles(projectId: string, ids: string[], kinds: string[]): Promise<RegistryFile[]> {
+  const rows: RegistryFile[] = [];
+  // Bound PostgREST URL length and result count, retaining all registrations
+  // before this group opens any source stream. Failed chunks abort the job.
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabaseAdmin.from("current_project_files")
+      .select("photo_id, object_key, kind, size_bytes, source_filename")
+      .eq("project_id", projectId).in("photo_id", ids.slice(i, i + 100)).in("kind", kinds);
+    if (error) throw new Error(`Required files lookup failed: ${error.message}`);
+    rows.push(...((data ?? []) as RegistryFile[]));
+  }
+  return rows;
+}
+
 interface ExportRow {
   id: string;
   project_id: string;
@@ -460,15 +482,7 @@ async function addFloorPlansToArchive(
   const folder = "00 Floor Plans";
   // Look up plan binaries (case-safe; mirrors photo lookup).
   const planIds = project.floorPlans.map((p) => p.id);
-  const { data: fileRows, error: filesErr } = await supabaseAdmin
-    .from("current_project_files")
-    .select("photo_id, object_key, kind, size_bytes, source_filename")
-    .eq("project_id", project.id)
-    .in("photo_id", planIds)
-    .eq("kind", "plan");
-  if (filesErr) {
-    throw new Error(`Floor-plan files lookup failed: ${filesErr.message}`);
-  }
+  const fileRows = await loadFolderFiles(project.id, planIds, ["plan"]);
   const filenames = new Map(project.floorPlans.map(plan => [plan.id.toLowerCase(), plan.imageFilename]));
   const fileByPlanIdLower = new Map<string, { objectKey: string; sizeBytes: number }>();
   for (const row of fileRows ?? []) {
@@ -528,15 +542,7 @@ async function addBucketToArchive(
   // Look up the actual R2 object_key for each photo (case-safe;
   // see comment in addFloorPlansToArchive).
   const photoIds = photos.map((p) => p.id);
-  const { data: fileRows, error: filesErr } = await supabaseAdmin
-    .from("current_project_files")
-    .select("photo_id, object_key, kind, size_bytes, source_filename")
-    .eq("project_id", project.id)
-    .in("photo_id", photoIds)
-    .in("kind", ["photo", "markup_png", "markup_drawing"]);
-  if (filesErr) {
-    throw new Error(`Photo files lookup failed: ${filesErr.message}`);
-  }
+  const fileRows = await loadFolderFiles(project.id, photoIds, ["photo", "markup_png", "markup_drawing"]);
   const filenames = new Map<string, string>();
   for (const photo of photos) {
     filenames.set(`${photo.id.toLowerCase()}:photo`, photo.imageFilename);

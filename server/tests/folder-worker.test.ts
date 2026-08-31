@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   updates: [] as Array<Record<string, unknown>>, aborts: 0, dones: 0, active: 0, maxActive: 0,
   zipSize: 123 as number | null, uploaded: [] as Buffer[],
   bodyOverrides: new Map<string, Buffer>(),
+  lookupSizes: [] as number[], failLookup: 0,
 }));
 vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) => {
   const filters: Array<[string, unknown]> = [];
@@ -18,6 +19,9 @@ vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from: (table: string) =>
     if (table === "projects") return { data: single ? { manifest: state.project } : [{ manifest: state.project }], error: null };
     if (table === "project_exports") return { data: single ? null : [], error: null };
     if (table !== "current_project_files") throw new Error(`Unexpected table ${table}`);
+    const requestedIds = filters.find(([key]) => key === "photo_id")?.[1] as string[];
+    state.lookupSizes.push(requestedIds.length);
+    if (requestedIds.length > 100 || state.lookupSizes.length === state.failLookup) return { data: null, error: { message: "Registry query failed" } };
     // PostgreSQL UUID comparisons are case-insensitive, unlike JS map keys.
     const rows = state.files.filter(row => filters.every(([key, value]) => Array.isArray(value)
       ? value.some(item => equal(item, row[key as keyof FileRow])) : equal(row[key as keyof FileRow], value)));
@@ -71,6 +75,20 @@ function allAssets() {
     { ...original, photo_id: planId, kind: "plan", object_key: "plan-key", source_filename: "plan.png" },
   ];
 }
+function largeFixture() {
+  allAssets();
+  const firstPhoto = state.project.photos[0]!; const firstPlan = state.project.floorPlans[0]!;
+  state.project.photos = []; state.project.floorPlans = []; state.files = [];
+  for (let i = 0; i < 205; i++) {
+    const photoId = `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`;
+    const planId = `bbbbbbbb-bbbb-4bbb-8bbb-${String(i).padStart(12, "0")}`;
+    state.project.photos.push({ ...firstPhoto, id: photoId.toUpperCase(), sequenceNumber: i + 1, imageFilename: `photo-${i}.jpg`, markupOverlayFilename: `overlay-${i}.png`, markupDrawingFilename: `drawing-${i}.data` });
+    state.project.floorPlans.push({ ...firstPlan, id: planId.toUpperCase(), imageFilename: `plan-${i}.png`, label: `Plan ${i}` });
+    for (const [kind, entityId, filename] of [["photo", photoId, `photo-${i}.jpg`], ["plan", planId, `plan-${i}.png`], ["markup_png", photoId, `overlay-${i}.png`], ["markup_drawing", photoId, `drawing-${i}.data`]] as const) {
+      state.files.push({ project_id: pid, photo_id: entityId, object_key: `${kind}-${i}`, kind, size_bytes: 3, source_filename: filename });
+    }
+  }
+}
 function zipEntries(): Array<{ name: string; bytes: number }> {
   const zip = Buffer.concat(state.uploaded); const entries: Array<{ name: string; bytes: number }> = [];
   // Read actual central-directory records, not the worker's append arguments.
@@ -88,9 +106,34 @@ beforeEach(() => {
   state.files = [{ ...original }]; state.failures.clear(); state.reads = []; state.completed = []; state.consumed.clear();
   state.updates = []; state.aborts = 0; state.dones = 0; state.active = 0; state.maxActive = 0; state.zipSize = 123; state.uploaded = [];
   state.bodyOverrides.clear();
+  state.lookupSizes = []; state.failLookup = 0;
 });
 
 describe("folder export worker snapshot and streaming boundaries", () => {
+  it("chunks large photo/markup and plan lookups while retaining every actual ZIP entry", async () => {
+    largeFixture();
+    await runFolderExportJob(job, log);
+    expect(state.lookupSizes).toEqual([100, 100, 5, 100, 100, 5]);
+    expect(state.reads).toHaveLength(820); expect(state.completed).toEqual(state.reads); expect(state.maxActive).toBe(1);
+    expect(state.reads.slice(612, 615)).toEqual(["photo-204", "markup_png-204", "markup_drawing-204"]);
+    expect(state.reads.at(-1)).toBe("plan-204");
+    const entries = zipEntries(); expect(entries).toHaveLength(822);
+    expect(entries).toEqual(expect.arrayContaining([
+      { name: "99 Unbucketed/Case - 205 - 260830.jpg", bytes: 3 },
+      { name: "01 Markups/overlay-204.png", bytes: 3 }, { name: "01 Markups/drawing-204.data", bytes: 3 },
+      { name: "00 Floor Plans/205 Plan 204.png", bytes: 3 },
+    ]));
+    expect(state.updates).toContainEqual({ progress_done: 820 });
+    expect(state.updates.at(-1)).toMatchObject({ status: "done" });
+  });
+  it.each([2, 5])("aborts without Done if registry chunk %s fails", async chunk => {
+    largeFixture(); state.failLookup = chunk;
+    await expect(runFolderExportJob(job, log)).rejects.toThrow(/Registry query failed/);
+    expect(state.lookupSizes).toHaveLength(chunk); expect(state.lookupSizes.every(size => size <= 100)).toBe(true);
+    expectAborted();
+    if (chunk === 2) expect(state.reads).toEqual([]);
+    else { expect(state.completed).toHaveLength(615); expect(state.reads.some(key => key.startsWith("plan-"))).toBe(false); }
+  });
   it("aborts multipart when the original registration is missing", async () => {
     state.files = [];
     await expect(runFolderExportJob(job, log)).rejects.toThrow(/Missing required photo/);

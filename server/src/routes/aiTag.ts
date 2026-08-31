@@ -201,7 +201,10 @@ export const aiTagRoute: FastifyPluginAsync = async (app) => {
       return;
     }
     const projectManifest = projectRow.manifest as Project;
-    const photo = projectManifest.photos.find((p) => p.id === photoId);
+    // Swift preserves uppercase UUIDs in manifests but sends lowercase API IDs.
+    // Match UUID identity without changing filename or registered-key semantics.
+    const normalizedPhotoId = photoId.toLowerCase();
+    const photo = projectManifest.photos.find((p) => p.id.toLowerCase() === normalizedPhotoId);
     if (!photo) {
       reply.code(404).send({ error: "not_found", message: "Photo is not in this project." });
       return;

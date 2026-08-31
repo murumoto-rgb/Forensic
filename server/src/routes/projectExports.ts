@@ -45,6 +45,28 @@ import { deleteObjects, presignedGet } from "../r2.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 300; // 5 min
 
+interface RegistryFile {
+  photo_id: string;
+  object_key: string;
+  kind: string;
+  size_bytes: number | null;
+  source_filename: string | null;
+}
+
+async function loadFolderFiles(projectId: string, ids: string[], kinds: string[]): Promise<RegistryFile[]> {
+  const rows: RegistryFile[] = [];
+  // Keep PostgREST URLs bounded; 100 IDs also keeps three-kind results below
+  // its default row cap. No partial registry result is returned on failure.
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabaseAdmin.from("current_project_files")
+      .select("photo_id, object_key, size_bytes, kind, source_filename")
+      .eq("project_id", projectId).in("photo_id", ids.slice(i, i + 100)).in("kind", kinds);
+    if (error) throw error;
+    rows.push(...((data ?? []) as RegistryFile[]));
+  }
+  return rows;
+}
+
 interface ExportRow {
   id: string;
   project_id: string;
@@ -328,42 +350,17 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     }
     const project = projectRow.manifest as unknown as Project;
 
-    // Look up R2 keys for every photo + plan in one query each
-    // (case-safe via lowercase compare).
+    // Resolve every required registry chunk before issuing any download URL.
     const photoIds = project.photos.map((p) => p.id);
     const planIds = project.floorPlans.map((p) => p.id);
 
-    const { data: photoFileRows, error: photoErr } = await supabaseAdmin
-      .from("current_project_files")
-      .select("photo_id, object_key, size_bytes, kind, source_filename")
-      .eq("project_id", projectId)
-      .in("photo_id", photoIds)
-      .eq("kind", "photo");
-    if (photoErr) {
-      request.log.error({ err: photoErr, projectId }, "manifest — photo files lookup failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    const { data: planFileRows, error: planErr } = await supabaseAdmin
-      .from("current_project_files")
-      .select("photo_id, object_key, size_bytes, kind, source_filename")
-      .eq("project_id", projectId)
-      .in("photo_id", planIds)
-      .eq("kind", "plan");
-    if (planErr) {
-      request.log.error({ err: planErr, projectId }, "manifest — plan files lookup failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-
-    const { data: markupFileRows, error: markupErr } = await supabaseAdmin
-      .from("current_project_files")
-      .select("photo_id, object_key, size_bytes, kind, source_filename")
-      .eq("project_id", projectId)
-      .in("photo_id", photoIds)
-      .in("kind", ["markup_png", "markup_drawing"]);
-    if (markupErr) {
-      request.log.error({ err: markupErr, projectId }, "manifest — markup files lookup failed");
+    let photoFileRows: RegistryFile[], planFileRows: RegistryFile[], markupFileRows: RegistryFile[];
+    try {
+      photoFileRows = await loadFolderFiles(projectId, photoIds, ["photo"]);
+      planFileRows = await loadFolderFiles(projectId, planIds, ["plan"]);
+      markupFileRows = await loadFolderFiles(projectId, photoIds, ["markup_png", "markup_drawing"]);
+    } catch (error) {
+      request.log.error({ err: error, projectId }, "manifest — required files lookup failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }

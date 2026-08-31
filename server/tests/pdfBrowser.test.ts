@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { Readable } from "node:stream";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import puppeteer, { type Browser } from "puppeteer";
 import { PDFDocument } from "pdf-lib";
@@ -7,7 +6,7 @@ import { PhotoSchema, ProjectSchema } from "@forensic/shared";
 import type { FastifyBaseLogger } from "fastify";
 
 const data = vi.hoisted(() => ({ bytes: Buffer.alloc(0), rows: [] as Array<Record<string, unknown>> }));
-vi.mock("../src/r2.js", () => ({ getObjectStream: async () => Readable.from([data.bytes]) }));
+vi.mock("../src/r2.js", () => ({ getObjectBytes: async () => data.bytes }));
 vi.mock("../src/supabase.js", () => ({ supabaseAdmin: { from() {
   const filters: Array<[string, unknown[]]> = [];
   const query = { select() { return query; }, eq() { return query; }, in(key: string, values: unknown[]) { filters.push([key, values]); return query; }, then(resolve: never, reject: never) { return Promise.resolve({ data: data.rows.filter(row => filters.every(([key, values]) => values.includes(row[key]))), error: null }).then(resolve, reject); } };

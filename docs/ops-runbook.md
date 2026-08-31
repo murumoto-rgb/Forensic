@@ -40,11 +40,14 @@ pulled a manifest but lacks the binaries backfills them from R2
   merge commit on `main` after a deploy.
 - **Web up?** Load the Vercel URL. The footer shows the build number
   + commit (embedded at compile time by `vite.config.ts`).
-- **Render cold start.** Free / Starter tiers spin down after ~15 min
-  idle; the first request after idle takes ~20-30 sec. The web
-  client's `api.ts` retries with backoff (0/2/5/10/15/25 sec) to
-  cover this; if a request seems hung, it's likely a cold start —
-  wait, don't restart.
+- **Render cold start versus suspension.** Free instances spin down
+  after 15 minutes idle and can take about a minute to restart; paid
+  compute does not have this Free-instance limit. A quota suspension
+  does not clear through retries: the workspace receives 750 free
+  instance hours per calendar month, then Free services pause until
+  the next month or a paid compute upgrade. Confirm the dashboard
+  reason before treating a 503 as an ordinary cold start.
+  [Render Free-instance limits](https://render.com/docs/free).
 
 ---
 
@@ -163,6 +166,12 @@ assuming candidate protections are deployed.
   for v4-project writes that declare v3 or omit raw checklist/session
   arrays, including an old codec echoing v4. Older reads remain allowed.
   Release the matching iOS/web clients before reopening uploads.
+- **Quota suspension is not a migration lock.** A suspended Free
+  service can resume its old binary at the next monthly reset. Do not
+  apply the new schema or automatically release new clients on the
+  assumption that a temporary 503 permanently stops old writers.
+  Finish candidate checks and backups first, then obtain any required
+  compute-cost approval and establish the enforced cutover gate.
 - **Backup gate:** retained version history is not an independent copy.
   Free Supabase projects need manual/off-site dumps; PITR is a paid
   add-on. R2 has no supported S3 bucket-versioning switch. Verify the
@@ -177,7 +186,9 @@ assuming candidate protections are deployed.
   `select model, count(*), sum(cost_estimate_hundred_thousandths_of_cents)/10000000.0 as usd
   from audit_log where event_type='ai_tag_photo' group by model;`
 - **R2 storage check:** Cloudflare dashboard → R2 → bucket → metrics.
-  Zero egress fees, so the only cost is stored GB.
+  Egress bandwidth is free; storage and operation requests can still
+  be billed beyond included usage. Infrequent Access also has retrieval
+  charges. [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
 - **Supabase row counts:** Dashboard → Database → check `projects`,
   `files`, `audit_log` growth. `audit_log` is append-only and will
   grow unbounded; prune old rows manually if it ever matters
