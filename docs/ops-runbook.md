@@ -15,13 +15,13 @@ see `docs/backup-restore-drill.md`.
 | **API server** | Render (`forensic-server`) | Fastify; auth, manifest CRUD, presigned-URL minting, AI proxy, app-config | Auto-deploy on push to `main` |
 | **Web SPA** | Vercel (`forensic-web`) | React + Vite static build | Auto-deploy on push to `main` |
 | **Photo / plan binaries** | Cloudflare R2 (`forensic-photos` bucket) | Full images, thumbs, markup overlays, plan renders | Written by clients via presigned PUT |
-| **iOS app** | TestFlight / device | SwiftUI; capture + on-device source of truth + iCloud backup | `git tag ios-release-*` or Xcode Cloud manual start |
+| **iOS app** | TestFlight / device | SwiftUI; capture + local files; device/iCloud recovery must be verified separately | Xcode Cloud manual branch start (verify the live workflow) |
 | **Error reporting** | Sentry (optional) | Server + web exception capture | Active only when DSN env vars set |
 | **Product analytics** | PostHog (optional) | Web pageviews + events | Active only when key env var set |
 
 ### The data-flow in one paragraph
 
-iOS is the capture device and the local source of truth. On
+iOS is the capture device; local and server copies can differ. On
 `save(_:)` it pushes the manifest to the server (`ManifestSyncer`)
 and uploads photo/plan binaries to R2 (`PhotoSyncer`). The server
 stores the manifest jsonb in Postgres and records each R2 object in
@@ -78,21 +78,24 @@ pulled a manifest but lacks the binaries backfills them from R2
    boot-time crash. Most likely a **missing / malformed env var** —
    the server `process.exit(1)`s on bad env (see `env.ts`) and the
    log says exactly which var.
-3. Recent deploy? Check the deploy's commit against a known-good
-   one; roll back via Render → Deploys → pick a prior successful
-   deploy → "Redeploy".
+3. Recent deploy? Check the serving commit and database migration
+   state. Do not redeploy an arbitrary older build: after migration
+   0017, `aa1a24e` is unsafe for writes. Pause writes and use a
+   compatible forward fix or rollback build; see the release gate below.
 
 ### "Photos / floor plans won't load (web or iOS)"
 
 1. Is it ALL projects or one? All → server / R2 issue. One → that
    project's binaries may not be in R2.
-2. Web: open the browser console. A 404 on
-   `/v1/projects/:id/photos/:id/image` means the `files` table has
-   no row for that photo → it was never uploaded from any device.
-   Fix: open the project on the iOS device that captured it; the
-   launch sweep re-uploads via PhotoSyncer.
-3. iOS: `[BinaryBackfill]` console lines tell you per-project missing
-   counts. Settings → Sync → "Backfill missing files" forces a pull.
+2. A 404 does not prove an asset was never uploaded. Preserve the
+   manifest, registry and available originals before changing anything.
+   On the matching candidate server, use project health with
+   `?verify=true` to distinguish missing, unregistered and unverified
+   assets. Registry presence alone does not prove bytes exist.
+3. Inspect a preserved device copy before allowing it to sync. Do not
+   force "Sync now" as a recovery shortcut: it may change metadata,
+   and device/iCloud completeness is unverified. Use the reviewed
+   recovery procedure in `docs/backup-restore-drill.md`.
 4. 502 on the photo endpoint = R2 fetch failed server-side. Check
    the R2 credentials env vars on Render and the R2 dashboard for
    bucket availability.
@@ -127,27 +130,44 @@ Refresh the page. (Realtime push is a future enhancement.)
 
 ### "Two people edited the same project and one lost work"
 
-The manifest PUT uses optimistic concurrency (`expectedRevision`);
-a stale write gets a 409. iOS retries once by refetching. The lock
-model exists server-side but isn't surfaced in the iOS UI yet, so
-simultaneous edits from two devices are possible. For now: coordinate
-out-of-band. Recovery of overwritten data: see
-`docs/backup-restore-drill.md` (audit-log replay).
+Preserve both copies and stop further edits. The candidate uses revision
+checks and session locks; conflict responses require review, not a forced
+overwrite. Its version preview/restore can recover a complete retained
+snapshot, but `audit_log` is not a full backup or manifest replay source.
+Follow `docs/backup-restore-drill.md`; verify the serving build before
+assuming candidate protections are deployed.
 
 ---
 
 ## Deploys + rollback
 
-- **Web / server:** push to `main` → auto-deploy. Rollback = Render
-  → Deploys → Redeploy a prior build; Vercel → Deployments → promote
-  a prior deployment to production.
-- **iOS:** never auto-deploys. `git tag ios-release-<n> && git push
-  origin ios-release-<n>` triggers the Xcode Cloud workflow, or use
-  App Store Connect → Xcode Cloud → Start Build. Merging to `main`
-  does NOT ship a new TestFlight build.
-- **Migrations:** never auto-run. Paste the SQL file into Supabase
-  → SQL Editor → Run. Migrations are forward-only; there are no
-  down-migrations (recovery is via PITR — see the backup doc).
+- **Web / server:** automatic deployment does not coordinate a schema
+  cutover. For migrations 0016–0019, follow `server/RECOVERY.md`: enforce
+  old-server mutation/job admission shutdown, drain uploads and jobs,
+  stop old workers, and wait 15 minutes after the last legacy PUT URL
+  issuance plus any in-flight transfer. Apply migrations in order, then
+  switch all instances to the matching build before resuming writes.
+  No rolling old/new overlap and no writable `aa1a24e` rollback after
+  0017. Pause writes on failure; retain history and object bytes.
+- **iOS:** merging to `main` does not ship TestFlight. The live SitePhoto
+  workflow checked on 2026-08-30 accepts manual branch starts and has no tag
+  start condition; the older tag-trigger description is historical. Start the
+  reviewed, merged revision through Xcode Cloud and verify its source SHA,
+  successful archive, Apple processing `VALID`, and access for the existing
+  internal test group. A tag or successful upload alone is not delivery.
+- **Migrations:** reconcile the actual schema and migration ledger first;
+  historical manual SQL must not be blindly replayed. Apply only the
+  reviewed missing migrations, transactionally, while the release gate
+  is held. Do not assume PITR is enabled or available as rollback.
+- **Client upgrade:** the candidate returns 426 for legacy uploads and
+  for v4-project writes that declare v3 or omit raw checklist/session
+  arrays, including an old codec echoing v4. Older reads remain allowed.
+  Release the matching iOS/web clients before reopening uploads.
+- **Backup gate:** retained version history is not an independent copy.
+  Free Supabase projects need manual/off-site dumps; PITR is a paid
+  add-on. R2 has no supported S3 bucket-versioning switch. Verify the
+  separate database/object backup and isolated restore procedure in
+  `docs/backup-restore-drill.md`; candidate tests do not certify it.
 
 ---
 

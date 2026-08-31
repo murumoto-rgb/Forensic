@@ -3,7 +3,7 @@
 **Candidate build:** 6.38.1, branch codex/audit-reliability-improvements
 **Baseline:** Build 6.37.1 at aa1a24eafde1d3e2ec7279e01069d919f82d3eeb
 **Date:** August 30, 2026
-**Delivery state:** Local candidate only. Not pushed, merged, deployed, or delivered to TestFlight.
+**Delivery state:** Candidate validation snapshot; production release requires the separate PR, CI, database/storage cutover and hosting/TestFlight receipts. Test success alone does not certify deployment.
 
 The independent audit has been followed by implementation across iOS, web, the shared schema, server and database migrations. All five improvement areas and all five feature additions have code and focused verification. This does not mean every operational acceptance criterion has been met: production rollout, physical-iPhone testing, large-report memory measurement and an operational backup drill remain separate release work.
 
@@ -51,10 +51,10 @@ Shared manifest v4 defaults new fields when reading older projects. The TypeScri
 | Check | Result |
 |---|---|
 | Shared contract, migration/defaulting, merge and workflow tests | **81 passed / 18 suites** |
-| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **117 passed / 10 files** |
+| Server SQL, authorization, recovery, upload, stream, PDF and branding tests | **124 passed / 10 files** |
 | Web DOM behavior tests | **28 passed / 4 files** |
 | iOS simulator tests | **14 passed**, including save/plan failure injection and complete/incomplete folder export |
-| Total regression tests | **240 passed** |
+| Total regression tests | **247 passed** |
 | Server and web TypeScript | Passed |
 | Web production build | Passed; one main chunk remains above the 500 kB warning threshold |
 | iOS Debug simulator build/test | Passed with Xcode 26.6 and iOS 26.5; unsigned |
@@ -98,4 +98,4 @@ Keep this candidate private until the narrowly scoped permission correction is r
 
 The full update requires migrations **0016 → 0017 → 0018 → 0019**, the R2 conditional PUT CORS header and matching server/web/iOS versions. Pause writes and drain legacy upload URLs before cutover. Do not blindly replay old migrations against a manually initialized database. Preserve local originals and a recoverable database/object baseline. Follow server/RECOVERY.md for the ordered release and smoke checks.
 
-After v4 and immutable evidence are written, a simple old-binary rollback is unsafe. Prefer a forward fix or a deliberately compatible build with writes paused. Retain all protected versions and object bytes. Nothing in this task deployed migrations, sent user emails, called a paid model, pushed the branch, published a public PR or submitted TestFlight.
+After v4 and immutable evidence are written, a simple old-binary rollback is unsafe. Prefer a forward fix or a deliberately compatible build with writes paused. Retain all protected versions and object bytes. The local validation reported here did not deploy migrations, send user emails or call a paid model. Release operations and their exact Git/provider receipts are recorded separately; do not infer production or TestFlight delivery from these local checks.

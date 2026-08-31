@@ -294,6 +294,18 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
     }
     const { project, expectedRevision, baseManifest } = parsed.data;
 
+    // An older iOS codec can retain manifestSchemaVersion=4 while dropping
+    // fields it does not know. Inspect the raw payload before Zod defaults
+    // turn those omitted fields into empty arrays.
+    const rawProject = (request.body as { project: Record<string, unknown> }).project;
+    const preservesWorkflowFields = Array.isArray(rawProject.inspectionChecklist)
+      && Array.isArray(rawProject.inspectionSessions);
+    const rejectLegacyWrite = (current: Project): boolean => {
+      if (current.manifestSchemaVersion < 4 || (project.manifestSchemaVersion >= 4 && preservesWorkflowFields)) return false;
+      reply.code(426).send({ error: "upgrade_required", message: "Update the app before editing this project. Schema v4 workflow fields must be preserved." });
+      return true;
+    };
+
     // The URL identifies the project. The body's project.id must
     // agree or it's a client bug. Compared case-insensitively
     // because RFC 4122 doesn't mandate a UUID-string case
@@ -364,6 +376,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
         }
 
         const serverCurrent = existing.manifest as unknown as Project;
+        if (rejectLegacyWrite(serverCurrent)) return;
 
         if ((serverCurrent.isFrozen ?? false) && hasFrozenContentChange(serverCurrent, project)) {
           reply.code(409).send({
@@ -474,6 +487,7 @@ export const projectsRoute: FastifyPluginAsync = async (app) => {
       // Phase 4 (Build #5.126.1): flipping `isFrozen` requires Owner
       // OR Admin on the legacy path too.
       const existingManifest = existing.manifest as unknown as Project;
+      if (rejectLegacyWrite(existingManifest)) return;
       if ((existingManifest.isFrozen ?? false) && hasFrozenContentChange(existingManifest, project)) {
         reply.code(409).send({
           error: "project_frozen",

@@ -167,6 +167,31 @@ describe('real routes, PostgreSQL state, fake object store',()=>{
   expect(response.statusCode).toBe(409);expect(response.json().error).toBe('manifest_schema_unsupported');
   expect((await state.db.query('select revision from projects')).rows[0]?.revision).toBe('r1');
  });
+ it.each([false,true].flatMap(merge=>[3,4].map(version=>({merge,version}))))('rejects old v$version codecs on v4 projects, merge=$merge, before mutation',async({merge,version})=>{
+  const current={...project,inspectionChecklist:[{id:photo,label:'Keep evidence',isComplete:true}],inspectionSessions:[{id:photo,startedAt:'2026-08-30T13:00:00Z',endedAt:null}],reportLayout:{perPage:6,groupByBucket:true,includeMetadataTable:true}};
+  await save('r1','r2',current);
+  const old={...project,name:'Old-client overwrite',manifestSchemaVersion:version} as Record<string,unknown>;
+  delete old.inspectionChecklist;delete old.inspectionSessions;delete old.reportLayout;
+  const historyBefore=(await versions()).length;
+  const response=await req('PUT',`/v1/projects/${pid}`,{project:old,expectedRevision:'r2',...(merge?{baseManifest:{...old,name:project.name}}:{})});
+  expect(response.statusCode).toBe(426);expect(response.json().error).toBe('upgrade_required');expect(state.mutationCalls).toBe(0);
+  const stored=(await state.db.query('select manifest,revision from projects where id=$1',[pid])).rows[0]!;
+  expect(stored.revision).toBe('r2');expect(stored.manifest).toEqual(current);expect(await versions()).toHaveLength(historyBefore);
+  // Read access remains available to older clients and viewers.
+  expect((await req('GET',`/v1/projects/${pid}`,undefined,viewer)).statusCode).toBe(200);
+ });
+ it.each([false,true])('accepts an explicit v4 write on merge=%s without requiring optional reportLayout',async(merge)=>{
+  const modern={...project,name:'Modern edit'} as Record<string,unknown>;delete modern.reportLayout;
+  const response=await req('PUT',`/v1/projects/${pid}`,{project:modern,expectedRevision:'r1',...(merge?{baseManifest:project}:{})});
+  expect(response.statusCode,response.body).toBe(200);expect(state.mutationCalls).toBe(1);
+  expect((await state.db.query('select name from projects where id=$1',[pid])).rows[0]?.name).toBe('Modern edit');
+ });
+ it('allows an old codec to save a still-v3 project',async()=>{
+  const old={...project,manifestSchemaVersion:3} as Record<string,unknown>;delete old.inspectionChecklist;delete old.inspectionSessions;delete old.reportLayout;
+  await save('r1','r2',old);
+  const response=await req('PUT',`/v1/projects/${pid}`,{project:{...old,name:'Legacy edit'},expectedRevision:'r2'});
+  expect(response.statusCode,response.body).toBe(200);
+ });
  it('workflow is private and first-write/stale CAS cannot clobber another update',async()=>{
   const library={savedSearches:[],inspectionPresets:[]};const first=await req('PUT','/v1/me/workflow',{library,expectedRevision:null});expect(first.statusCode).toBe(200);
   expect((await req('PUT','/v1/me/workflow',{library,expectedRevision:null})).statusCode).toBe(409);
