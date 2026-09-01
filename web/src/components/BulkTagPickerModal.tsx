@@ -7,6 +7,7 @@ import type {
 } from "@forensic/shared";
 import { api } from "../lib/api";
 import { useEscapeKey } from "../lib/useEscapeKey";
+import { Modal } from "./Modal";
 
 /**
  * Bulk tag picker (Build #6.36.1).
@@ -102,12 +103,7 @@ export function BulkTagPickerModal({ count, onApplyTag, onClose }: Props) {
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Apply tag to ${count} photo${count === 1 ? "" : "s"}`}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-    >
+    <Modal title={`Apply tag to ${count} photo${count === 1 ? "" : "s"}`} onClose={onClose}>
       <div className="flex h-full max-h-[85vh] w-full max-w-3xl flex-col gap-3 rounded-lg border border-neutral-700 bg-neutral-950 p-5 shadow-2xl">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-neutral-100">
@@ -198,7 +194,7 @@ export function BulkTagPickerModal({ count, onApplyTag, onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

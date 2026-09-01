@@ -81,7 +81,7 @@ struct ProjectWorkspaceView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(email) is editing on \(client == "ios" ? "another iPhone" : "web")")
                     .font(.caption.weight(.semibold))
-                Text("You can keep working — changes from both sides merge on sync.")
+                Text("Edits stay on this device until the other session releases the lock. Retry sync in Project Health.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -130,12 +130,12 @@ struct ProjectWorkspaceView: View {
                 }
                 .tag(ProjectTab.ai)
 
-            ProjectDetailView(projectID: projectID, scope: .buckets)
+            ExportView(projectID: projectID, embedded: true)
                 .tabItem {
-                    Label(ProjectTab.buckets.label,
-                          systemImage: ProjectTab.buckets.systemImage)
+                    Label(ProjectTab.export.label,
+                          systemImage: ProjectTab.export.systemImage)
                 }
-                .tag(ProjectTab.buckets)
+                .tag(ProjectTab.export)
 
             ProjectDetailView(projectID: projectID, scope: .more)
                 .tabItem {

@@ -1,6 +1,6 @@
 {
   "_generated_by": "scripts/regen-ios-fixtures.ts — do not edit by hand. Run `pnpm parity:regen-fixtures`.",
-  "manifestSchemaVersion": 3,
+  "manifestSchemaVersion": 4,
   "models": {
     "Project": {
       "source": "ios/SitePhoto/Models/Project.swift",
@@ -25,7 +25,73 @@
         "aiExtraVocabulary": "ProjectExtraVocabulary?",
         "isDeleted": "Bool",
         "isFrozen": "Bool",
+        "inspectionChecklist": "[InspectionChecklistItem]",
+        "inspectionSessions": "[InspectionSession]",
+        "reportLayout": "InspectionReportLayout?",
         "manifestSchemaVersion": "Int"
+      }
+    },
+    "InspectionChecklistItem": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "id": "UUID",
+        "label": "String",
+        "isComplete": "Bool"
+      }
+    },
+    "InspectionSession": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "id": "UUID",
+        "startedAt": "Date",
+        "endedAt": "Date?"
+      }
+    },
+    "InspectionReportLayout": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "perPage": "Int",
+        "groupByBucket": "Bool",
+        "includeMetadataTable": "Bool"
+      }
+    },
+    "InspectionPreset": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "id": "UUID",
+        "name": "String",
+        "projectNamePrefix": "String",
+        "projectAddress": "String?",
+        "aiInstructions": "String?",
+        "tagSelection": "ProjectTagSelection?",
+        "aiExtraVocabulary": "ProjectExtraVocabulary?",
+        "buckets": "[Bucket]",
+        "checklist": "[String]",
+        "reportLayout": "InspectionReportLayout"
+      }
+    },
+    "SearchFilter": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "query": "String",
+        "fromDate": "String?",
+        "toDate": "String?",
+        "favoritesOnly": "Bool"
+      }
+    },
+    "SavedSearch": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "id": "UUID",
+        "name": "String",
+        "filter": "SearchFilter"
+      }
+    },
+    "WorkflowLibrary": {
+      "source": "ios/SitePhoto/Models/InspectionWorkflow.swift",
+      "fields": {
+        "savedSearches": "[SavedSearch]",
+        "inspectionPresets": "[InspectionPreset]"
       }
     },
     "Photo": {

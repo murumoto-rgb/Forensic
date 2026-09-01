@@ -1,17 +1,10 @@
-name: Keepalive — ping Render server
+name: Wake Render server — manual only
 
-# Render free-tier web services spin down after ~15 min of idle and
-# take 20-60 sec to spin back up on the next request. That cold-
-# start window manifests as "Failed to load project" toasts on the
-# web and "Save failed: Couldn't reach the server" banners on
-# pin-drag. This workflow keeps the server warm by hitting /healthz
-# every 14 min, which is well under the 15-min idle threshold.
-#
-# Cost: ~5 seconds of free-tier GitHub Actions minutes per ping × 4
-# pings/hour × 24 hours = ~8 minutes/day, ~240 minutes/month. The
-# free tier allows 2000 minutes/month for public repos (unlimited
-# for private repos owned by personal accounts), so this is in the
-# noise.
+# Let the Free API sleep when unused. Periodic wake requests consume
+# the workspace's shared 750 running hours/month even without a user.
+# An explicit manual wake remains available before a work session.
+# Cold starts can take about one minute; a quota suspension cannot be
+# cleared with a ping. Keep the Render deployment healthcheck intact.
 #
 # The endpoint is set via the `RENDER_HEALTHZ_URL` repository secret
 # (set in Settings → Secrets and variables → Actions). Falls back
@@ -19,11 +12,6 @@ name: Keepalive — ping Render server
 # doesn't fail loudly on a forked / not-yet-configured repo.
 
 on:
-  schedule:
-    # Every 14 minutes. GitHub cron syntax: minute hour dom month dow.
-    # Note: GitHub Actions schedules can run a few minutes late under
-    # heavy load; running every 14 min (vs every 15) gives margin.
-    - cron: "*/14 * * * *"
   # Allow manual triggering from the Actions tab for quick wake-ups
   # before a known-imminent test session.
   workflow_dispatch:

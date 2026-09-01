@@ -98,6 +98,7 @@ struct SettingsSheet: View {
                             photoSyncer.resetUploadCache()
                             appConfigSyncer.resetRevisions()
                             backfillService.reset()
+                            store.resetProjectAccess()
                             try? await auth.signOut()
                             dismiss()
                         }
@@ -617,14 +618,25 @@ struct SettingsSheet: View {
     private func save() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        KeychainStore.saveAnthropicKey(trimmed)
+        do {
+            try KeychainStore.saveAnthropicKey(trimmed)
+        } catch {
+            saved = false
+            toastCenter.post(error.localizedDescription, kind: .error)
+            return
+        }
         apiKey = ""
         hasStoredKey = true
         saved = true
     }
 
     private func clear() {
-        KeychainStore.clearAnthropicKey()
+        do {
+            try KeychainStore.clearAnthropicKey()
+        } catch {
+            toastCenter.post(error.localizedDescription, kind: .error)
+            return
+        }
         apiKey = ""
         hasStoredKey = false
         saved = false

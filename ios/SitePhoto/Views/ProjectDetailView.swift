@@ -370,7 +370,7 @@ struct ProjectDetailView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        AutoSaveIndicator()
+                        AutoSaveIndicator(projectID: projectID)
                             .environment(store)
                     }
                 }
@@ -775,13 +775,14 @@ struct ProjectDetailView: View {
         // is read-only. Every tab shows the banner; edit-entry sections
         // (import, AI runs) disappear; viewing + export stay available.
         // `ProjectStore.save(_:)` backstops any path left visible.
-        let frozen = project.isFrozen
+        let frozen = store.isReadOnly(project)
 
         if frozen {
             frozenBannerSection
         }
         if showMore {
             metadataSection(project)
+            ProjectWorkflowSection(projectID: projectID)
         }
         if showPhotos && !frozen {
             actionsSection(project)
@@ -792,11 +793,10 @@ struct ProjectDetailView: View {
         if showAI && !frozen {
             aiTaggingSection(project)
         }
-        if showBuckets {
+        if showBuckets || showMore {
             bucketsSection(project)
         }
-        if showMore {
-            exportSection(project)
+        if showMore && store.canManageLock(project) {
             projectLockSection(project)
         }
         if showPhotos {

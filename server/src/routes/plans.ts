@@ -48,11 +48,13 @@ export const plansRoute: FastifyPluginAsync = async (app) => {
       }
 
       const { data: file, error: filesErr } = await supabaseAdmin
-        .from("files")
+        .from("current_project_files")
         .select("object_key")
         .eq("project_id", projectId)
         .eq("photo_id", planId)
         .eq("kind", "plan")
+        .order("uploaded_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (filesErr) {
         reply.code(500).send({ error: "internal", message: "Database error" });

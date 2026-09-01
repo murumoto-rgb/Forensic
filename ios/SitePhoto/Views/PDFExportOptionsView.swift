@@ -18,7 +18,7 @@ struct PDFExportOptionsView: View {
     @State private var options: PDFExportOptions = .defaults
     @State private var loaded: Bool = false
 
-    private let perPageChoices: [Int] = [2, 4, 6]
+    private let perPageChoices: [Int] = Array(1...12)
 
     private var project: Project? {
         store.project(withID: projectID)
@@ -254,6 +254,11 @@ struct PDFExportOptionsView: View {
     private func loadIfNeeded() {
         guard !loaded else { return }
         options = PDFExportOptions.from(jsonData: storedData)
+        if let layout = store.project(withID: projectID)?.reportLayout {
+            options.perPage = layout.perPage
+            options.groupByBucket = layout.groupByBucket
+            options.includeMetadataTable = layout.includeMetadataTable
+        }
         loaded = true
     }
 }

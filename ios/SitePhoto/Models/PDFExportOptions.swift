@@ -147,8 +147,8 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
     /// without a migration step.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.perPage              = try c.decodeIfPresent(Int.self, forKey: .perPage)
-            ?? PDFExportOptions.defaults.perPage
+        self.perPage = min(12, max(1, try c.decodeIfPresent(Int.self, forKey: .perPage)
+            ?? PDFExportOptions.defaults.perPage))
         self.groupByBucket        = try c.decodeIfPresent(Bool.self, forKey: .groupByBucket)
             ?? PDFExportOptions.defaults.groupByBucket
         self.includeMetadataTable = try c.decodeIfPresent(Bool.self, forKey: .includeMetadataTable)
@@ -180,7 +180,7 @@ struct PDFExportOptions: Codable, Equatable, Sendable {
          sectionOrder: [Section],
          selectedFloorIDs: Set<UUID>? = nil,
          planMode: PlanRenderMode = .photoOnly) {
-        self.perPage = perPage
+        self.perPage = min(12, max(1, perPage))
         self.groupByBucket = groupByBucket
         self.includeMetadataTable = includeMetadataTable
         self.annotations = annotations

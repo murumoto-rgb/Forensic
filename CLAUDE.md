@@ -2,9 +2,11 @@
 
 ## Post-push testing regime
 
-This project has no test target, no `*Tests.swift` files, no CI
-workflow, and the sandbox has no Swift toolchain. "Testing" in this
-repo therefore means a deliberate two-part process that runs after
+The repository has shared-contract, web DOM and server regression tests,
+GitHub Actions for the JavaScript stacks, and a SitePhotoTests simulator
+target. Run the applicable automated checks before pushing. Toolchain
+availability depends on the host; a simulator pass does not establish
+physical iPhone behavior. The following two-part process still runs after
 **every** `git push`:
 
 1. **Static self-test** by Claude (no device required).

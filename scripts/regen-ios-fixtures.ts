@@ -38,6 +38,13 @@ const OUTPUT_PATH = join(
  */
 const MANIFEST_STRUCTS = new Set([
   "Project",
+  "InspectionChecklistItem",
+  "InspectionSession",
+  "InspectionReportLayout",
+  "InspectionPreset",
+  "SearchFilter",
+  "SavedSearch",
+  "WorkflowLibrary",
   "Photo",
   "FloorPlan",
   "DistressMark",

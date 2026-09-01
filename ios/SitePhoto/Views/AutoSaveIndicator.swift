@@ -10,6 +10,7 @@ import SwiftUI
 /// to be readable. The completion timestamp gives us a stable change to
 /// observe per save.
 struct AutoSaveIndicator: View {
+    let projectID: UUID
     @Environment(ProjectStore.self) private var store
 
     @State private var showConfirm: Bool = false
@@ -17,11 +18,19 @@ struct AutoSaveIndicator: View {
 
     var body: some View {
         Group {
-            if showConfirm {
+            if store.saveFailures[projectID] != nil {
+                Button {
+                    store.retryPendingSave(projectID: projectID)
+                } label: {
+                    Label("Not saved · Retry", systemImage: "exclamationmark.triangle.fill")
+                }
+                .foregroundStyle(.red)
+                .accessibilityHint("Changes remain in memory. Keep the app open until they are saved.")
+            } else if showConfirm {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                    Text("Saved")
+                    Text("Saved locally")
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FolderExportOptions } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { Modal } from "./Modal";
 
 /**
  * "Folder by Bucket" export trigger (Build #5.98.1).
@@ -83,12 +84,7 @@ export function FolderExportControl({
       {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
 
       {showModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-        >
-          <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
+        <Modal title="Folder by Bucket export" onClose={() => { if (!submitting) setShowModal(false); }}>
             <div>
               <h2 className="text-base font-semibold text-neutral-100">
                 Folder by Bucket export
@@ -144,8 +140,7 @@ export function FolderExportControl({
                 {submitting ? "Queuing…" : "Start export"}
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </>
   );

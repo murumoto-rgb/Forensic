@@ -32,6 +32,7 @@ interface Props {
   batchLoading?: boolean;
   alt: string;
   onClick?: () => void;
+  onError?: () => void;
 }
 
 type LoadState = "loading" | "ready" | "pending" | "error";
@@ -43,6 +44,7 @@ export function PhotoThumbnail({
   batchLoading,
   alt,
   onClick,
+  onError,
 }: Props) {
   // Internal state for standalone-mode fetch. Unused when the
   // parent passes `url` / `batchLoading`.
@@ -129,17 +131,25 @@ export function PhotoThumbnail({
   }
 
   return (
-    <button
-      type="button"
+    <div
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
       onClick={onClick}
-      className={`${baseClasses} cursor-zoom-in p-0 transition hover:border-neutral-600`}
+      onKeyDown={(e) => {
+        if (onClick && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className={`${baseClasses} ${onClick ? "cursor-zoom-in" : ""} p-0 transition hover:border-neutral-600`}
     >
       <img
         src={url}
         alt={alt}
         loading="lazy"
         className="h-full w-full object-cover"
+        onError={onError}
       />
-    </button>
+    </div>
   );
 }

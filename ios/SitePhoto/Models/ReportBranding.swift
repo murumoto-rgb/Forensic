@@ -20,6 +20,9 @@ struct ReportBranding: Codable, Hashable, Sendable {
     /// text edit can never clobber a logo the web admin set. Optional
     /// so pre-#6.2.1 `branding.json` files keep decoding.
     var logoStoragePath: String?
+    /// Local-only upload/cache state. Older branding files decode nil.
+    var logoNeedsUpload: Bool?
+    var logoCachedStoragePath: String?
 
     static let empty = ReportBranding()
 
@@ -28,6 +31,7 @@ struct ReportBranding: Codable, Hashable, Sendable {
             || !(coverSubtitle?.isEmpty ?? true)
             || !(footerText?.isEmpty ?? true)
             || logoFilename != nil
+            || logoStoragePath != nil
     }
 }
 
@@ -67,7 +71,12 @@ extension ReportBranding {
         out.coverTitle = wire.titleOverride
         out.coverSubtitle = wire.subtitleOverride
         out.footerText = wire.footerOverride
+        if out.logoStoragePath != wire.logoStoragePath {
+            out.logoFilename = nil
+            out.logoCachedStoragePath = nil
+        }
         out.logoStoragePath = wire.logoStoragePath
+        out.logoNeedsUpload = false
         return out
     }
 }

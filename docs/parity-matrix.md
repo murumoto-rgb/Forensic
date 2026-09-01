@@ -9,7 +9,7 @@ enforces schema-level parity at build time.
 ## Legend
 
 - ✅ Implemented and shipping
-- 🚧 In progress (link the PR)
+- 🚧 Candidate / in progress (not yet shipped; link the branch or PR)
 - 📋 Planned (Phase N)
 - ❌ Out of scope for this platform (must include a one-line reason
   under "Platform exclusions" below)
@@ -24,7 +24,7 @@ fails CI if iOS adds a field without updating the TS types (or vice
 versa). Every schema change bumps `manifestSchemaVersion` and lands in
 **both** stacks in one PR.
 
-Current `manifestSchemaVersion`: **3** (bumped in Build #5.126.1 — added `Project.isFrozen: boolean`)
+Candidate `manifestSchemaVersion`: **4** (Build #6.38.1 — adds checklist, inspection visits and report layout on both platforms). Shipping baseline #6.37.1 uses v3. Candidate rows below are implemented on `codex/audit-reliability-improvements`, pending the coordinated database/server/web/iOS release in `server/RECOVERY.md`.
 
 ## Phase status
 
@@ -37,7 +37,7 @@ historical phase ledger.)
 - **Phase 2** — Photos visible + editable on web (✅ closed — uploads #5.90.1, markup #5.91.1, trash/favorites/rotation/tags shipped through the Path P series #5.76.1–#5.83.1).
 - **Phase 3** — Floor plans + distress on web (✅ closed — canvas + pins + distress CRUD, calibration-on-add #5.94.1).
 - **Phase 4** — AI tagging + exports on web + project freeze (✅ closed at #5.126.1 — web AI runs/suggestions, PDF/folder/CSV exports, `isFrozen` tandem).
-- **Phase 5** — Multi-user collaboration (✅ server+web: roles/admin #5.121.1–#5.125.1, edit lock #5.60.1 + self-lock fix #5.120.1, force-release gated #6.11.1. 📋 iOS edit-lock UI still open — tracked in `docs/deferred-work.md`).
+- **Phase 5** — Multi-user collaboration (✅ server+web: roles/admin #5.121.1–#5.125.1, edit lock #5.60.1 + self-lock fix #5.120.1, force-release gated #6.11.1. ✅ iOS advisory edit-lock UI shipped #6.21.1; candidate #6.38.1 enforces the session lock at server mutation boundaries while retaining offline local capture).
 
 ## Features
 
@@ -50,10 +50,18 @@ historical phase ledger.)
 | List projects | ✅ | ✅ Phase 1A | server: `projects.manifest`, list endpoint at `GET /v1/projects` | iOS pushes manifests to server in Phase 1B-2; web reads them from `GET /v1/projects` |
 | Create / rename project | ✅ | ✅ Build #5.84.1 | `Project.name` | "+ New project" modal on web list page; rename via Info-tab text input. Server `PUT /v1/projects/:id` already accepts create (expectedRevision: null) and update. iOS exposes create via `ProjectStore.create(named:)`; rename via swipe-leading "Rename" + alert TextField (Build #5.96.1). |
 | Project GPS + address | ✅ | ✅ Build #5.83.1 | `Project.projectGPS`, `Project.projectAddress` | Address edit on Info tab (Path P #8/8); forward-geocoding to fill `projectGPS` stays iOS-only. |
-| Start / stop project | 🚧 (fields only) | 📋 | `Project.startedAt`, `Project.stopped` | Corrected #6.18.1: both platforms carry the schema fields and iOS sets `startedAt` automatically, but **neither platform has a start/stop UI control**. The previous iOS ✅ was a doc error. Tracked in `docs/deferred-work.md`. |
+| Start / stop / resume inspection visits | 🚧 #6.38.1 | 🚧 #6.38.1 | `Project.inspectionSessions[]`, legacy lifecycle fields | Matching explicit controls record distinct visits and retain earlier start/stop times. An open visit is not duplicated. |
 | Soft-delete / restore project | ✅ | ✅ (Build #5.84.1) | `Project.isDeleted` (bool, default false), `POST /v1/projects/:id/restore` | iOS sets via `ProjectStore.delete(_:)`/`restore(_:)`. Web list filters trashed rows out of the active section and shows them in a collapsible "Trashed projects" section with a Restore button per row. Info tab's "Move to trash" sets `isDeleted=true` and navigates back to the list. |
-| Permanently delete trashed project | ✅ (swipe) | ✅ Build #5.93.1 | `DELETE /v1/projects/:id` | New server endpoint reaps R2 blobs + `files` rows + project row in one shot; requires `isDeleted=true` first (409 otherwise — same two-step iOS swipe gesture). Web confirm dialog quotes the project name; iOS button is in the trashed-row swipe action. |
-| Lock / finalize project (read-only) | ✅ Build #6.1.1 | ✅ Build #5.126.1 | `Project.isFrozen` (bool, default false; schema v3) | Persistent owner/admin-toggled "finalized" state, distinct from the transient edit lock. Web: banner + `canEdit` gate + Info-tab toggle (#5.126.1). iOS: banner on every tab, edit affordances hidden, `ProjectStore.save` chokepoint rejects edits while frozen, Lock/Unlock in the More tab (#6.1.1). Server enforces owner/admin on the flip; merge rule is true-wins. |
+| Permanently delete trashed project | ✅ (swipe) | ✅ Build #5.93.1 | `DELETE /v1/projects/:id` | New server endpoint reaps R2 blobs + `files` rows + project row in one shot; requires `isDeleted=true` first (409 otherwise — same two-step iOS swipe gesture). Web confirm dialog quotes the project name; iOS button is in the trashed-row swipe action. Candidate v4 authorizes and deletes database state before best-effort object cleanup, so a rejected deletion cannot remove evidence bytes. |
+| Lock / finalize project (read-only) | ✅ UI; 🚧 enforcement #6.38.1 | ✅ UI; 🚧 enforcement #6.38.1 | `Project.isFrozen`, explicit server `isOwner` | Candidate server transactions reject ordinary edits/uploads while frozen, including mixed unlock-and-edit requests. Only owner/admin can toggle finalization; pure unlock has its own guarded save. Native account transitions clear cached grants, and an unknown-access project refreshes permissions even when its manifest revision is unchanged; late responses cannot restore an old account's grant (#6.38.4). Unconsumed upload receipts are revoked on freeze. |
+| **Recovery and reusable workflows (candidate #6.38.1)** | | | | |
+| Project health and safe retry | 🚧 | 🚧 | `ProjectHealthResponse`, exact asset filename resolver | iOS shows local files, pending saves/uploads and cloud availability with scoped retry/backfill. Web shows registry/object-store checks and missing names. Availability is not a backup or cryptographic verification receipt. |
+| Protected version history and restore preview | 🚧 | 🚧 | Version snapshot and asset-reference endpoints | Preview metadata differences, then explicitly restore against the reviewed revision. Pending saves, changed previews, missing historical objects and frozen projects block restore. Legacy/incomplete versions remain reviewable only. |
+| Cross-project search and saved filters | 🚧 | 🚧 | `SearchFilter`, caller-private `WorkflowLibrary` | SQL scopes results to permitted projects; caption/address/tag/date/favorite filters and bounded pagination. Saved filters use atomic revision checks. iOS cloud search requires a connection; it is not a new offline full-text index. |
+| Inspection presets and checklists | 🚧 | 🚧 | `InspectionPreset`, `Project.inspectionChecklist[]` | Rename saved presets and edit their required views with revision checks; project application remains a separate previewed action. Preview appended buckets/checklist and replaced AI/report settings before applying. Preserves evidence, placement, captions and existing bucket assignments. Preset library is per-user; it does not replace the unsynced legacy iOS bucket-library editor. |
+| Per-project report layout | 🚧 | 🚧 | `Project.reportLayout` | Density 1–12, bucket grouping and metadata-table defaults seed each client's PDF options; optional sections/annotation controls remain in the export dialog. |
+| Shared bulk-tag vocabulary | 🚧 | ✅ | Existing `app_config.tagLibrary` | iOS bulk picker now reads the synced current library rather than bundled defaults. |
+| Accessible dialogs and narrow layout | n/a (native sheets) | 🚧 | n/a | Shared modal handles initial focus, Tab containment, Escape and restoration for PDF/CSV/folder/bulk/restore/preset dialogs. Photo cards fit a 390-pixel viewport. This is not a full-app accessibility certification. |
 | **Floor plans** | | | | |
 | View floor plan (read-only) + pins + distress | ✅ | ✅ (#6.11.1 truth pass — shipped, row was stale) | `Project.floorPlans[]`, `Photo.planPixelX/Y`, `FloorPlan.distress[]` | Web canvas via react-konva (`FloorPlanCanvas.tsx` + `FloorPlanTab.tsx`); pins + distress rendered in plan-pixel coords (identical to iOS). Editing shipped too (see rows below). |
 | Import floor plan (PDF / image) | ✅ | ✅ Build #5.90.1 / calibration #5.94.1 (image only) | `FloorPlan.imageFilename`, plus calibration / anchor / north fields | Web "+ Add plan" button → file picker → calibration sheet: pick origin + scale points A and B, type real-world distance, optional north heading + label. Pan + scroll-zoom + 2.5× magnifier loupe for pixel-precise placement. PDF import remains iOS-only (uses Apple PDFKit). |
@@ -95,12 +103,12 @@ historical phase ledger.)
 | Render existing markup overlay | ✅ | ✅ Build #5.91.1 | `Photo.markupOverlayFilename` | Round-trippable: web saves the same PNG iOS does and vice versa. |
 | **Export** | | | | |
 | PDF export (authoritative, multi-floor) | ✅ | ✅ (#6.11.1 truth pass; shipped #5.62.1+) | n/a | iOS: `UIGraphicsPDFRenderer`; web: server-side Puppeteer via `ExportPdfControl.tsx` with iOS-parity options (page size, density, section order, annotations, bucket grouping) |
-| Folder export (one dir per bucket) | ✅ | ✅ Build #5.98.1 | server-side ZIP via `project_exports` table | Web Folder-by-Bucket + AI Analysis CSV both land here (Round 3 PR #2). Streamed `archiver` ZIP, EXIF preserved bit-for-bit. Folder structure matches iOS (`01 Bucket/...`, `99 Unbucketed/...` + per-folder captions.txt). Persistent listing at `/projects/:id/exports` with Download + Delete. |
-| Report branding | ✅ (synced #6.2.1) | ✅ Build #5.92.1 | `app_config.reportBranding` (shared `ReportBranding`) | New admin page at `/admin/report-branding`; title / subtitle / footer overrides + logo upload via the file-upload pipeline (kind=markup_png, stored under `<projectId>/<photoId>/markup_png`). PDF exporters on both platforms read at render time. Build #6.2.1: iOS pulls the key at launch and pushes edits from Settings → Report Branding (text fields two-way; `logoStoragePath` round-trips opaquely — iOS logo binary sync is a follow-on). |
+| Folder export (one dir per bucket) | ✅; 🚧 completeness #6.38.1 | ✅; 🚧 completeness #6.38.1 | Browser manifest and `project_exports` ZIP jobs | Candidate includes originals, plans and raw markup/drawing attachments. Native folders publish only after all required writes; server ZIPs verify streamed lengths; browser failures retain counts and require deliberate partial download. Native marked composites are additional derivatives; browser/server ZIPs retain the raw overlay for portable editing. |
+| Report branding and logo transfer | ✅ text; 🚧 binary #6.38.1 | ✅; 🚧 dedicated logo route #6.38.1 | `app_config.reportBranding`; `/v1/branding/logo` | Candidate uses admin-only immutable logo uploads, then atomic config revision checks. iOS retains a pending local logo on conflict/failure and caches the matching shared binary; both PDF exporters require configured branding images to be available. No synthetic project/photo record is used for logos. |
 | **Collaboration** | | | | |
-| Multi-user project access | ❌ (by design) | ✅ (#5.121.1–#5.125.1) | `profiles.is_admin`, `project_members` (DB; not in the manifest) | Org Admins + per-project Editor/Viewer shipped server+web (admin UI at `/admin/users` + per-project members editor on the Info tab). iOS deliberately stays out — it reads its own projects from iCloud; membership is enforced server-side on sync. |
-| Checkout / edit lock | ✅ Build #6.21.1 (advisory) | ✅ (#5.60.1; self-lock fix #5.120.1) | `project_locks` (DB; not in the manifest) | Heartbeat-based, 10-min TTL; web `LockBanner` covers 7 states; force-release gated to Owner/Admin (#6.11.1). **iOS (#6.21.1) is deliberately advisory:** the workspace auto-acquires while open (so web sees "being edited on iPhone") and shows an amber holder banner when someone else holds it — but iOS editing is never blocked; the 3-way merge protects concurrent edits. Field capture must not wait on a lock. |
-| Read-only viewer (no lock) | ❌ (by design) | ✅ (#5.60.1) | same | Web shows read-only state with holder info + "Force release" (Owner/Admin). iOS never goes read-only on the transient lock (see row above) — only the persistent freeze (#6.1.1) makes iOS read-only. |
+| Project membership management | ❌ admin UI | ✅ | `profiles.is_admin`, `project_members` (database) | Membership administration remains web-only. Candidate iOS reads effective role/ownership and makes viewer projects read-only; server independently enforces access. |
+| Checkout / edit lock | ✅ Build #6.21.1 (advisory) | ✅ (#5.60.1; self-lock fix #5.120.1) | `project_locks` (DB; not in the manifest) | Heartbeat-based, 10-min TTL; web `LockBanner` covers 7 states; force-release gated to Owner/Admin (#6.11.1). **iOS (#6.21.1) is deliberately advisory:** the workspace auto-acquires while open (so web sees "being edited on iPhone") and shows an amber holder banner when someone else holds it — but iOS editing is never blocked; the 3-way merge protects concurrent edits. Field capture can continue locally; candidate #6.38.1 queues a failed sync when the server lock belongs to another session and keeps that status visible. |
+| Read-only membership role | 🚧 #6.38.1 | ✅ | Effective `ProjectRole` from manifest response | Viewer status disables local edits and server writes. It is separate from an advisory iOS edit-lock banner and from persistent project finalization. |
 | Audit log | 📋 Phase 1 | 📋 Phase 1 | `audit_log` (server-side) | |
 | **Settings** | | | | |
 | Settings page | ✅ | ✅ Build #5.85.1 | n/a (UI shell) | `/settings` route with Account (email, password change, sign-out), AI tagging (model + threshold + concurrency), Team-wide config (links to /admin/tag-library and /admin/ai-rules), Diagnostics (build SHA / branch / timestamp). Gear-icon links in both the project list header and the workspace header. |
@@ -129,8 +137,8 @@ one-line reason here; CI does not enforce parity for these rows.
   MapKit; web stores the literal string and iOS picks a fix on
   next sync if the user wants one.
 - **PencilKit markup drawing (iOS-only)** — Apple PencilKit is iOS /
-  iPadOS only. Web shows existing markup as a read-only PNG overlay
-  on top of the photo.
+  iPadOS only. Web can display and edit a raster PNG overlay but cannot edit the original
+  PencilKit stroke data. A new web overlay clears the stale PencilKit reference.
 - **Voice dictation, alternate app icon, accent color (iOS-only)** —
   iOS UIKit / SwiftUI affordances with no web equivalent.
 

@@ -10,6 +10,7 @@ import UIKit
 struct ReportBrandingSheet: View {
     @Environment(ProjectStore.self) private var store
     @Environment(ToastCenter.self) private var toastCenter
+    @Environment(AppConfigSyncer.self) private var configSyncer
     @Environment(\.dismiss) private var dismiss
 
     @State private var coverTitle: String = ""
@@ -22,10 +23,20 @@ struct ReportBrandingSheet: View {
     /// (Build #5.56.1; same shape as the other settings sheets'
     /// reset affordances).
     @State private var confirmingReset: Bool = false
+    @State private var confirmingSharedReplacement = false
 
     var body: some View {
         NavigationStack {
             Form {
+                if let error = configSyncer.brandingSyncError {
+                    Section("Shared branding needs attention") {
+                        Text(error).foregroundStyle(.orange)
+                        Button(configSyncer.brandingNeedsReview ? "Replace shared version with these settings…" : "Retry branding sync") {
+                            if configSyncer.brandingNeedsReview { confirmingSharedReplacement = true }
+                            else { Task { await configSyncer.retryReportBranding() } }
+                        }.disabled(configSyncer.inFlight.contains("reportBranding"))
+                    }
+                }
                 Section {
                     HStack(alignment: .center, spacing: 12) {
                         Group {
@@ -106,6 +117,15 @@ struct ReportBrandingSheet: View {
             }
             .navigationTitle("Report Branding")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("Replace the shared branding?", isPresented: $confirmingSharedReplacement) {
+                Button("Replace shared version", role: .destructive) {
+                    saveText()
+                    Task { await configSyncer.retryReportBranding(replaceSharedVersion: true) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The current title, subtitle, footer and logo shown on this device will replace the shared settings. Project photos and evidence are unchanged.")
+            }
             .alert("Reset report branding to default?",
                    isPresented: $confirmingReset) {
                 Button("Reset", role: .destructive) {
@@ -160,8 +180,8 @@ struct ReportBrandingSheet: View {
     private func loadLogo(from item: PhotosPickerItem) async {
         guard let data = try? await item.loadTransferable(type: Data.self),
               let image = UIImage(data: data) else { return }
-        _ = store.setBrandingLogo(image)
-        logoPreview = image
+        let saved = store.setBrandingLogo(image)
+        if saved.logoFilename != nil { logoPreview = store.brandingLogoImage() }
     }
 }
 

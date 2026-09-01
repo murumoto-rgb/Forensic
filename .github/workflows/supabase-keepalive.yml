@@ -5,9 +5,9 @@ name: Keepalive — ping Supabase
 # can only be resumed manually from the Supabase dashboard, so the
 # goal is to never let it pause in the first place.
 #
-# Why this is separate from keepalive.yml: that workflow pings the
-# Render server's /healthz every 14 min to keep the *web process*
-# warm — but /healthz returns a static object and never touches
+# Why this is separate from keepalive.yml: that workflow now offers
+# only a manual wake of Render's web process, conserving shared Free
+# instance hours. Its /healthz returns a static object and never touches
 # Postgres (see server/src/routes/healthz.ts), so it does NOT count
 # as Supabase activity. This workflow closes that gap by running a
 # real (tiny) SELECT against the database once a day, which resets

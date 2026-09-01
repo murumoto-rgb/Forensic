@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AiAnalysisCsvOptions } from "@forensic/shared";
 import { api, ApiError } from "../lib/api";
+import { Modal } from "./Modal";
 
 /**
  * "AI Analysis CSV" export trigger (Build #5.99.1).
@@ -79,11 +80,7 @@ export function CsvExportControl({
       {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
 
       {showModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-        >
+        <Modal title="AI Analysis CSV export" onClose={() => { if (!submitting) setShowModal(false); }}>
           <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-neutral-700 bg-neutral-900 p-6 shadow-2xl">
             <div>
               <h2 className="text-base font-semibold text-neutral-100">
@@ -159,7 +156,7 @@ export function CsvExportControl({
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </>
   );

@@ -1,5 +1,12 @@
 import Foundation
 
+@MainActor
+protocol ManifestSyncTransport: AnyObject {
+    func listProjects() async throws -> ProjectListResponse
+    func getProject(id: UUID) async throws -> GetManifestResponse
+    func putProject(id: UUID, project: Project, expectedRevision: String?, baseManifest: Project?) async throws -> PutManifestResponse
+}
+
 /// Thin REST client for the Forensic Fastify server.
 ///
 /// Authenticates every request with the current Supabase JWT
@@ -17,7 +24,7 @@ import Foundation
 /// ISO; on-disk backwards-compat demands deferredToDate. The
 /// same `Project` struct round-trips through both.
 @MainActor
-final class APIClient {
+final class APIClient: ManifestSyncTransport {
     /// Top-level error surfaced to callers. Each case carries
     /// enough context to drive a toast message.
     enum APIError: Error, LocalizedError {
@@ -43,6 +50,7 @@ final class APIClient {
     private let auth: AuthService
     private let session: URLSession
     private let baseURL: URL
+    private let clientSessionID = UUID().uuidString.lowercased()
 
     init(auth: AuthService, session: URLSession = .shared, baseURL: URL = ServerConfig.serverURL) {
         self.auth = auth
@@ -60,7 +68,15 @@ final class APIClient {
 
     private func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let text = try decoder.singleValueContainer().decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: text) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: text) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid ISO date"))
+        }
         return decoder
     }
 
@@ -100,6 +116,38 @@ final class APIClient {
                                   body: body)
     }
 
+    // MARK: Project recovery and reusable workflows
+
+    func projectHealth(id: UUID, verify: Bool = false) async throws -> ProjectHealthResponse {
+        try await request("GET", "/v1/projects/\(id.uuidString.lowercased())/health\(verify ? "?verify=true" : "")", body: Optional<Empty>.none)
+    }
+    func assetURL(projectID: UUID, asset: LocalProjectAsset) async throws -> PhotoUrlResponse {
+        var path = URLComponents()
+        path.path = "/v1/projects/\(projectID.uuidString.lowercased())/files/\(asset.entityID.uuidString.lowercased())/\(asset.kind.rawValue)"
+        path.queryItems = [URLQueryItem(name: "filename", value: asset.filename)]
+        return try await request("GET", path.string!, body: Optional<Empty>.none)
+    }
+    func projectVersions(id: UUID) async throws -> ProjectVersionsResponse {
+        try await request("GET", "/v1/projects/\(id.uuidString.lowercased())/versions", body: Optional<Empty>.none)
+    }
+    func projectVersion(id: UUID, versionID: String) async throws -> ProjectVersionResponse {
+        try await request("GET", "/v1/projects/\(id.uuidString.lowercased())/versions/\(versionID)", body: Optional<Empty>.none)
+    }
+    func restoreVersion(id: UUID, versionID: String, expectedRevision: String) async throws -> GetManifestResponse {
+        struct Body: Encodable { let versionId: String; let expectedRevision: String }
+        return try await request("POST", "/v1/projects/\(id.uuidString.lowercased())/versions/restore", body: Body(versionId: versionID, expectedRevision: expectedRevision))
+    }
+    func workflowLibrary() async throws -> WorkflowLibraryResponse {
+        try await request("GET", "/v1/me/workflow", body: Optional<Empty>.none)
+    }
+    func saveWorkflowLibrary(_ library: WorkflowLibrary, expectedRevision: String?) async throws -> WorkflowLibraryWriteResponse {
+        try await request("PUT", "/v1/me/workflow", body: WorkflowLibraryWrite(library: library, expectedRevision: expectedRevision))
+    }
+    func searchProjects(filter: SearchFilter, offset: Int = 0) async throws -> ProjectSearchResponse {
+        struct Body: Encodable { let filter: SearchFilter; let offset: Int; let limit: Int }
+        return try await request("POST", "/v1/search", body: Body(filter: filter, offset: offset, limit: 50))
+    }
+
     // MARK: Phase 2 — files (Cloudflare R2)
 
     /// Ask the server for a presigned R2 PUT URL the client can
@@ -109,13 +157,13 @@ final class APIClient {
                       kind: FileKind,
                       sizeBytes: Int,
                       sha256: String?,
-                      contentType: String) async throws -> UploadUrlResponse {
+                      contentType: String, sourceFilename: String) async throws -> UploadUrlResponse {
         let body = UploadUrlRequest(
             photoId: photoId.uuidString.lowercased(),
             kind: kind,
             sizeBytes: sizeBytes,
             sha256: sha256,
-            contentType: contentType
+            contentType: contentType, immutable: true, sourceFilename: sourceFilename
         )
         return try await request(
             "POST",
@@ -132,13 +180,13 @@ final class APIClient {
                       photoId: UUID,
                       kind: FileKind,
                       sizeBytes: Int,
-                      sha256: String?) async throws -> CommitUploadResponse {
+                      sha256: String?, sourceFilename: String) async throws -> CommitUploadResponse {
         let body = CommitUploadRequest(
             objectKey: objectKey,
             photoId: photoId.uuidString.lowercased(),
             kind: kind,
             sizeBytes: sizeBytes,
-            sha256: sha256
+            sha256: sha256, immutable: true, sourceFilename: sourceFilename
         )
         return try await request(
             "POST",
@@ -266,6 +314,23 @@ final class APIClient {
         return try await request("PUT", "/v1/config/reportBranding", body: body)
     }
 
+    func uploadBrandingLogo(_ bytes: Data) async throws -> BrandingLogoUploadResponse {
+        try await request("POST", "/v1/branding/logo", body: BrandingLogoUploadRequest(pngBase64: bytes.base64EncodedString()))
+    }
+
+    func getBrandingLogo() async throws -> GetBrandingLogoResponse {
+        try await request("GET", "/v1/branding/logo", body: Optional<Empty>.none)
+    }
+
+    func downloadBrandingLogo(_ url: URL) async throws -> Data {
+        // A presigned storage URL receives no Supabase Authorization header.
+        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 30))
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), data.count <= 1024 * 1024 else {
+            throw APIError.http(status: 502, code: "logo_download_failed", message: "Shared logo download failed or exceeded 1 MiB.")
+        }
+        return data
+    }
+
     /// Push the team AI prompt templates (Build #6.3.1). Whole-array
     /// replace, same optimistic-concurrency semantics as the other
     /// config keys.
@@ -314,7 +379,7 @@ final class APIClient {
     func getLock(projectId: UUID) async throws -> GetLockResponseWire {
         try await request(
             "GET",
-            "/v1/projects/\(projectId.uuidString.lowercased())/lock",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock?clientSession=\(clientSessionID)",
             body: Optional<Empty>.none
         )
     }
@@ -327,7 +392,7 @@ final class APIClient {
         try await request(
             "POST",
             "/v1/projects/\(projectId.uuidString.lowercased())/lock",
-            body: AcquireLockRequestWire(client: "ios")
+            body: AcquireLockRequestWire(client: "ios", clientSession: clientSessionID)
         )
     }
 
@@ -346,7 +411,7 @@ final class APIClient {
     func releaseLock(projectId: UUID) async throws {
         let _: OkResponseWire = try await request(
             "DELETE",
-            "/v1/projects/\(projectId.uuidString.lowercased())/lock",
+            "/v1/projects/\(projectId.uuidString.lowercased())/lock?clientSession=\(clientSessionID)",
             body: Optional<Empty>.none
         )
     }
@@ -384,9 +449,10 @@ final class APIClient {
     /// signature won't validate.
     func uploadBytesToPresignedURL(_ url: URL,
                                     data: Data,
-                                    contentType: String) async throws {
+                                    contentType: String, requiredHeaders: [String: String] = [:]) async throws {
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
+        for (name, value) in requiredHeaders { req.setValue(value, forHTTPHeaderField: name) }
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         req.setValue("\(data.count)", forHTTPHeaderField: "Content-Length")
         let (_, response) = try await session.upload(for: req, from: data)
@@ -414,10 +480,14 @@ final class APIClient {
             throw APIError.notAuthenticated
         }
 
-        var urlRequest = URLRequest(url: baseURL.appendingPathComponent(path))
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
+            throw APIError.http(status: 400, code: "invalid_path", message: "Invalid API path")
+        }
+        var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method
         urlRequest.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue(clientSessionID, forHTTPHeaderField: "X-Client-Session")
 
         if let body {
             do {
@@ -539,6 +609,8 @@ struct ProjectListItem: Decodable, Identifiable {
 struct GetManifestResponse: Decodable {
     let project: Project
     let revision: String
+    let role: String?
+    let isOwner: Bool?
 }
 
 // MARK: - Phase 2: Files (Cloudflare R2)
@@ -546,7 +618,7 @@ struct GetManifestResponse: Decodable {
 /// Categories of binary stored in R2. Must match the server's
 /// FileKind in `packages/shared/src/api.ts` and the SQL CHECK
 /// constraint in migration 0003. Wire format is the raw string.
-enum FileKind: String, Codable {
+enum FileKind: String, Codable, Sendable {
     case photo
     case thumb
     case markupPng = "markup_png"
@@ -563,12 +635,15 @@ struct UploadUrlRequest: Encodable {
     let sizeBytes: Int
     let sha256: String?
     let contentType: String
+    let immutable: Bool
+    let sourceFilename: String
 }
 
 struct UploadUrlResponse: Decodable {
     let uploadUrl: String
     let objectKey: String
     let expiresAt: String
+    let requiredHeaders: [String: String]?
 }
 
 struct CommitUploadRequest: Encodable {
@@ -577,6 +652,8 @@ struct CommitUploadRequest: Encodable {
     let kind: FileKind
     let sizeBytes: Int
     let sha256: String?
+    let immutable: Bool
+    let sourceFilename: String
 }
 
 struct CommitUploadResponse: Decodable {
@@ -614,6 +691,7 @@ struct LockResponseWire: Decodable {
 
 struct AcquireLockRequestWire: Encodable {
     let client: String
+    let clientSession: String
 }
 
 /// Generic `{ok: true}` acknowledgment used by the lock DELETE (and
@@ -750,6 +828,10 @@ struct AppConfigPutReportBrandingRequest: Encodable {
         try c.encode(expectedRevision, forKey: .expectedRevision)
     }
 }
+
+struct BrandingLogoUploadRequest: Encodable { let pngBase64: String }
+struct BrandingLogoUploadResponse: Decodable { let objectKey: String }
+struct GetBrandingLogoResponse: Decodable { let objectKey: String; let url: URL; let expiresAt: String }
 
 /// PUT body for `aiPromptTemplates`. Same explicit-null discipline
 /// for `expectedRevision` as the other config PUT bodies.

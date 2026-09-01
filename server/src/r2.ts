@@ -51,8 +51,11 @@ export function buildObjectKey(args: {
   projectId: string;
   photoId: string;
   kind: string;
+  /** New uploads use a unique suffix; omit for legacy lookup keys. */
+  uploadId?: string;
 }): string {
-  return `${args.projectId}/${args.photoId}/${args.kind}`;
+  const base = `${args.projectId}/${args.photoId}/${args.kind}`;
+  return args.uploadId ? `${base}/${args.uploadId}` : base;
 }
 
 /**
@@ -65,12 +68,14 @@ export async function presignedPut(args: {
   contentType: string;
   contentLength: number;
   expiresInSeconds: number;
+  ifNoneMatch?: string;
 }): Promise<string> {
   const command = new PutObjectCommand({
     Bucket: r2Bucket,
     Key: args.objectKey,
     ContentType: args.contentType,
     ContentLength: args.contentLength,
+    IfNoneMatch: args.ifNoneMatch,
   });
   return getSignedUrl(r2, command, { expiresIn: args.expiresInSeconds });
 }
@@ -98,18 +103,63 @@ export async function presignedGet(args: {
  * browser. Throws on any error including 404; callers wrap with
  * appropriate HTTP error mapping.
  */
-export async function getObjectBytes(objectKey: string): Promise<Buffer> {
-  const resp = await r2.send(
-    new GetObjectCommand({
-      Bucket: r2Bucket,
-      Key: objectKey,
-    })
-  );
-  if (!resp.Body) {
-    throw new Error(`R2 GetObject returned no body for ${objectKey}`);
+export const OBJECT_READ_TIMEOUT_MS = 60_000;
+export const MAX_OBJECT_READ_BYTES = 50 * 1024 * 1024;
+
+/** One deadline includes SDK retries, response headers, and the entire body.
+ * Callers may lower these limits, never extend the shared upper bounds. */
+export async function getObjectBytes(
+  objectKey: string,
+  options: { timeoutMs?: number; maxBytes?: number } = {}
+): Promise<Buffer> {
+  const timeoutMs = options.timeoutMs ?? OBJECT_READ_TIMEOUT_MS;
+  const maxBytes = options.maxBytes ?? MAX_OBJECT_READ_BYTES;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > OBJECT_READ_TIMEOUT_MS ||
+      !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_OBJECT_READ_BYTES) {
+    throw new RangeError("Invalid object-read limits");
   }
-  const bytes = await resp.Body.transformToByteArray();
-  return Buffer.from(bytes);
+  const controller = new AbortController();
+  let body: import("node:stream").Readable | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = Object.assign(new Error("Object read timed out before the complete body arrived"), { name: "TimeoutError" });
+      controller.abort(error);
+      body?.destroy(error);
+      reject(error);
+    }, timeoutMs);
+    timer.unref();
+  });
+  const read = async (): Promise<Buffer> => {
+    const response = await r2.send(new GetObjectCommand({ Bucket: r2Bucket, Key: objectKey }), { abortSignal: controller.signal });
+    if (!response.Body) throw new Error(`R2 GetObject returned no body for ${objectKey}`);
+    body = response.Body as unknown as import("node:stream").Readable;
+    if (controller.signal.aborted) {
+      body.destroy();
+      throw controller.signal.reason;
+    }
+    if (response.ContentLength !== undefined && response.ContentLength > maxBytes) {
+      throw new Error(`Object exceeds the ${maxBytes}-byte read limit`);
+    }
+    const parts: Buffer[] = [];
+    let length = 0;
+    for await (const part of body) {
+      const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
+      length += bytes.byteLength;
+      if (length > maxBytes) throw new Error(`Object exceeds the ${maxBytes}-byte read limit`);
+      parts.push(bytes);
+    }
+    if (response.ContentLength !== undefined && length !== response.ContentLength) {
+      throw new Error("Object body length does not match its response header");
+    }
+    return Buffer.concat(parts, length);
+  };
+  try {
+    return await Promise.race([read(), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    body?.destroy();
+  }
 }
 
 /**
@@ -149,6 +199,7 @@ export async function putObjectBytes(args: {
   objectKey: string;
   body: Buffer;
   contentType: string;
+  ifNoneMatch?: string;
 }): Promise<void> {
   await r2.send(
     new PutObjectCommand({
@@ -157,7 +208,9 @@ export async function putObjectBytes(args: {
       Body: args.body,
       ContentType: args.contentType,
       ContentLength: args.body.byteLength,
-    })
+      IfNoneMatch: args.ifNoneMatch,
+    }),
+    { abortSignal: AbortSignal.timeout(60000) }
   );
 }
 
@@ -239,5 +292,16 @@ export async function objectExists(objectKey: string): Promise<boolean> {
       }
     }
     throw err;
+  }
+}
+
+/** HEAD verifies availability and byte length, never a cryptographic content hash. */
+export async function inspectObject(objectKey: string): Promise<{ state: "available" | "missing" | "unverified"; sizeBytes: number | null }> {
+  try {
+    const result = await r2.send(new HeadObjectCommand({ Bucket: r2Bucket, Key: objectKey }), { abortSignal: AbortSignal.timeout(10000) });
+    return { state: typeof result.ContentLength === "number" ? "available" : "unverified", sizeBytes: result.ContentLength ?? null };
+  } catch (error) {
+    const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+    return { state: e.name === "NotFound" || e.$metadata?.httpStatusCode === 404 ? "missing" : "unverified", sizeBytes: null };
   }
 }

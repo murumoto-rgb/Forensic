@@ -23,6 +23,8 @@ import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import { env, corsOrigins } from "./env.js";
 import "./types.js";
+import { workflowRoute } from "./routes/workflow.js";
+import { recoveryRoute } from "./routes/recovery.js";
 import { healthzRoute } from "./routes/healthz.js";
 import { projectsRoute } from "./routes/projects.js";
 import { filesRoute } from "./routes/files.js";
@@ -30,6 +32,7 @@ import { photosRoute } from "./routes/photos.js";
 import { plansRoute } from "./routes/plans.js";
 import { aiTagRoute } from "./routes/aiTag.js";
 import { appConfigRoute } from "./routes/appConfig.js";
+import { brandingRoute } from "./routes/branding.js";
 import { locksRoute } from "./routes/locks.js";
 import { exportsRoute } from "./routes/exports.js";
 import { projectExportsRoute } from "./routes/projectExports.js";
@@ -42,6 +45,9 @@ import { ensureChromium } from "./exports/ensureChromium.js";
 
 async function main() {
   const app = Fastify({
+    // Keep the HTTP transport's header budget explicit even if the host raises
+    // NODE_OPTIONS. This bounds inbound baggage parsing in optional Sentry 8.
+    http: { maxHeaderSize: 16 * 1024 },
     logger: {
       level: env.NODE_ENV === "production" ? "info" : "debug",
       transport:
@@ -53,10 +59,11 @@ async function main() {
     // Manifest JSON can grow with photo count + AI-analysis blobs.
     // A forensic project with hundreds of photos easily exceeds
     // Fastify's 1 MB default. 50 MB matches the per-photo binary
-    // cap on the upload endpoints — sized to handle ~500-1000
-    // photos worth of metadata. Render free tier has 512 MB RAM
-    // so a single 50 MB body is comfortably within budget.
+    // cap on the upload endpoints. This is a legacy compatibility ceiling,
+    // not a promise that every such manifest fits every deployment's RAM.
     bodyLimit: 50 * 1024 * 1024,
+    requestTimeout: 120000,
+    connectionTimeout: 120000,
   });
 
   await app.register(sensible);
@@ -80,11 +87,14 @@ async function main() {
 
   await app.register(healthzRoute);
   await app.register(projectsRoute);
+  await app.register(workflowRoute);
+  await app.register(recoveryRoute);
   await app.register(filesRoute);
   await app.register(photosRoute);
   await app.register(plansRoute);
   await app.register(aiTagRoute);
   await app.register(appConfigRoute);
+  await app.register(brandingRoute);
   await app.register(locksRoute);
   await app.register(exportsRoute);
   await app.register(projectExportsRoute);

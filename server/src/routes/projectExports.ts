@@ -1,3 +1,4 @@
+import { sendExportLimit } from "../resourceLimits.js";
 /**
  * Unified exports route (Build #5.97.1).
  *
@@ -23,6 +24,7 @@ import {
   type CreateProjectExportResponse,
   type ExportStatus,
   type FolderExportManifestBucket,
+  type FolderExportManifestAttachment,
   type FolderExportManifestPhoto,
   type FolderExportManifestPlan,
   type GetFolderExportManifestResponse,
@@ -31,6 +33,7 @@ import {
   type Photo,
   type Project,
   type ProjectExport,
+  FILE_MAX_BYTES,
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
@@ -41,6 +44,28 @@ import {
 import { deleteObjects, presignedGet } from "../r2.js";
 
 const DOWNLOAD_URL_TTL_SECONDS = 300; // 5 min
+
+interface RegistryFile {
+  photo_id: string;
+  object_key: string;
+  kind: string;
+  size_bytes: number | null;
+  source_filename: string | null;
+}
+
+async function loadFolderFiles(projectId: string, ids: string[], kinds: string[]): Promise<RegistryFile[]> {
+  const rows: RegistryFile[] = [];
+  // Keep PostgREST URLs bounded; 100 IDs also keeps three-kind results below
+  // its default row cap. No partial registry result is returned on failure.
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabaseAdmin.from("current_project_files")
+      .select("photo_id, object_key, size_bytes, kind, source_filename")
+      .eq("project_id", projectId).in("photo_id", ids.slice(i, i + 100)).in("kind", kinds);
+    if (error) throw error;
+    rows.push(...((data ?? []) as RegistryFile[]));
+  }
+  return rows;
+}
 
 interface ExportRow {
   id: string;
@@ -170,6 +195,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       .select("*")
       .maybeSingle();
     if (error || !data) {
+      if (sendExportLimit(reply, error)) return;
       request.log.error({ err: error, projectId }, "project_exports — enqueue failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
@@ -315,7 +341,7 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     // Read manifest.
     const { data: projectRow, error: projErr } = await supabaseAdmin
       .from("projects")
-      .select("manifest")
+      .select("manifest, revision")
       .eq("id", projectId)
       .maybeSingle();
     if (projErr || !projectRow) {
@@ -324,30 +350,17 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     }
     const project = projectRow.manifest as unknown as Project;
 
-    // Look up R2 keys for every photo + plan in one query each
-    // (case-safe via lowercase compare).
+    // Resolve every required registry chunk before issuing any download URL.
     const photoIds = project.photos.map((p) => p.id);
     const planIds = project.floorPlans.map((p) => p.id);
 
-    const { data: photoFileRows, error: photoErr } = await supabaseAdmin
-      .from("files")
-      .select("photo_id, object_key, size_bytes")
-      .eq("project_id", projectId)
-      .in("photo_id", photoIds)
-      .eq("kind", "photo");
-    if (photoErr) {
-      request.log.error({ err: photoErr, projectId }, "manifest — photo files lookup failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    const { data: planFileRows, error: planErr } = await supabaseAdmin
-      .from("files")
-      .select("photo_id, object_key, size_bytes")
-      .eq("project_id", projectId)
-      .in("photo_id", planIds)
-      .eq("kind", "plan");
-    if (planErr) {
-      request.log.error({ err: planErr, projectId }, "manifest — plan files lookup failed");
+    let photoFileRows: RegistryFile[], planFileRows: RegistryFile[], markupFileRows: RegistryFile[];
+    try {
+      photoFileRows = await loadFolderFiles(projectId, photoIds, ["photo"]);
+      planFileRows = await loadFolderFiles(projectId, planIds, ["plan"]);
+      markupFileRows = await loadFolderFiles(projectId, photoIds, ["markup_png", "markup_drawing"]);
+    } catch (error) {
+      request.log.error({ err: error, projectId }, "manifest — required files lookup failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
@@ -355,24 +368,53 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
     interface FileLookup {
       objectKey: string;
       sizeBytes: number;
+      sourceFilename: string | null;
     }
     const photoFileByIdLower = new Map<string, FileLookup>();
     for (const row of photoFileRows ?? []) {
-      const r = row as { photo_id: string; object_key: string; size_bytes: number | null };
+      const r = row as { photo_id: string; object_key: string; size_bytes: number | null; source_filename: string | null };
       photoFileByIdLower.set(r.photo_id.toLowerCase(), {
         objectKey: r.object_key,
         sizeBytes: r.size_bytes ?? 0,
-      });
-    }
-    const planFileByIdLower = new Map<string, FileLookup>();
-    for (const row of planFileRows ?? []) {
-      const r = row as { photo_id: string; object_key: string; size_bytes: number | null };
-      planFileByIdLower.set(r.photo_id.toLowerCase(), {
-        objectKey: r.object_key,
-        sizeBytes: r.size_bytes ?? 0,
+        sourceFilename: r.source_filename,
       });
     }
 
+    const markupByPhotoKind = new Map<string, FileLookup>();
+    for (const row of markupFileRows ?? []) {
+      const r = row as { photo_id: string; object_key: string; size_bytes: number | null; kind: string; source_filename: string | null };
+      markupByPhotoKind.set(`${r.photo_id.toLowerCase()}:${r.kind}`, { objectKey: r.object_key, sizeBytes: r.size_bytes ?? 0, sourceFilename: r.source_filename });
+    }
+    const planFileByIdLower = new Map<string, FileLookup>();
+    for (const row of planFileRows ?? []) {
+      const r = row as { photo_id: string; object_key: string; size_bytes: number | null; source_filename: string | null };
+      planFileByIdLower.set(r.photo_id.toLowerCase(), { objectKey: r.object_key, sizeBytes: r.size_bytes ?? 0, sourceFilename: r.source_filename });
+    }
+
+    const missing: string[] = [];
+    const invalidBytes: string[] = [];
+    const filenameMismatches: string[] = [];
+    const checkAsset = (label: string, filename: string, lookup: FileLookup) => {
+      // The current view follows the live manifest, not this export snapshot.
+      // Supported legacy rows were backfilled by 0017; null must not be guessed.
+      if (lookup.sourceFilename !== filename) filenameMismatches.push(label);
+      if (!Number.isSafeInteger(lookup.sizeBytes) || lookup.sizeBytes <= 0 || lookup.sizeBytes > FILE_MAX_BYTES) invalidBytes.push(label);
+    };
+    for (const p of project.photos) {
+      const photoLookup = photoFileByIdLower.get(p.id.toLowerCase());
+      if (!photoLookup) missing.push(`photo ${p.id}`); else checkAsset(`photo ${p.id}`, p.imageFilename, photoLookup);
+      for (const [kind, filename] of [["markup_png", p.markupOverlayFilename], ["markup_drawing", p.markupDrawingFilename]] as const) {
+        const markupLookup = markupByPhotoKind.get(`${p.id.toLowerCase()}:${kind}`);
+        if (filename && !markupLookup) missing.push(`${kind} ${filename} (photo ${p.id})`);
+        else if (filename && markupLookup) checkAsset(`${kind} ${filename}`, filename, markupLookup);
+      }
+    }
+    for (const p of project.floorPlans) { const planLookup = planFileByIdLower.get(p.id.toLowerCase()); if (!planLookup) missing.push(`plan ${p.imageFilename}`); else checkAsset(`plan ${p.imageFilename}`, p.imageFilename, planLookup); }
+    if (missing.length || invalidBytes.length || filenameMismatches.length) {
+      const problems = [...missing, ...invalidBytes.map((x) => `${x} has invalid byte count`), ...filenameMismatches.map(x => `${x} filename differs from the export snapshot`)];
+      reply.code(409).send({ error: "export_incomplete", message: `Missing or invalid required export files: ${problems.slice(0, 20).join(", ")}`, details: { missing, invalidBytes, filenameMismatches } });
+      return;
+    }
     // Build the bucket folder mapping (matches iOS naming).
     const bucketsSorted = [...project.buckets].sort(
       (a, b) => a.sortOrder - b.sortOrder
@@ -383,15 +425,18 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       folderName: `${String(idx + 1).padStart(2, "0")} ${safeName(b.name)}`,
     }));
 
+    const bucketIdByLower = new Map(buckets.map(bucket => [bucket.id.toLowerCase(), bucket.id]));
+
     // Presign every URL with one promise per photo + plan, all in
     // parallel (presign is local — no R2 round-trip — so a few
     // hundred concurrent presigns are fine).
     const PRESIGN_TTL = 15 * 60;
     const photos: FolderExportManifestPhoto[] = [];
+    const usedNames = new Set<string>();
     let totalSizeBytes = 0;
     const photoPromises = project.photos.map(async (p) => {
       const lookup = photoFileByIdLower.get(p.id.toLowerCase());
-      if (!lookup) return null; // not yet uploaded
+      if (!lookup) throw new Error(`missing photo ${p.id}`);
       const url = await presignedGet({
         objectKey: lookup.objectKey,
         expiresInSeconds: PRESIGN_TTL,
@@ -403,13 +448,24 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       if (!result) continue;
       const { p, url, lookup } = result;
       totalSizeBytes += lookup.sizeBytes;
-      photos.push(photoManifestEntry(project, p, url));
+      const entry = photoManifestEntry(project, p, url);
+      let filename = entry.filename;
+      const extension = entry.filename.match(/\.[^.]*$/)?.[0] ?? "";
+      const stem = entry.filename.slice(0, entry.filename.length - extension.length);
+      let n = 2;
+      // Always change the alias, including for an empty/trailing-dot extension.
+      // The exact source filename and object key stay unchanged.
+      while (usedNames.has(filename)) filename = `${stem}-${n++}${extension}`;
+      usedNames.add(filename);
+      photos.push({ ...entry, filename, sizeBytes: lookup.sizeBytes,
+        bucketId: entry.bucketId ? bucketIdByLower.get(entry.bucketId.toLowerCase()) ?? null : null,
+      });
     }
 
     const plans: FolderExportManifestPlan[] = [];
     const planPromises = project.floorPlans.map(async (pl) => {
       const lookup = planFileByIdLower.get(pl.id.toLowerCase());
-      if (!lookup) return null;
+      if (!lookup) throw new Error(`missing plan ${pl.id}`);
       const url = await presignedGet({
         objectKey: lookup.objectKey,
         expiresInSeconds: PRESIGN_TTL,
@@ -421,25 +477,47 @@ export const projectExportsRoute: FastifyPluginAsync = async (app) => {
       if (!result) continue;
       const { pl, url, lookup } = result;
       totalSizeBytes += lookup.sizeBytes;
+      let planFilename = `${safeName(pl.label)}.${(pl.imageFilename.split(".").pop() ?? "png")}`;
+      let planNumber = 2;
+      while (usedNames.has(planFilename)) planFilename = `${safeName(pl.label)}-${planNumber++}.${(pl.imageFilename.split(".").pop() ?? "png")}`;
+      usedNames.add(planFilename);
       plans.push({
         id: pl.id,
         presignedUrl: url,
-        filename: `${safeName(pl.label)}.${(pl.imageFilename.split(".").pop() ?? "png")}`,
+        filename: planFilename,
         label: pl.label,
         pixelsPerFoot: pl.pixelsPerFoot,
         calibrationDistanceFeet: pl.calibrationDistanceFeet,
         northDeg: pl.northDeg,
         distressMarkerCount: pl.distress.length,
+        sizeBytes: lookup.sizeBytes,
       });
+    }
+
+    const attachments: FolderExportManifestAttachment[] = [];
+    for (const p of project.photos) {
+      for (const [kind, source] of [["markup_png", p.markupOverlayFilename], ["markup_drawing", p.markupDrawingFilename]] as const) {
+        if (!source) continue;
+        const lookup = markupByPhotoKind.get(`${p.id.toLowerCase()}:${kind}`)!;
+        const base = safeName(source);
+        let filename = `${safeName(project.name)} - ${p.sequenceNumber} - ${base}`;
+        let n = 2;
+        while (usedNames.has(filename)) filename = `${safeName(project.name)} - ${p.sequenceNumber} - ${n++} - ${base}`;
+        usedNames.add(filename);
+        attachments.push({ id: `${p.id}:${kind}`, photoId: p.id, kind, presignedUrl: await presignedGet({ objectKey: lookup.objectKey, expiresInSeconds: PRESIGN_TTL }), filename, sizeBytes: lookup.sizeBytes });
+        totalSizeBytes += lookup.sizeBytes;
+      }
     }
 
     return {
       manifest: {
         projectName: project.name,
+        revision: projectRow.revision,
         buckets,
         unbucketedFolderName: "99 Unbucketed",
         photos,
         plans,
+        attachments,
         totalSizeBytes,
         computedAt: new Date().toISOString(),
       },

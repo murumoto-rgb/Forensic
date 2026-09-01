@@ -8,8 +8,8 @@ without re-deriving the context.
 
 ## Cloud-first storage (offload projects to R2, download on demand)
 
-**Status:** Deferred. Hybrid local-first model is the current
-shipped behaviour and is the intended steady state for now.
+**Status:** Deferred. Hybrid binary storage with local originals is the
+current shipped behaviour. Automatic offloading is not enabled.
 
 **Idea (user request, 2026-06-06):** Let a project's photo / plan
 binaries live permanently on Cloudflare R2 and NOT require a full
@@ -18,12 +18,12 @@ local copy on the phone. Local disk becomes a size-capped cache;
 tapping a project (or a specific photo / plan) re-fetches binaries
 on demand.
 
-**Why deferred:** The hybrid model — local disk is source of truth,
-iCloud Drive is an optional backup, R2 is the upload sink + backfill
-source for new devices — gives most of the safety net without the
-UX disruption of an on-demand fetch model. Cloud-first is a
-Phase 5/6 effort once the team is comfortable with the backend
-being authoritative.
+**Why deferred:** Local originals remain available for offline work, while
+manifest synchronization uses the server revision and a three-way merge.
+R2 supplies uploaded binaries for backfill on new devices. The deferred
+change here is automatic binary offloading, not manifest authority.
+iCloud synchronization and the live R2 bucket are not independent verified
+backups; preserve separate copies and follow the backup/restore drill.
 
 **What it would take (rough scope, ~1–2 weeks):**
 1. **Lazy fetch** — replace eager `BinaryBackfillService` with an
@@ -45,9 +45,9 @@ being authoritative.
    download-then-export, or lean on the server-side PDF path
    (Sprint E2 groundwork in the AI-tagging plan partly anticipates
    this).
-7. **Backup-story messaging** — today the iCloud Drive folder is a
-   usable archive; cloud-first moves that archive to R2, so the
-   user-facing "where is my work safe" copy needs updating.
+7. **Backup-story messaging** — distinguish synchronized working copies
+   from independent archives. Offloading must not delete the only verified
+   local copy before an independent recovery path has been tested.
 
 **Trade-off summary:**
 
@@ -80,7 +80,7 @@ office staff who can't debug their own browsers).
 (2026-06-06). The plumbing is in: `server/src/sentry.ts` +
 `web/src/lib/observability.ts` both already conditionally
 init on `SENTRY_DSN` / `VITE_SENTRY_DSN`. When either env var is
-blank (current state), every helper no-ops cleanly.
+blank (historical setup; live enablement must be checked at release), every helper no-ops cleanly.
 
 **Why deferred:** With 1–3 users and the engineer watching Render's
 Logs tab directly, Sentry's value-add (cross-user grouping,
@@ -108,7 +108,7 @@ No code change required.
 
 ### 2. Resend domain verification (graduate from `onboarding@resend.dev`)
 
-**Status:** Currently sending lock-takeover emails from
+**Status:** The prior setup used lock-takeover emails from
 `onboarding@resend.dev` (Resend's sandbox sender). Works, but the
 recipient sees `@resend.dev` not a Baykal Consulting domain.
 
@@ -159,20 +159,33 @@ rows here when items ship.
 | Item | Platform | Size | Status / blocker |
 |---|---|---|---|
 | ~~iOS edit-lock UI (lock banner + acquire/release/heartbeat)~~ | iOS | — | **SHIPPED #6.21.1** — advisory model: auto-acquire while workspace open, holder banner, never blocks editing |
-| ProjectDetailView decomposition (~3,300 lines → per-tab files) | iOS | 2–4 PRs | Open — structural; reduces type-checker risk (Build-42 class) |
-| PhotoPreviewPanel split (1,614 lines → 4 files) | Web | ~1 day | Open |
+| ~~ProjectDetailView decomposition~~ | iOS | — | **SHIPPED #6.23/#6.24** — section views extracted; confirmed by the independent audit. |
+| ~~PhotoPreviewPanel split~~ | Web | — | **SHIPPED #6.22.1** — components extracted; confirmed by the independent audit. |
 | ~~Photo grid toggle (list ⇄ grid)~~ | iOS | — | **SHIPPED #6.29.1** — header toggle, 3-up grid with selection support |
-| ~~Photo-grid virtualization~~ | Web | — | **SHIPPED #6.31.1** as `content-visibility: auto` lazy rendering (same render-cost win, zero scroll rework). Revisit react-window only if 1,000+-photo projects appear. |
+| ~~Photo-grid virtualization~~ | Web | — | **SHIPPED #6.31.1** as `content-visibility: auto` lazy painting; all rows still mount. This is not windowing. Profile real 1,000-photo cases before adding a windowing library. |
 | ~~Plan color modes (web pins hardcoded blue)~~ | Web | — | **SHIPPED #6.26.1** — status/bucket/primaryTag picker on the plan toolbar, synced via user_prefs |
 | ~~Offline manifest retry queue~~ | iOS | — | **SHIPPED #6.30.1** — session-scoped pendingRetry set + foreground re-push; launch sweep already covers cold start |
-| Branding logo binary sync (R2 up/download) | iOS | 2–3 days | Open — text sync shipped #6.2.1 |
-| Start / stop project UI | Both | ~1 day tandem | Open — schema fields exist on both; no UI anywhere (matrix corrected #6.18.1) |
+| Branding logo binary sync (R2 up/download) | Both | Candidate | **IMPLEMENTED #6.38.1, not shipped** — dedicated immutable logo route, conflict-safe iOS upload/cache and PDF checks. Text sync shipped #6.2.1. |
+| Start / stop / resume inspection visits | Both | Candidate | **IMPLEMENTED #6.38.1, not shipped** — explicit controls and retained visit history in schema v4. |
 | ~~Reshoot-comparison discoverability (lineage badge)~~ | iOS | — | **SHIPPED #6.25.1** — tappable ↻ badge on photo rows opens the comparison |
 | Dark/light theme toggle + shared UI primitives (Button/Card/Modal) | Web | 1–2 days | Needs product decision first |
-| Modal focus traps (a11y) | Web | ~half day | Open — pairs with the primitives work |
-| Bucket library sync (shared type + server key + editors) | Both | ~1 week | Blocked on design choices |
-| Rate limiting on AI/export routes | Server | ~half day | Not needed until public exposure |
+| Modal focus traps (a11y) | Web | Candidate | **IMPLEMENTED #6.38.1, not shipped** for export/bulk/recovery/preset dialogs; keyboard regressions plus browser check. Legacy dialogs still need a broader accessibility pass. |
+| Bucket library sync (shared type + server key + editors) | Both | Product decision | Legacy iOS global library remains local. Candidate inspection presets provide portable bucket/checklist/settings bundles; they do not claim to sync that separate library. |
+| Rate limiting on AI/export routes | Server | Candidate | **IMPLEMENTED #6.38.1, not shipped** — durable daily/concurrent AI admissions and shared export queue limits. Protects a single owner from accidental loops as well as misuse. |
 | PDF browser-recycle tuning | Server | risky | Parked — deliberate stability workaround (#5.74.4) |
 | Background uploads (`URLSession.background`) | iOS | 3–5 days | Parked deliberately |
 | LRU cache eviction / cloud-first storage | iOS | 1–2 weeks | Parked deliberately (see section above) |
 
+
+## Candidate release checks — 2026-08-30
+
+The independent audit and its remediation are separate from deployment. See
+`docs/audit-implementation-2026-08-30.md` for evidence and outstanding release checks.
+The profile-column permission hotfix was applied and read back before publication
+on 2026-08-30; private receipts retain the environment-specific evidence. Public
+registration settings were not changed by that narrow correction. Recheck grants
+and access controls during the coordinated feature cutover.
+
+Physical iPhone/offline performance, large-report peak memory, an owner-reviewed
+AI-quality reference set, and an operational backup/restore drill remain unverified.
+There is no claim that simulator/fixture results establish those outcomes.

@@ -6,6 +6,7 @@ import SwiftUI
 /// the chooser's state.
 struct ExportView: View {
     let projectID: UUID
+    var embedded = false
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
@@ -76,7 +77,7 @@ struct ExportView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    if !embedded { Button("Done") { dismiss() } }
                 }
             }
         }
@@ -153,18 +154,18 @@ struct PDFExportRunner: View {
             failed = true; status = "No photos to export."; return
         }
         let service = PDFExportService(project: proj, store: store, options: options)
-        let url = await service.buildPDF { msg in
-            Task { @MainActor in status = msg }
-        }
-        if let url {
+        do {
+            let url = try await service.buildPDF { msg in
+                Task { @MainActor in if !failed && exportURL == nil { status = msg } }
+            }
             exportURL = url
             Haptics.success()
             toastCenter.post("PDF ready", kind: .success)
-        } else {
+        } catch {
             failed = true
-            status = "Could not build the PDF. Check that photos are accessible."
+            status = error.localizedDescription
             Haptics.error()
-            toastCenter.post("PDF export failed", kind: .error)
+            toastCenter.post("PDF export incomplete or failed", kind: .error)
         }
     }
 }
@@ -281,17 +282,18 @@ private struct FolderExportRunner: View {
             store: store,
             burnInTimestampAndGPS: burnInTimestampAndGPS
         )
-        let url = await service.export { msg in
-            Task { @MainActor in status = msg }
-        }
-        running = false
-        if let url {
+        do {
+            let url = try await service.export { msg in
+                Task { @MainActor in if !failed && folderURL == nil { status = msg } }
+            }
+            running = false
             folderURL = url
             Haptics.success()
             toastCenter.post("Folder export complete", kind: .success)
-        } else {
+        } catch {
+            running = false
             failed = true
-            status = "Could not build the folder export. Check that the photo files are accessible."
+            status = error.localizedDescription
             Haptics.error()
             toastCenter.post("Folder export failed", kind: .error)
         }
@@ -310,7 +312,7 @@ private struct FolderExportRunner: View {
     /// where the user looks for it in Files. We sniff that by checking
     /// whether the storage root is under the iCloud ubiquity container.
     private func filesAppLocationHint() -> String {
-        let path = store.rootURL.path()
+        let path = store.rootURL.path
         if path.contains("Mobile Documents") || path.contains("CloudDocs") {
             return "iCloud Drive → SitePhoto → Exports"
         }
@@ -425,7 +427,7 @@ private struct AIAnalysisCSVExportRunner: View {
     }
 
     private func filesAppLocationHint() -> String {
-        let path = store.rootURL.path()
+        let path = store.rootURL.path
         if path.contains("Mobile Documents") || path.contains("CloudDocs") {
             return "iCloud Drive → SitePhoto → Exports"
         }

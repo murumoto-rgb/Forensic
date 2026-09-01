@@ -14,13 +14,24 @@
   ],
   "scripts": {
     "parity": "pnpm --filter @forensic/shared run test",
-    "parity:regen-fixtures": "bash scripts/regen-ios-fixtures.sh"
+    "parity:regen-fixtures": "bash scripts/regen-ios-fixtures.sh",
+    "test": "pnpm parity && pnpm --filter @forensic/server test && pnpm --filter @forensic/web test"
   },
   "pnpm": {
     "//": "pnpm 9 disables lifecycle scripts of deps by default. Whitelist puppeteer so its postinstall actually downloads Chromium during `pnpm install`. Without this Render deploys land without a Chrome binary and PDF export fails at runtime with 'Could not find Chrome' (Build #5.66.1).",
     "onlyBuiltDependencies": [
       "puppeteer"
-    ]
+    ],
+    "overrides": {
+      "brace-expansion": "2.1.4",
+      "dompurify": "3.4.14",
+      "tsx>esbuild": "0.28.2",
+      "fast-uri": "3.1.6",
+      "find-my-way": "9.9.0"
+    }
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
+    "vitest": "4.1.11"
   }
 }
-

@@ -19,8 +19,8 @@ import type {
 import { supabaseAdmin } from "../supabase.js";
 import { putObjectBytes } from "../r2.js";
 import { captureException } from "../sentry.js";
+import { startQueuePoller } from "./queuePoller.js";
 
-const POLL_MS = 5_000;
 const CSV_PREFIX = "exports/csv";
 
 let workerStarted = false;
@@ -98,7 +98,12 @@ async function markDone(jobId: string, objectKey: string, sizeBytes: number): Pr
  *  quote / newline; double any internal quotes. */
 function csvField(raw: string | number | null | undefined): string {
   if (raw == null) return "";
-  const s = String(raw);
+  // CSV is a derived export. Neutralize spreadsheet formula prefixes in
+  // untrusted captions/tags/AI text; the source manifest is never changed.
+  // This is the documented safe CSV contract until an explicit raw export
+  // option is added to the shared export schema.
+  const rawString = String(raw);
+  const s = /^[\t ]*[=+\-@]/.test(rawString) ? `'${rawString}` : rawString;
   if (/[",\n\r]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }
@@ -232,9 +237,9 @@ async function runJob(job: ExportRow, log: FastifyBaseLogger): Promise<void> {
   );
 }
 
-async function tick(log: FastifyBaseLogger): Promise<void> {
+async function tick(log: FastifyBaseLogger): Promise<boolean> {
   const job = await claimNextJob(log);
-  if (!job) return;
+  if (!job) return false;
   try {
     await runJob(job, log);
   } catch (e: unknown) {
@@ -247,15 +252,14 @@ async function tick(log: FastifyBaseLogger): Promise<void> {
       log.error({ err: markErr, jobId: job.id }, "csv export — markFailed also failed");
     }
   }
+  return true;
 }
 
 export function startCsvExportWorker(log: FastifyBaseLogger): void {
   if (workerStarted) return;
   workerStarted = true;
   log.info("csv export worker started");
-  setInterval(() => {
-    void tick(log).catch((err) => {
-      log.error({ err }, "csv export worker — unhandled tick error");
-    });
-  }, POLL_MS);
+  startQueuePoller(() => tick(log), (err) => {
+    log.error({ err }, "csv export worker — unhandled tick error");
+  });
 }

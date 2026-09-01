@@ -51,6 +51,7 @@ import type {
   GetUserStorageStatusResponse,
   GetFolderExportManifestResponse,
 } from "@forensic/shared";
+import type { GetWorkflowLibraryResponse, PutWorkflowLibraryRequest, PutWorkflowLibraryResponse, ProjectHealthResponse, ListProjectVersionsResponse, GetProjectVersionResponse, RestoreProjectVersionResponse, ProjectSearchResponse, SearchFilter } from "@forensic/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -113,10 +114,10 @@ async function requestOnce<T>(path: string, init: RequestInit): Promise<T> {
 
 // Backoff schedule applied to every request. First attempt is
 // immediate (0ms); subsequent attempts wait. ApiErrors (HTTP) skip
-// the retry loop entirely. Total ceiling: ~57 sec across 5 tries,
-// which covers the worst-case Render free-tier cold-start (the
-// keepalive cron should prevent these in practice; this is the
-// safety net for when the cron itself misses a beat).
+// the retry loop entirely. Six attempts have 57 sec of backoff in
+// total, plus the time spent in each fetch. Free-plan cold starts can
+// take about a minute; no scheduled keepalive is assumed. HTTP errors
+// (including maintenance/quota responses) remain visible for retry.
 const RETRY_BACKOFFS_MS = [0, 2000, 5000, 10000, 15000, 25000];
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -177,6 +178,13 @@ export const api = {
     ),
   getProject: (id: string) =>
     request<GetManifestResponse>(`/v1/projects/${id}`),
+  getProjectHealth: (id: string, verify = false) => request<ProjectHealthResponse>(`/v1/projects/${id}/health${verify ? "?verify=true" : ""}`),
+  listProjectVersions: (id: string) => request<ListProjectVersionsResponse>(`/v1/projects/${id}/versions`),
+  getProjectVersion: (id: string, versionId: string) => request<GetProjectVersionResponse>(`/v1/projects/${id}/versions/${versionId}`),
+  restoreProjectVersion: (id: string, body: { versionId: string; expectedRevision: string }) => request<RestoreProjectVersionResponse>(`/v1/projects/${id}/versions/restore`, { method: "POST", body: JSON.stringify(body) }),
+  getWorkflowLibrary: () => request<GetWorkflowLibraryResponse>("/v1/me/workflow"),
+  putWorkflowLibrary: (body: PutWorkflowLibraryRequest) => request<PutWorkflowLibraryResponse>("/v1/me/workflow", { method: "PUT", body: JSON.stringify(body) }),
+  searchProjects: (filter: SearchFilter, offset = 0, limit = 50) => request<ProjectSearchResponse>("/v1/search", { method: "POST", body: JSON.stringify({ filter, offset, limit }) }),
   getPhotoImageUrl: (projectId: string, photoId: string) =>
     request<PhotoUrlResponse>(
       `/v1/projects/${projectId}/photos/${photoId}/image`
@@ -368,6 +376,10 @@ export const api = {
       throw e;
     }
   },
+  uploadBrandingLogo: (pngBase64: string) => request<import("@forensic/shared").BrandingLogoUploadResponse>("/v1/branding/logo", {
+    method: "POST", body: JSON.stringify({ pngBase64 }),
+  }),
+  getBrandingLogo: () => request<import("@forensic/shared").GetBrandingLogoResponse>("/v1/branding/logo"),
   getAIPromptTemplatesConfig: async (): Promise<GetAppConfigResponse<"aiPromptTemplates"> | null> => {
     try {
       return await request<GetAppConfigResponse<"aiPromptTemplates">>(

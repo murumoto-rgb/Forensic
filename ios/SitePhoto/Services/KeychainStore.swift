@@ -8,7 +8,14 @@ enum KeychainStore {
     private static let service = "com.murumoto.sitephoto.apikey"
     private static let account = "anthropic"
 
-    static func saveAnthropicKey(_ key: String) {
+    struct KeychainError: LocalizedError {
+        let status: OSStatus
+        var errorDescription: String? {
+            "Keychain could not complete the change (\(status)). Unlock this device and retry."
+        }
+    }
+
+    static func saveAnthropicKey(_ key: String) throws {
         let data = Data(key.utf8)
         let query: [String: Any] = [
             kSecClass as String:           kSecClassGenericPassword,
@@ -18,14 +25,17 @@ enum KeychainStore {
         // Try update first; if there's no existing item, fall through to add.
         let updateAttrs: [String: Any] = [
             kSecValueData as String:       data,
-            kSecAttrAccessible as String:  kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String:  kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
         let status = SecItemUpdate(query as CFDictionary, updateAttrs as CFDictionary)
         if status == errSecItemNotFound {
             var add = query
             add[kSecValueData as String]      = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(add as CFDictionary, nil)
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            let addStatus = SecItemAdd(add as CFDictionary, nil)
+            guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
+        } else if status != errSecSuccess {
+            throw KeychainError(status: status)
         }
     }
 
@@ -47,12 +57,15 @@ enum KeychainStore {
         return str
     }
 
-    static func clearAnthropicKey() {
+    static func clearAnthropicKey() throws {
         let query: [String: Any] = [
             kSecClass as String:        kSecClassGenericPassword,
             kSecAttrService as String:  service,
             kSecAttrAccount as String:  account
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError(status: status)
+        }
     }
 }

@@ -69,7 +69,11 @@ final class BinaryBackfillService {
     /// Walk every active project and download any missing photo /
     /// plan binaries. Idempotent — every download checks the local
     /// file first.
-    func backfillAll() async {
+    func backfillAll() async { await backfill(projects: store.activeProjects) }
+
+    func backfillProject(_ project: Project) async { await backfill(projects: [project]) }
+
+    private func backfill(projects: [Project]) async {
         guard auth.session != nil else {
             print("[BinaryBackfill] skipped: not signed in")
             return
@@ -92,33 +96,12 @@ final class BinaryBackfillService {
         // just falls back to the full image anyway, since iOS only
         // ever uploads the `photo` kind).
         var work: [Work] = []
-        for project in store.activeProjects {
-            var missingPhotos = 0
-            var missingThumbs = 0
-            var missingPlans = 0
-            for photo in project.photos {
-                let url = store.imageURL(for: photo, in: project)
-                if !fileManager.fileExists(atPath: url.path) {
-                    missingPhotos += 1
-                    work.append(Work(projectId: project.id,
-                                     projectName: project.name,
-                                     kind: .photo(photo)))
-                }
-                if let thumbURL = store.thumbnailURL(for: photo, in: project),
-                   !fileManager.fileExists(atPath: thumbURL.path) {
-                    missingThumbs += 1
+        for project in projects {
+            for asset in store.localAssets(in: project) where asset.kind != .thumb {
+                if !fileManager.fileExists(atPath: asset.url.path) {
+                    work.append(Work(projectId: project.id, projectName: project.name, kind: .asset(asset)))
                 }
             }
-            for plan in project.floorPlans {
-                let url = store.planImageURL(for: plan, in: project)
-                if !fileManager.fileExists(atPath: url.path) {
-                    missingPlans += 1
-                    work.append(Work(projectId: project.id,
-                                     projectName: project.name,
-                                     kind: .plan(plan)))
-                }
-            }
-            print("[BinaryBackfill] project \(project.name): \(project.photos.count) photos, \(project.floorPlans.count) plans — missing \(missingPhotos) photo(s), \(missingThumbs) thumb(s), \(missingPlans) plan(s) locally")
         }
 
         // Network sweep for missing photos + plans (if any).
@@ -158,8 +141,8 @@ final class BinaryBackfillService {
         // work runs in a detached background task so the UI stays
         // responsive while 1000+ thumbs process.
         var thumbWorkList: [ThumbWork] = []
-        for project in store.activeProjects {
-            for photo in project.photos {
+        for project in projects {
+            for photo in project.photos + project.trashedPhotos {
                 guard let thumbURL = store.thumbnailURL(for: photo, in: project),
                       !fileManager.fileExists(atPath: thumbURL.path) else { continue }
                 let imageURL = store.imageURL(for: photo, in: project)
@@ -228,8 +211,7 @@ final class BinaryBackfillService {
         let projectName: String
         let kind: Kind
         enum Kind: Sendable {
-            case photo(Photo)
-            case plan(FloorPlan)
+            case asset(LocalProjectAsset)
         }
     }
 
@@ -281,75 +263,34 @@ final class BinaryBackfillService {
             return
         }
         switch work.kind {
-        case .photo(let photo):
-            await fetchPhotoIfMissing(photo, in: project, projectName: work.projectName)
-        case .plan(let plan):
-            await fetchPlanIfMissing(plan, in: project, projectName: work.projectName)
+        case .asset(let asset):
+            await fetchAssetIfMissing(asset, in: project)
         }
     }
 
-    private func fetchPhotoIfMissing(_ photo: Photo, in project: Project, projectName: String) async {
-        let localURL = store.imageURL(for: photo, in: project)
-        if fileManager.fileExists(atPath: localURL.path) {
-            // Race: another sweep may have just downloaded it.
+    private func fetchAssetIfMissing(_ asset: LocalProjectAsset, in project: Project) async {
+        if fileManager.fileExists(atPath: asset.url.path) {
             progress.downloadedFiles += 1
             return
         }
         do {
-            let resp = try await api.getPhotoImageURL(projectId: project.id, photoId: photo.id)
-            guard let url = URL(string: resp.url) else {
-                bumpFailed()
-                return
-            }
+            let response = try await api.assetURL(projectID: project.id, asset: asset)
+            guard let url = URL(string: response.url) else { bumpFailed(); return }
             let data = try await api.downloadBytesFromPresignedURL(url)
-            try fileManager.createDirectory(at: localURL.deletingLastPathComponent(),
-                                             withIntermediateDirectories: true)
-            try data.write(to: localURL, options: .atomic)
-            progress.downloadedFiles += 1
-        } catch APIClient.APIError.notAuthenticated {
-            bumpFailed()
-            return
-        } catch APIClient.APIError.http(status: 404, _, _) {
-            // Server doesn't have the file (project pushed but photo
-            // never uploaded from any device).
-            print("[BinaryBackfill] photo 404: \(projectName) / \(photo.imageFilename)")
-            bumpFailed()
-            return
-        } catch {
-            print("[BinaryBackfill] photo error: \(projectName) / \(photo.imageFilename) — \(error.localizedDescription)")
-            bumpFailed()
-            surfaceErrorOnce(error, projectId: project.id, projectName: projectName, label: "photos")
-        }
-    }
-
-    private func fetchPlanIfMissing(_ plan: FloorPlan, in project: Project, projectName: String) async {
-        let localURL = store.planImageURL(for: plan, in: project)
-        if fileManager.fileExists(atPath: localURL.path) {
-            progress.downloadedFiles += 1
-            return
-        }
-        do {
-            let resp = try await api.getPlanImageURL(projectId: project.id, planId: plan.id)
-            guard let url = URL(string: resp.url) else {
-                bumpFailed()
-                return
+            // An edit or restore while the network was busy invalidates the
+            // destination. Never write new plan bytes under an old filename.
+            guard let latest = store.project(withID: project.id),
+                  store.localAssets(in: latest).contains(where: { $0.id == asset.id && $0.filename == asset.filename }) else {
+                bumpFailed(); return
             }
-            let data = try await api.downloadBytesFromPresignedURL(url)
-            try fileManager.createDirectory(at: localURL.deletingLastPathComponent(),
-                                             withIntermediateDirectories: true)
-            try data.write(to: localURL, options: .atomic)
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.createDirectory(at: asset.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: asset.url, options: .atomic)
+            }.value
             progress.downloadedFiles += 1
-        } catch APIClient.APIError.notAuthenticated {
-            bumpFailed()
-            return
-        } catch APIClient.APIError.http(status: 404, _, _) {
-            print("[BinaryBackfill] plan 404: \(projectName) / \(plan.label) (\(plan.imageFilename))")
-            bumpFailed()
-            return
         } catch {
-            print("[BinaryBackfill] plan error: \(projectName) / \(plan.label) — \(error.localizedDescription)")
             bumpFailed()
-            surfaceErrorOnce(error, projectId: project.id, projectName: projectName, label: "plans")
+            surfaceErrorOnce(error, projectId: project.id, projectName: project.name, label: asset.filename)
         }
     }
 

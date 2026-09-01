@@ -90,7 +90,7 @@ async function resolveObjectKey(args: {
     : [args.preferredKind];
 
   const { data: files, error: filesErr } = await supabaseAdmin
-    .from("files")
+    .from("current_project_files")
     .select("object_key, kind")
     .eq("project_id", args.projectId)
     .eq("photo_id", args.photoId)
@@ -238,7 +238,7 @@ export const photosRoute: FastifyPluginAsync = async (app) => {
       const chunkResults = await Promise.all(
         idChunks.map(async (idChunk) => {
           const { data, error } = await supabaseAdmin
-            .from("files")
+            .from("current_project_files")
             .select("object_key, photo_id, kind")
             .eq("project_id", projectId)
             .in("photo_id", idChunk)

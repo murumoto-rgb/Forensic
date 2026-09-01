@@ -102,7 +102,7 @@ final class ProjectLockController {
         do {
             let resp = try await api.getLock(projectId: projectID)
             if let lock = resp.lock {
-                if resp.heldByYou != nil {
+                if resp.heldByYou == "session" {
                     // Same account holds it (possibly a web tab).
                     // Heartbeating from here keeps it alive without
                     // stealing the row from the web session.
@@ -119,7 +119,7 @@ final class ProjectLockController {
         } catch APIClient.APIError.http(status: 409, _, _) {
             // Lost the acquire race; surface whoever won.
             if let resp = try? await api.getLock(projectId: projectID),
-               let lock = resp.lock, resp.heldByYou == nil {
+               let lock = resp.lock, resp.heldByYou != "session" {
                 status = .heldByOther(email: lock.userEmail,
                                       client: lock.client)
             }

@@ -596,6 +596,20 @@ export function mergeManifest(
     ),
     tagSelection: mergeTagSelection(server.tagSelection, client.tagSelection),
     aiExtraVocabulary: mergeExtraVocab(server.aiExtraVocabulary, client.aiExtraVocabulary),
+    inspectionChecklist: keyedMerge3(
+      (item) => item.id, base.inspectionChecklist ?? [], server.inspectionChecklist ?? [], client.inspectionChecklist ?? [],
+      (b, s, c) => ({ id: s.id,
+        label: scalar3(b?.label, s.label, c.label, clientWins, ctx, `checklist[${s.id}].label`)!,
+        isComplete: scalar3(b?.isComplete, s.isComplete, c.isComplete, clientWins, ctx, `checklist[${s.id}].isComplete`)!,
+      })
+    ),
+    inspectionSessions: keyedMerge3(
+      (item) => item.id, base.inspectionSessions ?? [], server.inspectionSessions ?? [], client.inspectionSessions ?? [],
+      (b, s, c) => ({ id: s.id, startedAt: s.startedAt < c.startedAt ? s.startedAt : c.startedAt,
+        endedAt: scalar3(b?.endedAt ?? null, s.endedAt, c.endedAt, laterIso, ctx, `sessions[${s.id}].endedAt`),
+      })
+    ),
+    reportLayout: scalar3(base.reportLayout ?? null, server.reportLayout ?? null, client.reportLayout ?? null, clientWins, ctx, "reportLayout"),
     // Never downgrade the stored schema version.
     manifestSchemaVersion: Math.max(server.manifestSchemaVersion, client.manifestSchemaVersion),
   };

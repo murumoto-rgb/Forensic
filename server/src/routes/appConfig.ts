@@ -27,6 +27,7 @@ import {
 } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { authPlugin } from "../middleware/auth.js";
+import { isOrgAdmin } from "../access.js";
 
 /** Every key the server recognises. Anything not in here 404s on
  *  GET and 400s on PUT — the union string-literal is the wire
@@ -163,6 +164,11 @@ export const appConfigRoute: FastifyPluginAsync = async (app) => {
     }
     const { value, expectedRevision } = bodyParse.data;
 
+    if (!(await isOrgAdmin(request.user.id, request))) {
+      reply.code(403).send({ error: "forbidden", message: "Only an owner or admin can update shared configuration." });
+      return;
+    }
+
     // Per-key value validation. Per-key schema is the source of
     // truth for what shape lands in the jsonb column.
     const valueSchema = AppConfigValueSchemaByKey[key as AppConfigKey];
@@ -177,48 +183,27 @@ export const appConfigRoute: FastifyPluginAsync = async (app) => {
     }
     const validatedValue = valueParse.data;
 
-    // Concurrency check + upsert. Pulled into a single tx-shape so a
-    // racing concurrent write can't sneak between read and write.
-    // We do it as a read-then-conditional-update because Supabase
-    // doesn't expose `UPDATE ... WHERE revision = $1 RETURNING ...`
-    // cleanly via the SDK; this approach hands the conflict back to
-    // the client without needing a stored procedure.
-    const { data: existing, error: readErr } = await supabaseAdmin
-      .from("app_config")
-      .select("revision")
-      .eq("key", key)
-      .maybeSingle();
-    if (readErr) {
-      request.log.error({ err: readErr, key }, "app_config — pre-write read failed");
+    const newRevision = crypto.randomUUID();
+    const { data: casResult, error: writeErr } = await supabaseAdmin.rpc("cas_app_config", {
+      p_key: key,
+      p_value: validatedValue,
+      p_expected_revision: expectedRevision,
+      p_new_revision: newRevision,
+      p_updated_by: request.user.id,
+    });
+    if (writeErr) {
+      request.log.error({ err: writeErr, key }, "app_config — atomic write failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-    const currentRevision = (existing as { revision: string } | null)?.revision ?? null;
-    if (currentRevision !== expectedRevision) {
-      reply.code(409).send({
-        error: "revision_mismatch",
-        message:
-          "The server has a newer version of this config value. Pull and merge before retrying.",
-        details: { currentRevision, expectedRevision },
-      });
       return;
     }
 
-    const newRevision = crypto.randomUUID();
-    const { error: writeErr } = await supabaseAdmin
-      .from("app_config")
-      .upsert(
-        {
-          key,
-          value: validatedValue,
-          revision: newRevision,
-          updated_by: request.user.id,
-        },
-        { onConflict: "key" }
-      );
-    if (writeErr) {
-      request.log.error({ err: writeErr, key }, "app_config — write failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
+    const cas = (Array.isArray(casResult) ? casResult[0] : casResult) as { ok?: boolean; current_revision?: string | null } | null;
+    if (!cas?.ok) {
+      reply.code(409).send({
+        error: "revision_mismatch",
+        message: "The server has a newer version of this config value. Pull and merge before retrying.",
+        details: { currentRevision: cas?.current_revision ?? null, expectedRevision },
+      });
       return;
     }
 

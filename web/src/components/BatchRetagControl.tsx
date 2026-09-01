@@ -30,6 +30,8 @@ export function BatchRetagControl({
   revisionRef,
   setProject,
   setRevision,
+  save,
+  saveAndWait,
   photoCount,
   photoIds,
   buttonLabel,
@@ -42,6 +44,8 @@ export function BatchRetagControl({
   revisionRef: MutableRefObject<string | null>;
   setProject: (p: Project) => void;
   setRevision: (r: string) => void;
+  save?: (p: Project) => void;
+  saveAndWait?: (p: Project) => Promise<void>;
   /** Photos that COULD be tagged this run (e.g. project total, or
    *  the size of the current selection). Disables the trigger
    *  button when 0; modal still reads opts.skipAlreadyTagged so the
@@ -92,6 +96,8 @@ export function BatchRetagControl({
     revisionRef,
     setProject,
     setRevision,
+    save,
+    saveAndWait,
   });
 
   const inFlight =
@@ -404,4 +410,3 @@ function firstFailure(
   }
   return null;
 }
-

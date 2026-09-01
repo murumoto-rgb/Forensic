@@ -143,52 +143,31 @@ export const meRoute: FastifyPluginAsync = async (app) => {
     }
     const { prefs, expectedRevision } = parsed.data;
 
-    // Read current revision.
-    const { data: existing, error: readErr } = await supabaseAdmin
-      .from("user_prefs")
-      .select("revision")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (readErr) {
-      request.log.error({ err: readErr, userId }, "user_prefs — pre-write read failed");
+    const newRevision = crypto.randomUUID();
+    const { data: casResult, error: writeErr } = await supabaseAdmin.rpc("cas_user_prefs", {
+      p_user_id: userId,
+      p_prefs: prefs,
+      p_expected_revision: expectedRevision === "" ? null : expectedRevision,
+      p_new_revision: newRevision,
+    });
+    if (writeErr) {
+      request.log.error({ err: writeErr, userId }, "user_prefs — atomic write failed");
       reply.code(500).send({ error: "internal", message: "Database error" });
       return;
     }
 
-    const currentRevision = (existing as { revision: string } | null)?.revision ?? null;
-    // First write: client may either send null or "" (server stub
-    // emits "" for absent rows). Accept both as "create".
-    const isFirstWrite = currentRevision === null;
-    const expected = expectedRevision === "" ? null : expectedRevision;
-    if (currentRevision !== expected) {
+    const cas = (Array.isArray(casResult) ? casResult[0] : casResult) as { ok?: boolean; current_revision?: string | null } | null;
+    if (!cas?.ok) {
       reply.code(409).send({
         error: "revision_mismatch",
-        message:
-          "Preferences were modified elsewhere. Pull and merge before retrying.",
-        details: { currentRevision, expectedRevision },
+        message: "Preferences were modified elsewhere. Pull and merge before retrying.",
+        details: { currentRevision: cas?.current_revision ?? null, expectedRevision },
       });
       return;
     }
 
-    const newRevision = crypto.randomUUID();
-    const { error: writeErr } = await supabaseAdmin
-      .from("user_prefs")
-      .upsert(
-        {
-          user_id: userId,
-          prefs,
-          revision: newRevision,
-        },
-        { onConflict: "user_id" }
-      );
-    if (writeErr) {
-      request.log.error({ err: writeErr, userId }, "user_prefs — write failed");
-      reply.code(500).send({ error: "internal", message: "Database error" });
-      return;
-    }
-
     request.log.info(
-      { userId, isFirstWrite },
+      { userId, isFirstWrite: expectedRevision === "" || expectedRevision === null },
       "user_prefs — updated"
     );
     return { revision: newRevision };

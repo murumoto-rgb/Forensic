@@ -88,7 +88,10 @@ struct Project: Identifiable, Codable, Hashable {
     /// clients reporting a higher version than it knows about
     /// (forces server-first updates). Legacy manifests written before
     /// this field shipped default to `1` at decode time.
-    var manifestSchemaVersion: Int = 3
+    var inspectionChecklist: [InspectionChecklistItem] = []
+    var inspectionSessions: [InspectionSession] = []
+    var reportLayout: InspectionReportLayout?
+    var manifestSchemaVersion: Int = 4
 
     init(id: UUID = UUID(), name: String) {
         self.id = id
@@ -111,7 +114,7 @@ struct Project: Identifiable, Codable, Hashable {
         self.aiExtraVocabulary = nil
         self.isDeleted = false
         self.isFrozen = false
-        self.manifestSchemaVersion = 3
+        self.manifestSchemaVersion = 4
     }
 
     /// Explicit keys so the decoder can read the legacy singular
@@ -129,6 +132,7 @@ struct Project: Identifiable, Codable, Hashable {
         case aiExtraVocabulary
         case isDeleted
         case isFrozen
+        case inspectionChecklist, inspectionSessions, reportLayout
         case manifestSchemaVersion
     }
 
@@ -184,6 +188,9 @@ struct Project: Identifiable, Codable, Hashable {
         // Owner/Admin flips true via the "Lock project" action.
         self.isFrozen = try c.decodeIfPresent(Bool.self,
                                                  forKey: .isFrozen) ?? false
+        self.inspectionChecklist = try c.decodeIfPresent([InspectionChecklistItem].self, forKey: .inspectionChecklist) ?? []
+        self.inspectionSessions = try c.decodeIfPresent([InspectionSession].self, forKey: .inspectionSessions) ?? []
+        self.reportLayout = try c.decodeIfPresent(InspectionReportLayout.self, forKey: .reportLayout)
         // Legacy manifests written before this field shipped default
         // to version 1 — the schema as it stood at the moment the
         // field was introduced. New manifests written by this code
@@ -217,7 +224,10 @@ struct Project: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(aiExtraVocabulary,  forKey: .aiExtraVocabulary)
         try c.encode(isDeleted,                   forKey: .isDeleted)
         try c.encode(isFrozen,                    forKey: .isFrozen)
-        try c.encode(manifestSchemaVersion,       forKey: .manifestSchemaVersion)
+        try c.encode(inspectionChecklist, forKey: .inspectionChecklist)
+        try c.encode(inspectionSessions, forKey: .inspectionSessions)
+        try c.encodeIfPresent(reportLayout, forKey: .reportLayout)
+        try c.encode(max(4, manifestSchemaVersion), forKey: .manifestSchemaVersion)
     }
 
     var isActive: Bool { startedAt != nil && !stopped }

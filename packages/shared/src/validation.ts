@@ -291,6 +291,22 @@ export const AppConfigValueSchemaByKey = {
   aiPromptTemplates: AIPromptTemplateLibrarySchema,
 } as const;
 
+export const InspectionChecklistItemSchema = z.object({
+  id: uuid,
+  label: z.string().min(1).max(500),
+  isComplete: z.boolean(),
+});
+export const InspectionSessionSchema = z.object({
+  id: uuid,
+  startedAt: isoDate,
+  endedAt: nullable(isoDate),
+});
+export const InspectionReportLayoutSchema = z.object({
+  perPage: z.number().int().min(1).max(12),
+  groupByBucket: z.boolean(),
+  includeMetadataTable: z.boolean(),
+});
+
 export const ProjectSchema = z.object({
   id: uuid,
   name: z.string(),
@@ -318,7 +334,42 @@ export const ProjectSchema = z.object({
   buckets: z.array(BucketSchema),
   tagSelection: nullable(ProjectTagSelectionSchema),
   aiExtraVocabulary: nullable(ProjectExtraVocabularySchema),
+  inspectionChecklist: z.array(InspectionChecklistItemSchema).max(200).default([]),
+  inspectionSessions: z.array(InspectionSessionSchema).default([]),
+  reportLayout: nullable(InspectionReportLayoutSchema),
   manifestSchemaVersion: z.number().int().min(1),
+});
+
+const CalendarDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}, "Enter a real calendar date (YYYY-MM-DD)");
+export const SearchFilterSchema = z.object({
+  query: z.string().max(200).default(""),
+  fromDate: nullable(CalendarDateSchema),
+  toDate: nullable(CalendarDateSchema),
+  favoritesOnly: z.boolean().default(false),
+});
+export const SavedSearchSchema = z.object({
+  id: uuid,
+  name: z.string().trim().min(1).max(100),
+  filter: SearchFilterSchema,
+});
+export const InspectionPresetSchema = z.object({
+  id: uuid,
+  name: z.string().trim().min(1).max(100),
+  projectNamePrefix: z.string().max(200).default(""),
+  projectAddress: nullable(z.string().max(1000)),
+  aiInstructions: nullable(z.string().max(20000)),
+  tagSelection: nullable(ProjectTagSelectionSchema),
+  aiExtraVocabulary: nullable(ProjectExtraVocabularySchema),
+  buckets: z.array(BucketSchema).max(100),
+  checklist: z.array(z.string().trim().min(1).max(500)).max(200),
+  reportLayout: InspectionReportLayoutSchema,
+});
+export const WorkflowLibrarySchema = z.object({
+  savedSearches: z.array(SavedSearchSchema).max(50),
+  inspectionPresets: z.array(InspectionPresetSchema).max(50),
 });
 
 // ===========================================================================

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { AdminUser } from "@forensic/shared";
+import type { AdminUser, Project } from "@forensic/shared";
 import { api, ApiError } from "../../lib/api";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
+import { ProjectRecoveryPanel } from "./ProjectRecoveryPanel";
+import { ProjectWorkflowPanel } from "./ProjectWorkflowPanel";
 
 /**
  * Info tab — project metadata + editable name + editable address +
@@ -42,11 +44,13 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
   // More tab, #6.1.1, and the change syncs back); surfacing
   // per-project ownership to `/v1/me` is a separate follow-on
   // tracked in `docs/deferred-work.md`.
-  const canToggleFreeze = manifest.role === "admin";
+  const canToggleFreeze = manifest.role === "admin" || manifest.isOwner;
   const project = manifest.project;
   const navigate = useNavigate();
   const [name, setName] = useState(project?.name ?? "");
   const [address, setAddress] = useState(project?.projectAddress ?? "");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
     setName(project?.name ?? "");
@@ -58,6 +62,13 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
   if (!project) return null;
   const gps = project.projectGPS;
 
+  async function persist(next: Project): Promise<boolean> {
+    setActionBusy(true); setEditError(null);
+    try { await manifest.saveAndWait(next); return true; }
+    catch (error) { setEditError(error instanceof Error ? error.message : "Change not saved. Your edits were kept."); return false; }
+    finally { setActionBusy(false); }
+  }
+
   function commitName() {
     if (!project) return;
     const next = name.trim();
@@ -65,7 +76,7 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
       setName(project.name);
       return;
     }
-    manifest.save({ ...project, name: next });
+    void persist({ ...project, name: next });
   }
 
   function commitAddress() {
@@ -73,13 +84,13 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
     const next = address.trim();
     const cur = project.projectAddress ?? "";
     if (next === cur.trim()) return;
-    manifest.save({
+    void persist({
       ...project,
       projectAddress: next === "" ? null : next,
     });
   }
 
-  function moveToTrash() {
+  async function moveToTrash() {
     if (!project) return;
     const confirmed = window.confirm(
       `Move "${project.name}" to trash?\n\n` +
@@ -87,12 +98,12 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
         `It won't appear in your active projects until you do.`
     );
     if (!confirmed) return;
-    manifest.save({ ...project, isDeleted: true });
-    navigate("/projects");
+    if (await persist({ ...project, isDeleted: true })) navigate("/projects");
   }
 
   return (
     <section className="flex flex-col gap-4">
+      {editError && <p role="alert" className="text-sm text-red-300">{editError}</p>}
       <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
         <dt className="text-neutral-500">Name</dt>
         <dd>
@@ -165,6 +176,9 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
         pick a fix and stamp `projectGPS`.
       </p>
 
+      <ProjectWorkflowPanel manifest={manifest} canEdit={canEdit} />
+      <ProjectRecoveryPanel projectId={projectId} manifest={manifest} canEdit={canEdit} />
+
       <div className="mt-6 rounded border border-neutral-800 bg-neutral-900/40 p-4">
         <div className="mb-2 text-sm font-medium text-neutral-200">
           Tools
@@ -193,6 +207,7 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
           <button
             type="button"
             onClick={toggleFreeze}
+            disabled={manifest.restoring || actionBusy}
             className="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-100 transition hover:bg-amber-900/40"
           >
             {project.isFrozen ? "Unlock project" : "Lock project (finalize)"}
@@ -240,7 +255,7 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
         return;
       }
     }
-    manifest.save({ ...project, isFrozen: next });
+    void persist({ ...project, isFrozen: next });
   }
 
   function renumberByDate() {
@@ -262,7 +277,7 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
       ...p,
       sequenceNumber: i + 1,
     }));
-    manifest.save({ ...project, photos: renumbered });
+    void persist({ ...project, photos: renumbered });
   }
 }
 

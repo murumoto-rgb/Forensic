@@ -46,6 +46,8 @@ export function FloorPlanManager({
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const latest = useRef({ project, canEdit });
+  latest.current = { project, canEdit };
   // Two-step flow: file picker selects a File → calibration sheet
   // opens with it → on Save the file uploads + a FloorPlan struct
   // lands with real calibration. Cancel from the sheet discards
@@ -111,7 +113,7 @@ export function FloorPlanManager({
    * scale, label, and north heading.
    */
   async function commitCalibration(result: CalibrationResult) {
-    if (!pendingFile) return;
+    if (!pendingFile || !latest.current.canEdit) return;
     setAdding(true);
     setAddError(null);
     try {
@@ -121,6 +123,7 @@ export function FloorPlanManager({
         projectId: project.id,
         photoId: planId,
         kind: "plan",
+        sourceFilename: `${planId}.${ext}`,
         file: pendingFile,
         contentType: pendingFile.type || "image/jpeg",
       });
@@ -139,11 +142,13 @@ export function FloorPlanManager({
         northDeg: result.northDeg,
         distress: [],
       };
+      if (!latest.current.canEdit) throw new Error("Editing became unavailable. Reopen the plan import after unlocking the project.");
+      const current = latest.current.project;
       onProjectChanged({
-        ...project,
-        floorPlans: [...plans, newPlan],
+        ...current,
+        floorPlans: [...current.floorPlans, newPlan],
         // Auto-activate the first plan if none was set.
-        activeFloorPlanID: project.activeFloorPlanID ?? planId,
+        activeFloorPlanID: current.activeFloorPlanID ?? planId,
       });
       setPendingFile(null);
     } catch (err: unknown) {

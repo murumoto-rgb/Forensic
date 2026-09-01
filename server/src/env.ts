@@ -40,6 +40,9 @@ const EnvSchema = z.object({
   // Lets us deploy the endpoint before the env var is set, then add
   // it in Render's dashboard separately.
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  AI_DAILY_REQUEST_LIMIT: z.coerce.number().int().min(1).max(10000).default(200),
+  AI_CONCURRENCY_LIMIT: z.coerce.number().int().min(1).max(8).default(4),
+  AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1024).max(16384).default(4096),
 
   // Sentry DSN for server-side error reporting (Build #5.57.1).
   // OPTIONAL — when absent, Sentry instrumentation no-ops cleanly.
