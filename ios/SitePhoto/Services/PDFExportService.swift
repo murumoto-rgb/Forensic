@@ -486,10 +486,11 @@ struct PDFExportService {
         let small = UIFont.systemFont(ofSize: 9)
         let dim = UIColor(white: 0.3, alpha: 1)
 
-        if let gps = project.projectGPS {
+        if let gps = project.projectGPS,
+           let coords = GPSFormat.coordinateString(gps) {
             let acc = gps.accuracyFeet.map { String(format: " ±%.1f ft", $0) } ?? ""
-            let s = String(format: "GPS: %.5f, %.5f%@", gps.latitude, gps.longitude, acc)
-            drawText(s, at: CGPoint(x: margin, y: y), font: small, color: dim)
+            drawText("GPS: \(coords)\(acc)",
+                     at: CGPoint(x: margin, y: y), font: small, color: dim)
             y += 13
         }
 

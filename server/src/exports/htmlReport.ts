@@ -39,6 +39,7 @@ import type {
   Photo,
   Project,
 } from "@forensic/shared";
+import { formatProjectGPS, pinColorFor } from "@forensic/shared";
 import { supabaseAdmin } from "../supabase.js";
 import { getObjectBytes } from "../r2.js";
 import { probeImageDimensions } from "./imageProbe.js";
@@ -218,12 +219,7 @@ function coverPage(project: Project, planCount: number, branding?: ReportBrandin
     ${
       gps
         ? `<div class="gps">
-            ${gps.latitude.toFixed(5)}, ${gps.longitude.toFixed(5)}
-            ${
-              gps.accuracyFeet != null
-                ? ` &middot; ±${gps.accuracyFeet.toFixed(0)} ft`
-                : ""
-            }
+            ${escapeHtml(formatProjectGPS(gps) ?? `${gps.latitude.toFixed(5)}, ${gps.longitude.toFixed(5)}`)}
           </div>`
         : ""
     }
@@ -466,6 +462,8 @@ interface PlanSectionOptions {
   /** Pin/distress size multiplier (Build #6.20.1). Already clamped
    *  to 0.5–4 by `applyOptionDefaults`. */
   pinScale: number;
+  project: Project;
+  colorMode: PdfExportOptions["planColorMode"];
 }
 
 function planSection(
@@ -496,8 +494,11 @@ function planSection(
         .map((p) => {
           const x = p.planPixelX!;
           const y = p.planPixelY!;
+          const fill = escapeHtml(
+            pinColorFor(p, sectionOptions.colorMode, sectionOptions.project)
+          );
           return `<g>
-            <circle cx="${x}" cy="${y}" r="${14 * s}" fill="#2563eb" stroke="#fff" stroke-width="${2 * s}"/>
+            <circle cx="${x}" cy="${y}" r="${14 * s}" fill="${fill}" stroke="#fff" stroke-width="${2 * s}"/>
             <text x="${x}" y="${y + 5 * s}" text-anchor="middle" font-size="${14 * s}" fill="#fff" font-weight="600">${p.sequenceNumber}</text>
           </g>`;
         })
@@ -540,15 +541,20 @@ function planPages(
   plan: FloorPlan,
   planImage: ImageBlob,
   planPhotos: Photo[],
-  mode: PdfPlanMode,
-  pinScale: number
+  options: PdfExportOptions,
+  project: Project
 ): string {
+  const mode = options.planMode;
+  const pinScale = options.pinScale;
+  const colorMode = options.planColorMode;
   if (mode === "photoAndDistressSeparate") {
     const photoPage = planSection(plan, planImage, planPhotos, {
       includePhotos: true,
       includeDistress: false,
       subtitle: "Photos",
       pinScale,
+      project,
+      colorMode,
     });
     if (plan.distress.length === 0) return photoPage;
     const distressPage = planSection(plan, planImage, planPhotos, {
@@ -556,6 +562,8 @@ function planPages(
       includeDistress: true,
       subtitle: "Distress",
       pinScale,
+      project,
+      colorMode,
     });
     return `${photoPage}\n${distressPage}`;
   }
@@ -564,6 +572,8 @@ function planPages(
     includePhotos: modeRendersPhotos(mode),
     includeDistress: modeRendersDistress(mode),
     pinScale,
+    project,
+    colorMode,
   });
 }
 
@@ -961,7 +971,7 @@ export async function* renderReportChunks(
       else if (page.kind === "plan") {
         const asset = planAssets.get(page.plan.id)!;
         const pins = project.photos.filter(p => p.floorPlanID?.toLowerCase() === page.plan.id.toLowerCase() && p.trashedAt == null);
-        html.push(planPages(page.plan, blobs.get(asset.key)!, pins, options.planMode, options.pinScale));
+        html.push(planPages(page.plan, blobs.get(asset.key)!, pins, options, project));
       } else {
         const byId = new Map(page.items.map(({ photo }) => [photo.id, blobs.get(photoAssets.get(photo.id)!.key)!]));
         const overlays = new Map(page.items.filter(item => item.marked).map(({ photo }) => [photo.id, blobs.get(markupAssets.get(photo.id)!.key)!]));

@@ -57,10 +57,20 @@ export interface CalibrationResult {
 }
 
 interface Props {
-  /** The image file the user picked. */
-  file: File;
+  /** The image file the user picked. Required for add-plan. */
+  file?: File;
+  /** Presigned URL of an existing plan image. Required for re-calibrate. */
+  imageSrc?: string;
   /** Default plan label (typically file.name minus extension). */
   defaultLabel: string;
+  /** Dialog heading. */
+  title?: string;
+  /** Confirm button label. */
+  confirmLabel?: string;
+  /** Seed origin from an existing calibration. */
+  initialOrigin?: { x: number; y: number } | null;
+  initialNorthDeg?: number;
+  initialDistanceFeet?: number;
   onCancel: () => void;
   onConfirm: (result: CalibrationResult) => void;
 }
@@ -72,7 +82,13 @@ const LOUPE_ZOOM = 2.5;
 
 export function FloorPlanCalibrationSheet({
   file,
+  imageSrc,
   defaultLabel,
+  title = "Calibrate floor plan",
+  confirmLabel = "Save plan",
+  initialOrigin = null,
+  initialNorthDeg,
+  initialDistanceFeet,
   onCancel,
   onConfirm,
 }: Props) {
@@ -92,11 +108,21 @@ export function FloorPlanCalibrationSheet({
     y: number;
   }>({ scale: 1, x: 0, y: 0 });
   const [tool, setTool] = useState<Tool>("origin");
-  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
+  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(
+    initialOrigin ?? null
+  );
   const [pointA, setPointA] = useState<{ x: number; y: number } | null>(null);
   const [pointB, setPointB] = useState<{ x: number; y: number } | null>(null);
-  const [distanceFeet, setDistanceFeet] = useState<string>("");
-  const [northDeg, setNorthDeg] = useState<string>("0");
+  const [distanceFeet, setDistanceFeet] = useState<string>(
+    initialDistanceFeet != null && initialDistanceFeet > 0
+      ? String(initialDistanceFeet)
+      : ""
+  );
+  const [northDeg, setNorthDeg] = useState<string>(
+    initialNorthDeg != null && Number.isFinite(initialNorthDeg)
+      ? String(initialNorthDeg)
+      : "0"
+  );
   const [label, setLabel] = useState<string>(defaultLabel);
   const [loupeAt, setLoupeAt] = useState<{
     /** Image-natural-pixel coords under the cursor. */
@@ -110,15 +136,27 @@ export function FloorPlanCalibrationSheet({
   const isPanningRef = useRef(false);
   const lastPanRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Load the underlying HTMLImageElement from the picked File.
+  // Load the underlying HTMLImageElement from a picked File or an
+  // existing plan's presigned URL. No crossOrigin — same rule as
+  // FloorPlanCanvas: R2 GETs display without CORS; the loupe only
+  // paints (drawImage), it never reads pixels back.
   useEffect(() => {
-    const url = URL.createObjectURL(file);
+    let revoked: string | null = null;
     const img = new window.Image();
     img.onload = () => setImageEl(img);
     img.onerror = () => setImageError("Couldn't decode that image.");
-    img.src = url;
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    if (file) {
+      revoked = URL.createObjectURL(file);
+      img.src = revoked;
+    } else if (imageSrc) {
+      img.src = imageSrc;
+    } else {
+      setImageError("No plan image to calibrate.");
+    }
+    return () => {
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [file, imageSrc]);
 
   // Measure the container + initialize the view to fit the image.
   useEffect(() => {
@@ -353,7 +391,7 @@ export function FloorPlanCalibrationSheet({
       className="fixed inset-0 z-50 flex flex-col bg-black/80 p-4"
     >
       <div className="mb-2 flex items-center justify-between text-sm text-neutral-200">
-        <span className="font-semibold">Calibrate floor plan</span>
+        <span className="font-semibold">{title}</span>
         <button
           type="button"
           onClick={onCancel}
@@ -450,7 +488,7 @@ export function FloorPlanCalibrationSheet({
             disabled={!canConfirm}
             className="rounded border border-blue-600 bg-blue-900/40 px-3 py-1 text-blue-100 hover:bg-blue-900/70 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Save plan
+            {confirmLabel}
           </button>
         </div>
       </div>

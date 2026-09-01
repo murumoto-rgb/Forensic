@@ -6,6 +6,7 @@
  */
 
 import type { Project } from "./manifest.ts";
+import type { PlanColorMode } from "./planMarkerColors.ts";
 
 export interface HealthzResponse {
   status: "ok";
@@ -760,6 +761,14 @@ export interface PdfExportOptions {
    *  `sitephoto.bubbleScale`. 1 = the legacy fixed size; the server
    *  clamps to 0.5–4. */
   pinScale: number;
+  /**
+   * Floor-plan pin color mode for PDF plan pages (Build #6.39.1).
+   * Matches the on-screen web/iOS picker. Default `status` keeps
+   * older jobs (and clients that omit the field) on the historical
+   * single-color pins. Bucket / primaryTag use the shared
+   * `pinColorFor` helper so the office PDF matches the plan tab.
+   */
+  planColorMode: PlanColorMode;
 
   // ----- Legacy fields (kept for backwards compat) -----
 

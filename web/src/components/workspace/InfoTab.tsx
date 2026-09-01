@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AdminUser, Project } from "@forensic/shared";
+import { formatLatLon } from "@forensic/shared";
 import { api, ApiError } from "../../lib/api";
 import type { ProjectManifestHook } from "../../lib/useProjectManifest";
 import { ProjectRecoveryPanel } from "./ProjectRecoveryPanel";
@@ -140,7 +141,8 @@ export function InfoTab({ projectId, manifest, canEdit }: Props) {
         <dd className="font-mono text-xs text-neutral-200">
           {gps ? (
             <>
-              {gps.latitude.toFixed(5)}, {gps.longitude.toFixed(5)}
+              {formatLatLon(gps.latitude, gps.longitude) ??
+                `${gps.latitude.toFixed(5)}, ${gps.longitude.toFixed(5)}`}
               {gps.accuracyFeet != null && (
                 <span className="text-neutral-500">
                   {" "}

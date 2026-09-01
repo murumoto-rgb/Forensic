@@ -29,6 +29,7 @@ import archiver from "archiver";
 import { PassThrough, Transform } from "node:stream";
 import { Upload } from "@aws-sdk/lib-storage";
 import {
+  formatLatLon,
   type ExportStatus,
   type FolderExportOptions,
   type Photo,
@@ -290,12 +291,16 @@ function planArchivePath(plan: Project["floorPlans"][number], index: number): st
 
 /** Build the captions.txt body for a bucket folder. */
 function captionsTextForBucket(
-  project: Pick<Project, "name">,
+  project: Pick<Project, "name" | "projectGPS">,
   photos: Photo[]
 ): string {
   const lines: string[] = [];
   lines.push(`# ${project.name} — captions.txt`);
   lines.push(`# Generated ${new Date().toISOString()}`);
+  const siteGps = project.projectGPS
+    ? formatLatLon(project.projectGPS.latitude, project.projectGPS.longitude)
+    : null;
+  if (siteGps) lines.push(`# Site GPS: ${siteGps}`);
   lines.push("");
   for (const p of photos) {
     lines.push(`## #${p.sequenceNumber} — ${photoFilename(project, p)}`);

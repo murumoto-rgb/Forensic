@@ -876,7 +876,7 @@ struct ProjectDetailView: View {
             if let gps = project.projectGPS {
                 LabeledContent("Coordinates") {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(String(format: "%.5f, %.5f", gps.latitude, gps.longitude))
+                        Text(GPSFormat.coordinateString(gps) ?? "")
                             .font(.caption.monospaced())
                         if let acc = gps.accuracyFeet {
                             Text(String(format: "± %.1f ft", acc))

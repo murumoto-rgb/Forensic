@@ -167,6 +167,9 @@ rows here when items ship.
 | ~~Offline manifest retry queue~~ | iOS | — | **SHIPPED #6.30.1** — session-scoped pendingRetry set + foreground re-push; launch sweep already covers cold start |
 | Branding logo binary sync (R2 up/download) | Both | Candidate | **IMPLEMENTED #6.38.1, not shipped** — dedicated immutable logo route, conflict-safe iOS upload/cache and PDF checks. Text sync shipped #6.2.1. |
 | Start / stop / resume inspection visits | Both | Candidate | **IMPLEMENTED #6.38.1, not shipped** — explicit controls and retained visit history in schema v4. |
+| ~~Web re-calibrate existing plan~~ | Web | — | **SHIPPED #6.39.1** — Manage plans → Recalibrate; pixels stay, feet re-derive |
+| ~~Web/server PDF pin color mode~~ | Web/Server | — | **SHIPPED #6.39.1** — `PdfExportOptions.planColorMode` + shared `pinColorFor` |
+| ~~GPS hemisphere stamp~~ | Both | — | **SHIPPED #6.39.1** — shared `formatLatLon`; Texas west longitude prints `W` |
 | ~~Reshoot-comparison discoverability (lineage badge)~~ | iOS | — | **SHIPPED #6.25.1** — tappable ↻ badge on photo rows opens the comparison |
 | Dark/light theme toggle + shared UI primitives (Button/Card/Modal) | Web | 1–2 days | Needs product decision first |
 | Modal focus traps (a11y) | Web | Candidate | **IMPLEMENTED #6.38.1, not shipped** for export/bulk/recovery/preset dialogs; keyboard regressions plus browser check. Legacy dialogs still need a broader accessibility pass. |
