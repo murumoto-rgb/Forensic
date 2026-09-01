@@ -76,8 +76,7 @@ enum EXIFStamp {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
         out.append(fmt.string(from: photo.timestamp))
-        if let gps {
-            let coords = String(format: "%.5f° N, %.5f° E", gps.latitude, gps.longitude)
+        if let gps, let coords = GPSFormat.coordinateString(gps) {
             out.append(coords)
         }
         if let address, !address.isEmpty {

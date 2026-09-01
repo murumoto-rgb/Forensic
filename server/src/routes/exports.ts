@@ -69,6 +69,8 @@ const PdfExportOptionsSchema = z.object({
   pageSize: z.enum(["letter", "a4"]).optional(),
   includeTrashed: z.boolean().optional(),
   includeCoverPage: z.boolean().optional(),
+  pinScale: z.number().optional(),
+  planColorMode: z.enum(["status", "bucket", "primaryTag"]).optional(),
 
   // Legacy fields — accepted for backwards compat.
   photosPerPage: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),

@@ -46,6 +46,7 @@ export const DEFAULT_PDF_EXPORT_OPTIONS: PdfExportOptions = {
   includeTrashed: false,
   includeCoverPage: true,
   pinScale: 1,
+  planColorMode: "status",
 };
 
 /** Clamp the iOS-parity `perPage` Int to the renderer's supported
@@ -140,6 +141,7 @@ export function applyOptionDefaults(
     includeCoverPage:
       partial.includeCoverPage ?? DEFAULT_PDF_EXPORT_OPTIONS.includeCoverPage,
     pinScale: clampPinScale(partial.pinScale),
+    planColorMode: partial.planColorMode ?? DEFAULT_PDF_EXPORT_OPTIONS.planColorMode,
 
     // Legacy fields — preserved when sent. When the caller is a new
     // client that didn't include them, we synthesize the #5.64.1

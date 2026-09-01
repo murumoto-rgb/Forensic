@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import type { FloorPlan, Photo, Project } from "@forensic/shared";
 import { uploadFile } from "../lib/uploadFile";
+import { api } from "../lib/api";
+import { applyPlanRecalibration } from "../lib/planCoords";
 import {
   FloorPlanCalibrationSheet,
   type CalibrationResult,
@@ -53,6 +55,10 @@ export function FloorPlanManager({
   // lands with real calibration. Cancel from the sheet discards
   // the file entirely.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [recalibrating, setRecalibrating] = useState<{
+    plan: FloorPlan;
+    imageSrc: string;
+  } | null>(null);
 
   const plans = project.floorPlans;
 
@@ -158,6 +164,37 @@ export function FloorPlanManager({
     }
   }
 
+  async function openRecalibrate(plan: FloorPlan) {
+    if (!canEdit || adding) return;
+    setAddError(null);
+    try {
+      const { url } = await api.getPlanImageUrl(project.id, plan.id);
+      setRecalibrating({ plan, imageSrc: url });
+    } catch (err: unknown) {
+      setAddError(
+        err instanceof Error ? err.message : "Couldn't load that plan image."
+      );
+    }
+  }
+
+  function commitRecalibration(result: CalibrationResult) {
+    if (!recalibrating || !latest.current.canEdit) return;
+    const next = applyPlanRecalibration(
+      latest.current.project,
+      recalibrating.plan.id,
+      {
+        pixelsPerFoot: result.pixelsPerFoot,
+        calibrationDistanceFeet: result.calibrationDistanceFeet,
+        anchorPixelX: result.anchorPixelX,
+        anchorPixelY: result.anchorPixelY,
+        northDeg: result.northDeg,
+        label: result.label,
+      }
+    );
+    onProjectChanged(next);
+    setRecalibrating(null);
+  }
+
   function previewRemove(plan: FloorPlan) {
     const affected = project.photos.filter(
       (p) => p.floorPlanID === plan.id
@@ -229,8 +266,8 @@ export function FloorPlanManager({
       {isEmpty && (
         <p className="mt-2 text-xs text-neutral-500">
           No floor plans yet. Use "+ Add plan" to upload one — the
-          canvas activates as soon as a plan lands. Tune the
-          calibration / north / anchor on iOS.
+          canvas activates as soon as a plan lands. Re-calibrate
+          scale, origin, and north from Manage plans.
         </p>
       )}
 
@@ -294,6 +331,14 @@ export function FloorPlanManager({
                 )}
                 <button
                   type="button"
+                  onClick={() => void openRecalibrate(plan)}
+                  disabled={!canEdit}
+                  className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Recalibrate
+                </button>
+                <button
+                  type="button"
                   onClick={() => previewRemove(plan)}
                   disabled={!canEdit || plans.length === 1}
                   className="rounded border border-red-700 px-2 py-0.5 text-xs text-red-200 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-50"
@@ -310,9 +355,8 @@ export function FloorPlanManager({
           })}
           <p className="px-1 text-[11px] text-neutral-600">
             New plans walk through an origin + scale calibration
-            sheet on upload (Build #5.94.1). Tweaking calibration on
-            an existing plan still happens on iOS — the canvas-edit
-            UI lives there.
+            sheet on upload. Recalibrate keeps pins on their image
+            pixels and re-derives feet from the new scale.
           </p>
         </ul>
       )}
@@ -327,6 +371,23 @@ export function FloorPlanManager({
           }
           onCancel={() => setPendingFile(null)}
           onConfirm={(result) => void commitCalibration(result)}
+        />
+      )}
+
+      {recalibrating && (
+        <FloorPlanCalibrationSheet
+          imageSrc={recalibrating.imageSrc}
+          defaultLabel={recalibrating.plan.label}
+          title={`Recalibrate ${recalibrating.plan.label}`}
+          confirmLabel="Save calibration"
+          initialOrigin={{
+            x: recalibrating.plan.anchorPixelX,
+            y: recalibrating.plan.anchorPixelY,
+          }}
+          initialNorthDeg={recalibrating.plan.northDeg}
+          initialDistanceFeet={recalibrating.plan.calibrationDistanceFeet}
+          onCancel={() => setRecalibrating(null)}
+          onConfirm={commitRecalibration}
         />
       )}
 

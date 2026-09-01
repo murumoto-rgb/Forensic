@@ -74,6 +74,8 @@ const DEFAULT_OPTIONS: PdfExportOptions = {
   // Build #6.20.1: overwritten at start() with the user's on-screen
   // pin-size preference so the PDF matches the plan tab.
   pinScale: 1,
+  // Build #6.39.1: overwritten at start() with the plan-tab color mode.
+  planColorMode: "status",
 };
 
 /** Reorder helper: rebuild `sectionOrder` from the include flags
@@ -297,7 +299,11 @@ export function ExportPdfControl({
     clearPoll();
     setState({ kind: "queued", job: makePendingJob(projectId, "(pending)") });
     api
-      .createPdfExport(projectId, { ...opts, pinScale: userPrefs.bubbleScale })
+      .createPdfExport(projectId, {
+        ...opts,
+        pinScale: userPrefs.bubbleScale,
+        planColorMode: userPrefs.planColorMode,
+      })
       .then((res) => {
         const jobId = res.job.id;
         activeJobIdRef.current = jobId;

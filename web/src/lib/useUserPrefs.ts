@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { AITagPhotoModel } from "@forensic/shared";
+import type { AITagPhotoModel, PlanColorMode } from "@forensic/shared";
+import { PLAN_COLOR_MODES } from "@forensic/shared";
 import { api, ApiError } from "./api";
 
 /**
@@ -47,8 +48,8 @@ const DEFAULT_MODEL: AITagPhotoModel = "claude-sonnet-4-6";
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_THRESHOLD = 0.5;
 const DEFAULT_BUBBLE_SCALE = 1.5;
-export type PlanColorMode = "status" | "bucket" | "primaryTag";
-const VALID_COLOR_MODES: PlanColorMode[] = ["status", "bucket", "primaryTag"];
+export type { PlanColorMode };
+const VALID_COLOR_MODES: PlanColorMode[] = [...PLAN_COLOR_MODES];
 const DEFAULT_COLOR_MODE: PlanColorMode = "status";
 const BUBBLE_SCALE_MIN = 0.5;
 const BUBBLE_SCALE_MAX = 4;

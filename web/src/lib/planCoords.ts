@@ -1,4 +1,4 @@
-import type { FloorPlan } from "@forensic/shared";
+import type { FloorPlan, Photo, Project } from "@forensic/shared";
 
 /**
  * Pixel ↔ local-feet conversion for floor-plan placement.
@@ -56,5 +56,63 @@ export function localFeetToPixels(
   return {
     pxX: plan.anchorPixelX + lx * plan.pixelsPerFoot,
     pxY: plan.anchorPixelY + ly * plan.pixelsPerFoot,
+  };
+}
+
+/**
+ * Re-calibrate an existing plan (Build #6.39.1).
+ *
+ * Pin and distress coordinates are stored in plan-image pixels, so
+ * they stay on the same crack when scale/origin/north change. Feet
+ * (`localXFeet/Y`) re-derive from the new calibration so move-to-
+ * level and PDF distances stay honest. Photos without pixel coords
+ * are left untouched.
+ */
+export interface PlanRecalibration {
+  pixelsPerFoot: number;
+  calibrationDistanceFeet: number;
+  anchorPixelX: number;
+  anchorPixelY: number;
+  northDeg: number;
+  label?: string;
+}
+
+export function applyPlanRecalibration(
+  project: Project,
+  planId: string,
+  cal: PlanRecalibration
+): Project {
+  const planIdx = project.floorPlans.findIndex((p) => p.id === planId);
+  if (planIdx === -1) return project;
+  const existing = project.floorPlans[planIdx]!;
+  const updatedPlan: FloorPlan = {
+    ...existing,
+    pixelsPerFoot: cal.pixelsPerFoot,
+    calibrationDistanceFeet: cal.calibrationDistanceFeet,
+    anchorPixelX: cal.anchorPixelX,
+    anchorPixelY: cal.anchorPixelY,
+    northDeg: cal.northDeg,
+    label: cal.label?.trim() ? cal.label.trim() : existing.label,
+  };
+  const plans = [...project.floorPlans];
+  plans[planIdx] = updatedPlan;
+
+  const remap = (photo: Photo): Photo => {
+    if (photo.floorPlanID !== planId) return photo;
+    if (photo.planPixelX == null || photo.planPixelY == null) return photo;
+    const feet = pixelsToLocalFeet(
+      updatedPlan,
+      photo.planPixelX,
+      photo.planPixelY
+    );
+    if (!feet) return photo;
+    return { ...photo, localXFeet: feet.lx, localYFeet: feet.ly };
+  };
+
+  return {
+    ...project,
+    floorPlans: plans,
+    photos: project.photos.map(remap),
+    trashedPhotos: project.trashedPhotos.map(remap),
   };
 }
