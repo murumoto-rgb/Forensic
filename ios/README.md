@@ -12,7 +12,7 @@ open ios/SitePhoto.xcodeproj
 
 In Xcode: select the SitePhoto target → **Signing & Capabilities** → set your team to your Apple ID. Plug in your iPhone, choose it as the build target, hit ⌘R.
 
-> **Don't run `xcodegen` directly.** The wrapper script `ios/scripts/regen-project.sh` is the canonical entry point — it runs `gen-build-info.sh` first (which writes the gitignored `ios/SitePhoto/Generated/BuildInfo.swift` that the in-app **About** section reads for the git SHA / branch / timestamp), then `xcodegen generate`. Skipping the wrapper builds with stale or missing build info. See `CLAUDE.md` for the full breakdown.
+> **Don't run `xcodegen` directly.** The wrapper script `ios/scripts/regen-project.sh` is the canonical entry point — it runs `gen-build-info.sh` first (which writes the gitignored `ios/SitePhoto/Generated/BuildInfo.swift` that the in-app **About** section reads for the git SHA / branch / timestamp), then `xcodegen generate`. Skipping the wrapper builds with stale or missing build info. See the repository contracts in `AGENTS.md` for the full breakdown.
 
 ## Day-to-day workflow
 

@@ -25,7 +25,7 @@ Backing services: **Supabase** (Postgres + Auth), **Cloudflare R2**
 the canonical manifest schema; iOS structs mirror it; a CI contract
 test (`packages/shared/tests/ios-parity.test.ts`) fails any PR that
 changes one side without the other. [`docs/parity-matrix.md`](docs/parity-matrix.md)
-is the living feature-by-feature ledger. See `CLAUDE.md` for the full
+is the living feature-by-feature ledger. See `docs/PARITY_AGENT_GUIDE.md` for the full
 tandem-PR rules.
 
 ## Quick start
