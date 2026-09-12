@@ -30,8 +30,8 @@ reason here and confirm the matrix row reflects it:
 
 ## Test plan
 
-<!-- Bulleted checklist of what you tested. Per CLAUDE.md, an
-     iPhone device verification checklist will be posted as a PR
-     comment after push. -->
+<!-- Record focused checks and their results. For user-visible iOS changes,
+     include a concrete device checklist per AGENTS.md. Documentation-only PRs
+     record reference, consistency and diff validation; no device checklist. -->
 
 - [ ]
