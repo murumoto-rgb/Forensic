@@ -206,3 +206,11 @@ For every PR that adds, removes, or changes a feature:
 6. The PR template checkbox is your reminder that this file needs
    touching. CI's parity contract test catches schema-level drift but
    does **not** catch a missing matrix update — that's on the author.
+
+## Product identity (2026-09-22)
+
+| Surface | iOS | Web | Shared schema |
+| --- | --- | --- | --- |
+| SitePhoto camera/frame identity | Matching opaque AppIcon | Matching sign-in/project marks, favicon and touch icon | No schema or manifest-data changes; static presentation assets only |
+
+Baykal company and configurable report branding retain their separate roles.
