@@ -148,7 +148,7 @@ export function ProjectListPage({ session }: Props) {
     <div className="mx-auto max-w-3xl px-6 py-10">
       <header className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Projects</h1>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold"><img src="/brand/logo-mark-light.svg" alt="" aria-hidden="true" width={32} height={32} />Projects</h1>
           <p className="text-xs text-neutral-500">{session.user.email}</p>
         </div>
         <div className="flex items-center gap-2">

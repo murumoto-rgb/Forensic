@@ -37,6 +37,7 @@ export function LoginPage() {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="w-full max-w-sm rounded-lg border border-neutral-800 bg-neutral-900 p-8 shadow-2xl">
+        <img src="/brand/logo-mark-light.svg" alt="" aria-hidden="true" width={48} height={48} className="mb-4" />
         <h1 className="mb-2 text-2xl font-semibold text-neutral-100">SitePhoto - Forensic</h1>
         <p className="mb-6 text-sm text-neutral-400">
           {mode === "sign-in" ? "Sign in to continue." : "Create your account."}
