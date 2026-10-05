@@ -1,19 +1,25 @@
 name: Keepalive — ping Supabase
 
-# Supabase free-tier projects are PAUSED after ~7 days with no
-# activity (no database queries / API requests). A paused project
-# can only be resumed manually from the Supabase dashboard, so the
-# goal is to never let it pause in the first place.
+# Supabase pauses Free-plan projects that do not receive sufficient
+# database activity over a 7-day window. A paused project can only
+# be resumed from the Supabase dashboard, so the goal is to stay
+# above that activity bar and never let it pause.
 #
 # Why this is separate from keepalive.yml: that workflow now offers
 # only a manual wake of Render's web process, conserving shared Free
 # instance hours. Its /healthz returns a static object and never touches
 # Postgres (see server/src/routes/healthz.ts), so it does NOT count
-# as Supabase activity. This workflow closes that gap by running a
-# real (tiny) SELECT against the database once a day, which resets
-# Supabase's inactivity timer with a comfortable margin under the
-# 7-day pause threshold. Two workflows, two cadences, two failure
-# signals — same split-for-clarity rationale as ci.yml vs parity.yml.
+# as Supabase activity. This workflow closes that gap with a real
+# (tiny) SELECT. Two workflows, two cadences, two failure signals —
+# same split-for-clarity rationale as ci.yml vs parity.yml.
+#
+# Cadence: Supabase pauses a Free project that does not receive
+# sufficient user database activity over the past week. Their pausing
+# guide says a few database requests each day is typically enough.
+# Once a day is not. This job was green with HTTP 200 every day
+# through 2026-10-04, and Supabase still warned on 2026-10-05 that
+# project forensic (dshuodvmorxrdfahjtjn) would be paused. Four runs
+# a day leaves a few requests even if GitHub skips one scheduled run.
 #
 # One-time setup: add two repository secrets under
 # Settings → Secrets and variables → Actions → New repository secret:
@@ -38,18 +44,23 @@ name: Keepalive — ping Supabase
 # intended signal to go resume it from the dashboard. A ping cannot
 # un-pause a project.
 #
-# Cost: one ~5-second job per day ≈ 2.5 minutes/month of Actions
+# Cost: four ~5-second jobs per day ≈ 10 minutes/month of Actions
 # time — negligible against the free allowance.
+#
+# A green run does not cancel a warning Supabase has already sent.
+# After that email, open the project in the Supabase dashboard (or
+# send real app traffic) before the pause. Paid plans are not
+# auto-paused; this cron only covers the Free plan.
 
 on:
   schedule:
-    # Daily at 07:00 UTC. GitHub cron: minute hour dom month dow.
-    # Daily gives ~7× margin under the 7-day pause window, so even
-    # if GitHub skips a scheduled run (they're best-effort under
-    # load) the project stays awake.
-    - cron: "0 7 * * *"
+    # Every 6 hours: 00:00, 06:00, 12:00, 18:00 UTC.
+    # GitHub cron: minute hour dom month dow. Schedules are best-effort;
+    # four runs leave a few requests if one is skipped.
+    - cron: "0 */6 * * *"
   # Manual trigger from the Actions tab — useful right after adding
-  # the secrets to confirm the ping works without waiting for 07:00.
+  # the secrets, or after a pause warning, to confirm the ping works
+  # without waiting for the next scheduled hour.
   workflow_dispatch:
 
 jobs:
@@ -71,7 +82,8 @@ jobs:
           fi
           # Minimal real query: SELECT key FROM app_config LIMIT 1.
           # A 200 (even an empty []) means PostgREST executed a query
-          # against Postgres — which is what resets the pause timer.
+          # against Postgres. One success is a single request; the
+          # six-hour schedule is what accumulates a few per day.
           # -f makes a 4xx/5xx (paused project, bad key/URL) fail the
           # job loudly; --retry rides out transient network blips.
           echo "Pinging Supabase REST API ($SUPABASE_URL) …"

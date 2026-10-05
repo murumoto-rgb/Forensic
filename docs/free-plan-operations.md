@@ -24,9 +24,14 @@ See [Render Free limits](https://render.com/docs/free).
 The service sleeps after 15 minutes without inbound traffic and can take
 about a minute to wake. Accept that delay; do not reinstate scheduled HTTP
 pings just to keep the Free service awake. `keepalive.yml` is manual-only;
-Render's deployment healthcheck is unchanged. The separate daily Supabase
-workflow does not wake Render. Check its actual GitHub enabled state rather
-than assuming that a YAML schedule is running.
+Render's deployment healthcheck is unchanged. The separate Supabase
+workflow queries the database every six hours and does not wake Render.
+One query a day is below Supabase's current Free-plan activity bar
+(a few database requests each day). Check the workflow's actual GitHub
+enabled state and recent run logs rather than assuming a YAML schedule
+is running. A green ping does not cancel a pause warning already sent;
+open the project in the Supabase dashboard before that pause. Paid
+Supabase plans are not auto-paused.
 
 ## Idle work and export behavior
 
